@@ -47,3 +47,38 @@ class CoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WebhookErrorBodyTests(unittest.TestCase):
+    def _serve(self, status, body):
+        import http.server, threading
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                self.send_response(status); self.end_headers(); self.wfile.write(body)
+            def log_message(self, *a): pass
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return "http://127.0.0.1:%d/hook" % srv.server_address[1]
+
+    def test_4xx_includes_redacted_snippet(self):
+        url = self._serve(400, b'{"error":"bad agent","echo":"Bearer abcdefghijklmnop","token":"s3cr3tvalue","x":"' + b"y" * 400 + b'"}')
+        os.environ["YOBIRU_T_URL"], os.environ["YOBIRU_T_SECRET"] = url, "topsecret"
+        a = {"url_env": "YOBIRU_T_URL", "secret_env": "YOBIRU_T_SECRET"}
+        rec = {"envelope": dict(ENV, text="hi"), "received": {"peer": {"node": "a"}, "at": ENV["ts"]}}
+        with self.assertRaises(core.AdapterError) as cm:
+            core.call_webhook(a, rec, 5)
+        msg = str(cm.exception)
+        self.assertTrue(msg.startswith("HTTP 400: "), msg)
+        self.assertIn("bad agent", msg)
+        for leak in ("abcdefghijklmnop", "s3cr3tvalue", "topsecret", url):
+            self.assertNotIn(leak, msg)
+        self.assertLess(len(msg), 230)
+
+    def test_redact_body_scrubs_tokens_and_truncates(self):
+        out = core._redact_body('Authorization: Bearer abcdefghijkl\n"api_key": "zzzzzzzz" ' + "q" * 300)
+        self.assertNotIn("abcdefghijkl", out)
+        self.assertNotIn("zzzzzzzz", out)
+        self.assertNotIn("\n", out)
+        self.assertTrue(out.endswith("..."))
