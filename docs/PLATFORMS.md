@@ -86,13 +86,31 @@ Grok Bot is documented on cursor.com and docs.x.ai. It is not the Grok Build CLI
   available): <https://cursor.com/docs/grok-bot/private-networks>
 - Routine webhooks: the routine's **Webhook** section shows the URL, the key and the header
   `Authorization: Bearer <key>`; a 200 means a run was accepted and started, not finished:
-  <https://cursor.com/help/grok-bot/routines>
+  <https://cursor.com/help/grok-bot/routines>. The page does not say whether a webhook call that
+  arrives while an earlier run is still going waits for it or starts a parallel run.
 
-Unverified for Yobiru (needs a real account): that a Cursor-marketplace install of Yobiru makes its
-skills appear in Grok Bot, that the plugin's `scripts/` folder is present on the conversation's
-computer, that Tailscale and a long-running receiver work there, and an end-to-end wake through a
-routine webhook. The skills fall back to an unpacked release archive in `/workspace` if the scripts
-are missing.
+Community-reported, not verified by the maintainers: one user's real account, with the Yobiru 0.5.0
+release archive unpacked in `/workspace` (not a marketplace install), reported in
+[#11](https://github.com/chekusu/yobiru/issues/11):
+
+- 2026-10-13: the conversation's computer had `/dev/net/tun` and passwordless `sudo`; `tailscaled`
+  and a long-running `tailmsg.py serve` ran there, with Tailscale state under `/workspace` and a
+  small restore script that starts the receiver. The peer was reached through a DERP relay, not a
+  direct path.
+- 2026-10-13: a routine webhook set up as the yobiru-wake skill describes (`--webhook --url-file …
+  --secret-file …`, plus `--peer-max <peer>=now`) woke the routine for a tracked request from an
+  OpenClaw agent on a Mac (OpenClaw 2026.10.2). The routine reported `running`, sent its own tracked
+  request back, and both requests completed before their timeouts (`late: false`). Repeated on
+  2026-10-14 with OpenClaw 2026.10.3.
+- These runs cover the success path only. No failure, retry or duplicate-wake path ran live.
+- Each message that wakes the routine starts a run, and a run lists all pending messages, so two
+  overlapping runs could pick up the same message; a `running` state does not reserve it. That
+  user's routine now claims each message id atomically (one directory per id under `/workspace`)
+  before working on it. Concurrent `mkdir` was tested; a real duplicate webhook run was not.
+
+Still unverified: that a Cursor-marketplace install of Yobiru makes its skills appear in Grok Bot,
+and that the plugin's `scripts/` folder is present on the conversation's computer. The skills fall
+back to an unpacked release archive in `/workspace` if the scripts are missing.
 
 ## Remaining acceptance steps
 
@@ -101,10 +119,10 @@ are missing.
    cache path, and a look at the Codex desktop app's plugin page.
 2. Cursor: load `plugins/yobiru` with `agent --plugin-dir` or `~/.cursor/plugins/local/yobiru`,
    confirm the skills in **Customize**, run the same prompt.
-3. Grok Bot: import <https://github.com/chekusu/yobiru> as a Cursor team marketplace, enable Yobiru,
-   add it in Grok Bot,
-   confirm the skills, run `paths` on the conversation's computer, set up Tailscale and a receiver
-   there, and test a routine webhook wake with a message from another machine.
+3. Grok Bot: a release-archive setup with Tailscale, a receiver and a routine webhook wake has a
+   community report (above). Still open: import <https://github.com/chekusu/yobiru> as a Cursor team
+   marketplace, enable Yobiru, add it in Grok Bot, confirm the skills and run `paths` on the
+   conversation's computer.
 4. Two real machines: setup on both, `send`, `fetch`, `reply`, and a `now` wake through each adapter.
 5. Marketplaces: the repository <https://github.com/chekusu/yobiru> works as a Codex marketplace
    (`codex plugin marketplace add chekusu/yobiru`) and as a Cursor team marketplace import. A public
