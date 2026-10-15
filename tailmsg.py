@@ -1411,7 +1411,8 @@ def wake_access_decision(ctx, rec):
 
 
 def deliver_wake(ctx, path):
-    """Run the adapter with retries. Returns True on success. Records the outcome (no secrets) in the
+    """Run the adapter with retries. Returns True on adapter success, even if recording fails.
+    Best-effort recording of the outcome (no secrets) goes in the
     inbox record as `wake_delivery`; on give-up the message simply stays in `inbox --pending`."""
     mid = Path(path).stem
     try:
@@ -1450,14 +1451,19 @@ def deliver_wake(ctx, path):
                 break
             attempted += 1
             res = call_webhook(a, rec, timeout) if a["type"] == "webhook" else call_exec(a, path, timeout, agent)
-            log("wake", mid, "@%s" % agent, a["type"], "ok (attempt %d): %s" % (n, res))
-            update_record(path, wake_delivery={"adapter": a["type"], "agent": agent, "ok": True, "attempts": attempted,
-                                               "at": iso(now_utc())})
-            return True
         except AdapterError as e:
             err = str(e)[-300:]
         except Exception as e:
             err = type(e).__name__
+        else:
+            # Notification succeeded. A bookkeeping failure must never send it again.
+            log("wake", mid, "@%s" % agent, a["type"], "ok (attempt %d): %s" % (n, res))
+            try:
+                update_record(path, wake_delivery={"adapter": a["type"], "agent": agent, "ok": True, "attempts": attempted,
+                                                   "at": iso(now_utc())})
+            except Exception as e:
+                log("wake", mid, "adapter succeeded but could not record wake_delivery:", type(e).__name__)
+            return True
         log("wake", mid, "@%s" % agent, a["type"], "failed (attempt %d/%d): %s" % (n, attempts, err))
         if n < attempts:
             time.sleep(backoff * 2 ** (n - 1))
