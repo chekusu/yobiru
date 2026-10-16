@@ -27,6 +27,7 @@ separate steps.
 - Source: <https://github.com/chekusu/yobiru>
 - Support: <https://github.com/chekusu/yobiru/issues>
 - Privacy policy: <https://github.com/chekusu/yobiru/blob/main/docs/PRIVACY.md>
+- Terms of use: <https://github.com/chekusu/yobiru/blob/main/docs/TERMS.md>
 - License: MIT
 - Icon: `plugins/yobiru/assets/icon.png` (square PNG).
 
