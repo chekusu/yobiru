@@ -34,6 +34,7 @@ Body: 信封（见 §3），默认上限 256 KiB
 | 400 | 格式错误 / 未知字段 / `wake` 取值不对 / `agent`、`from_agent` 名字不合法 / `to` 不是我 / 拉取地址不在发件方主机上 |
 | 403 | 来源不是 tailnet 地址、访问策略拒绝、或 `from` 与 Tailscale 身份不符 |
 | 413 | 太大　　415 不是 JSON |
+| 503 | 身份查询暂不可用（`code: "identity_unavailable"`），见 §5 |
 
 另有 `GET /health` → `{"ok":true,"v":1,"node":"<fqdn>"}`，只回答 tailnet 地址，用于探活（保持不变）。
 
@@ -101,6 +102,11 @@ agent 名字规则：1–64 个字符，可以用中文等任意 Unicode；不�
 1. **鉴权顺序**：
    - 来源 IP 必须在 `100.64.0.0/10` 或 `fd7a:115c:a1e0::/48` 里，否则 403；
    - 用 `tailscale whois --json <IP>`（LocalAPI）查出对方节点名、tag、登录用户；
+     查询超时（3 秒）或 CLI 报告无法连接本机 Tailscale 守护进程时，返回 503、
+     `{"ok":false,"error":"identity lookup unavailable","code":"identity_unavailable"}` 和
+     `Retry-After: 1`，客户端可退避后重试。此时不读取受保护的数据、不接收消息，也不复用过期身份缓存；
+     失败不写入缓存，后续请求可重新查询。现有未过期缓存仍有效。
+     查询成功但无节点、未知对端、策略拒绝仍返回 403；CLI 缺失、权限错误及其他未识别的查询错误暂保留原有 403 行为。
    - 对照本机访问策略：`deny` 命中即 403；`tailnet` 模式允许已认证对端，`allowlist` 模式要求 `allow` 命中，否则 403；
    - 信封里的 `from` 必须等于 whois 查到的节点名，否则 403（防冒名）。
 2. **存储**：原样写入 `~/.tailmsg/inbox/<id>.json`，内容为 `{"envelope": …, "received": {"at", "peer"}}`。`peer` 是 whois 查到的身份，以它为准，不信信封自报的身份。
@@ -261,7 +267,7 @@ agent 名字规则：1–64 个字符，可以用中文等任意 Unicode；不�
 
 ## 9. 发现接口 `GET /info`（Yobiru 0.3.0 起，可选）
 
-鉴权顺序与 `/msg` 相同，并且在读取任何元数据、查询任何会话名称**之前**完成：来源必须是 tailnet 地址，`tailscale whois` 查出的身份必须符合本机访问策略（本机诊断保留本机身份例外），否则 403；拒绝规则优先。
+鉴权顺序与 `/msg` 相同，并且在读取任何元数据、查询任何会话名称**之前**完成：来源必须是 tailnet 地址，`tailscale whois` 查出的身份必须符合本机访问策略（本机诊断保留本机身份例外），否则 403；拒绝规则优先。身份查询暂不可用时与 `/msg`、`/f/...`、`/requests/...` 一样返回 §5 所述的 503。
 
 ```json
 {"ok": true, "v": 1, "product": "yobiru", "version": "0.5.0", "node": "dev-server.example.ts.net",
