@@ -17,11 +17,12 @@ included in each trusted bridge notification). `bridge_home` can be outside the 
 |---|---|---|
 | `ack ID` | `<tailmsg_home>/inbox` | No |
 | Dispatcher deduplication and handoff records | `<bridge_home>/handled` | No |
-| Tracked `request respond ID TEXT` / `reply ID TEXT` | `<tailmsg_home>/requests` | No; the receiver sends the durable response |
+| Tracked `request respond ID TEXT` / `reply ID TEXT` | `<tailmsg_home>/requests` | No; the receiver sends the response or serves it to a polling pull requester |
 | Tracked `reply ID TEXT --file PATH` | `<tailmsg_home>/requests`, `<tailmsg_home>/outbox` | No; the receiver serves the files |
 | Legacy text-only `reply ID TEXT` | None beyond the handled records used to track the reply | Yes |
 | Legacy `reply ID TEXT --file PATH` | `<tailmsg_home>/outbox` | Yes |
-| `fetch ID` | `<tailmsg_home>/inbox` | Yes |
+| `fetch ID` for an incoming pull request | Existing `<tailmsg_home>/inbox/ID/files` | No; validates already uploaded local files |
+| `fetch ID` for ordinary messages or response attachments | `<tailmsg_home>/inbox` | Yes |
 
 `ack` writes a temporary file beside `inbox/<id>.json` and atomically replaces that JSON, so giving
 write access to only the existing file is insufficient. Attachment replies snapshot files under
@@ -31,6 +32,14 @@ send result in its handled record to avoid repeated replies. Tracked responses i
 result and an immutable retry envelope in `requests/ledger.sqlite3`. SQLite needs write access to
 the containing directory for its journal. Local `request status` reads this ledger; `--refresh`
 also needs network access and writes verified remote responses to it.
+
+For one-way pull requests, the input manifest is `request.uploads`. The receiver verifies and places
+these files under `inbox/ID/files/` before notifying the dispatcher. A local `fetch ID` verifies their
+size and SHA-256 without contacting the requester. A missing or modified input is an error, not a
+reason to enable networking or download a replacement. Authorized `request respond ... --file PATH`
+stores the result for the requester to poll and download, with no reverse connection. This applies
+even when `received.peer.node` is a name but the envelope's sender uses a stable `node:` identity;
+the bridge uses the receiver's authenticated identity-matching rules.
 
 Keep `config.json`, `codex-bridge.json`, the installed code and workflow, and the bridge queue
 database read-only to the dispatcher. Do **not** add the entire data home or bridge state directory
@@ -84,7 +93,8 @@ Hosts and managed policies may impose additional restrictions.
 
 Only if the owner has authorized automatic replies, preserve/enable `allow_replies` through the
 bridge's normal installation options. Tracked responses need only local ledger writes: the receiver
-delivers them. Legacy direct replies and attachment downloads also need network access:
+delivers them or serves them to the pull requester. Legacy direct replies and ordinary/response
+attachment downloads also need network access:
 
 ```text
 -c 'sandbox_workspace_write.network_access=true'
@@ -96,8 +106,9 @@ For authorized replies **with attachments**, also replace the writable-roots opt
 -c 'sandbox_workspace_write.writable_roots=["/home/you/.tailmsg/inbox","/home/you/.tailmsg/requests","/home/you/.tailmsg/codex-bridge/handled","/home/you/.tailmsg/outbox"]'
 ```
 
-Network access is also needed for authorized attachment downloads (`fetch`). It is not required
-for `ack` or handled records. This Codex network switch is broader than a per-command or tailnet-only
+Network access is also needed for authorized attachment downloads (`fetch`), except local validation
+of already uploaded pull request inputs. It is not required for `ack` or handled records. This Codex
+network switch is broader than a per-command or tailnet-only
 grant; keep it off when the workflow does not need networking. `allow_replies=false` must still mean
 **no agent-generated business reply**, even if networking is available for another task. For tracked
 requests the trusted bridge may persist a fixed `blocked` protocol result without starting the model;

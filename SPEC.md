@@ -1,14 +1,14 @@
 # tailmsg 协议 v1：基于 Tailscale 的极简点对点消息
 
 > 一句话：每台机器跑一个小收信端；谁都可以按同一条规则给任何一台机器发一封 JSON 小信；
-> 信里**不放文件本体**，只写“去我这儿哪个内网地址拉、拉到后怎么校验”；收件方自己去拉。
+> 信里**不放文件本体**；默认由收件方拉附件，单向共享请求也可先上传附件再提交（§11）。
 > 没有中心服务器，不调度任务；0.5 起可跟踪请求的回执、进度、最终结果和超时。
 > 一台机器上可以有多个 agent，用 `机器/agent` 点名，只叫醒被点名的那一个（§5.9）。
 
 ## 1. 前提
 
-- 每台机器（开发服务器、家里电脑、Grok 的 box、云实例）都已加入同一个 tailnet。
-- 每台机器运行 `tailmsg.py serve`，**只绑定本机 Tailscale IP**，默认端口 `7766`。
+- 通信机器通过同一 tailnet 或 Tailscale 设备共享连通，且网络策略允许接收端端口。
+- 接收方运行 `tailmsg.py serve`，**只绑定本机 Tailscale IP**，默认端口 `7766`；§11 的请求方无需接收服务。
 - 地址写法：`http://<主机名>.example.ts.net:7766`；没开 MagicDNS 的机器用 `tailscale status --json` 把主机名解析成 100.x 地址。
 
 ### 主机名解析
@@ -71,7 +71,7 @@ Yobiru 0.3.0 起另有 `GET /info`（发现接口，见 §9）。旧版接收端
 |---|---|---|
 | `v` | 是 | 固定 `1` |
 | `id` | 是 | 发件方生成的随机串，`[A-Za-z0-9_-]{8,64}`，用于去重和回复 |
-| `from` / `to` | 是 | 双方的 tailnet 全名（FQDN）；`to` 也可写短主机名 |
+| `from` / `to` | 是 | 默认是双方的 tailnet 全名（FQDN）；`to` 也可写短主机名。§11 的请求方使用稳定节点标识。 |
 | `ts` | 是 | UTC，`YYYY-MM-DDTHH:MM:SSZ` |
 | `kind` | 否 | 自由短标签（≤32 字符），默认 `text`，例如 `notice` / `request` / `status` |
 | `text` | 否 | 正文，纯文本 |
@@ -403,6 +403,65 @@ yobiru request maintain                                      # 单次维护和�
   在升级通知之外另发一个经授权的跟踪请求；升级通知本身不要求回复。
 - 这是持久的通信状态与结果约定，不是任务调度器，也不提供任务恰好执行一次、
   业务副作用的自动回滚，或离线设备必定完成任务的保证。接收回执也不是已读回执。
+
+## 11. 单向共享请求（可选 `request-pull-v1`）
+
+双方先通过已鉴权的 `/info` 协商 `request-lifecycle-v1` 和 `request-pull-v1`。
+CLI 显式使用 `request send ... --transport pull`，缺省仍为既有 push；不支持时拒绝，不静默降级。
+该模式中全部 TCP 连接由请求方发起，接收方不向请求方建立反向连接，请求方无需运行 receiver。
+部署与验证步骤见 [SHARING.md](docs/SHARING.md)。
+
+### 稳定身份
+
+Tailscale 共享设备的 `Node.Name` 可能为空。接收端从 LocalAPI whois 验证源 IP 在 `Node.Addresses`
+单地址前缀内、`Node.ID` 和 `Node.User` 有效、`UserProfile.ID` 匹配，再使用 `Node.StableID`。
+规范标识为 `node:` 加 StableID 的 ASCII 字节小写十六进制编码，保留原 StableID 的大小写区别。
+pull 信封 `from` 必须为该标识；不信任信封自报名称、ComputedName 或仅用于展示的主机名。
+访问与 wake 规则可使用 `node:<hex>` 精确匹配；既有 DNS、tag、user 规则保持原有语义。
+接收端所有受保护操作仍检查当前访问策略；客户端记录接收方稳定身份，轮询及下载前核对。
+
+### 上传与提交
+
+请求元数据保留 `timeout_seconds`、`reply_port`（兼容字段，pull 不用于反连），增加：
+
+```json
+{
+  "transport": "pull",
+  "uploads": [{
+    "token": "<32到64位URL安全随机token>",
+    "name": "input.bin",
+    "sha256": "<64位小写hex>",
+    "size": 2048,
+    "mime": "application/octet-stream"
+  }]
+}
+```
+
+1. 请求方先复制不可变文件快照，保存请求 ID 与完整信封；不使用原有 `fetch` 字段。
+2. `POST /requests/prepare` 携带完整 JSON 信封，持久预留相同 ID、认证请求方、不可变 manifest。
+   返回 201（新预留）或 200（完全相同的重试），异主或异内容同 ID 冲突拒绝。
+3. 对每份文件 `PUT /requests/<id>/uploads/<token>`，要求一个准确的 `Content-Length`，不接受分块编码。
+   接收端在截止时间内检查请求方、大小与 SHA-256，持久写盘后返回 201/200 和文件校验摘要。
+4. 最后 `POST /msg` 提交原始信封。全部附件校验并就绪到 `inbox/<id>/files/` 后才入账、返回 202，
+   按既有 wake 权限处理。同 ID 已提交的重试返回 200，不重复执行。过期请求不唤醒 agent。
+
+每请求最多 100 份文件，总大小不超过接收端 `max_fetch_bytes`。路径经规范化并禁止重名、重复 token、
+路径穿越与无效 hash。上传中断只留下可重试的预留；`request resume ID` 使用原 ID、manifest 和快照继续。
+截止、超时或网络失败都不能作为自动创建新请求的依据。
+
+### 处理与返回
+
+`fetch REQUEST_ID` 对 pull 请求只校验本地已上传文件；不访问请求方。
+接收 agent 继续使用 `request respond` / `reply`，结果与状态持久写入请求账本，**不加入反向发送队列**。
+返回 `stored: true, transport: "pull"` 代表结果已存储，不代表对方已领取。
+
+请求方使用 `GET /requests/<id>`（CLI `request status ID --refresh`）领取自己的状态与最新响应。
+访问依赖当前授权和原稳定身份，不可查询他人请求。响应仍是 §10 的关联 ID、递增序号、状态和正文。
+响应附件由接收端 `/f/<token>/<name>` 提供，只允许原请求方，且重新检查当前 allow/deny。
+请求方 `fetch RESPONSE_ID` 核对接收方身份、文件大小与 SHA-256，保存验证后的文件。
+
+pull 上传及结果附件保留到显式本地清理，禁止 `--ttl-hours`；已接受请求和结果在请求截止后仍可领取。
+本模式不赋予接收方主动发起新会话的网络权限，也不扩大本地任务执行、回复或 wake 权限。
 
 ## 8. 刻意不做的事
 
