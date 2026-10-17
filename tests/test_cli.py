@@ -272,32 +272,36 @@ class WakeConfigTests(Base):
         self.assertEqual(before, (self.home / "config.json").read_bytes())
 
     def test_inherited_top_level_adapter_is_not_replaced_silently(self):
+        false_cmd = shutil.which("false")
+        self.assertIsNotNone(false_cmd)
         path = self.write_config({"allow": ["peer"], "default_agent": "codex", "on_message": ["/bin/true"]})
         before = path.read_bytes()
-        r = self.yobiru("wake-config", "--agent", "codex", "--exec", "/bin/false", "--apply")
+        r = self.yobiru("wake-config", "--agent", "codex", "--exec", false_cmd, "--apply")
         self.assertEqual(1, r.returncode)
         self.assertIn("inherited top-level", r.stdout)
         self.assertEqual(before, path.read_bytes())
-        r = self.yobiru("wake-config", "--agent", "codex", "--exec", "/bin/false", "--replace", "--apply")
+        r = self.yobiru("wake-config", "--agent", "codex", "--exec", false_cmd, "--replace", "--apply")
         self.assertEqual(0, r.returncode, r.stdout)
         cfg = self.config()
-        self.assertEqual({"type": "exec", "argv": ["/bin/false"]}, cfg["agents"]["codex"]["wake_adapter"])
+        self.assertEqual({"type": "exec", "argv": [false_cmd]}, cfg["agents"]["codex"]["wake_adapter"])
         self.assertEqual(["/bin/true"], cfg["on_message"])
 
     def test_own_adapter_and_cap_on_an_nfc_equivalent_key_need_replace(self):
         decomposed = "café"
+        false_cmd = shutil.which("false")
+        self.assertIsNotNone(false_cmd)
         path = self.write_config({"allow": ["peer"], "agents": {decomposed: {
             "wake_adapter": {"type": "exec", "argv": ["/bin/true"]}, "wake_max": "batch"}}})
         before = path.read_bytes()
-        r = self.yobiru("wake-config", "--agent", "café", "--exec", "/bin/false", "--wake-max", "now", "--apply")
+        r = self.yobiru("wake-config", "--agent", "café", "--exec", false_cmd, "--wake-max", "now", "--apply")
         self.assertEqual(1, r.returncode)
         self.assertEqual(before, path.read_bytes())
-        r = self.yobiru("wake-config", "--agent", "café", "--exec", "/bin/false", "--wake-max", "now",
+        r = self.yobiru("wake-config", "--agent", "café", "--exec", false_cmd, "--wake-max", "now",
                         "--replace", "--apply")
         self.assertEqual(0, r.returncode, r.stdout)
         agents = self.config()["agents"]
         self.assertEqual([decomposed], list(agents))
-        self.assertEqual({"wake_adapter": {"type": "exec", "argv": ["/bin/false"]}, "wake_max": "now"}, agents[decomposed])
+        self.assertEqual({"wake_adapter": {"type": "exec", "argv": [false_cmd]}, "wake_max": "now"}, agents[decomposed])
 
     def test_remove_adapter_reports_the_real_fallback(self):
         self.write_config({"allow": ["peer"], "default_agent": "codex",

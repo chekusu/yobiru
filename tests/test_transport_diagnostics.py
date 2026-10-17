@@ -202,7 +202,9 @@ class PackagedDiagnosticsTests(unittest.TestCase):
             self.assertEqual("", result.stdout)
             self.assertIn("POST /msg to " + PEER, result.stderr)
             self.assertIn("127.0.0.1:%d" % port, result.stderr)
-            self.assertIn("ConnectionRefusedError", result.stderr)
+            # macOS may time out a bound, non-listening port instead of sending RST.
+            # Both must retain the destination and the unknown-delivery diagnostic.
+            self.assertRegex(result.stderr, r"ConnectionRefusedError|TimeoutError")
             self.assertIn("Delivery is unknown for message", result.stderr)
             self.assertNotIn("Traceback", result.stderr)
             _, data = pkg.run_json(["doctor", "--json"], user, **opts)
