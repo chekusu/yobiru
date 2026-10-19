@@ -1,7 +1,55 @@
 # What has been verified
 
-Yobiru 0.5.1 submission preparation. This page separates what has actually been run from what has not. It is not a
+Yobiru release verification. This page separates what has actually been run from what has not. It is not a
 security guarantee: the tests show the behaviors listed below, nothing more.
+Dated release results refer to the named release trees, not a later development branch or an installed host.
+
+## Cloud-computer setup guidance (0.5.3)
+
+On 2026-10-19, the 0.5.3 release candidate passed **228 plugin tests and 146
+bridge/resident/installer tests (374 total)** on Python 3.12. Build consistency,
+public-file hygiene, `git diff --check` and Python 3.8 syntax parsing passed.
+Syntax parsing is not execution on a Python 3.8 interpreter.
+
+The package includes updated setup/Grok Bot skills for inspecting and preserving Tailscale
+identity state, keeping existing Yobiru data, and configuring supported startup recovery.
+The runtime changes only its reported product version. No automatic state migration,
+startup installer, discovery fix or live receiver identity refresh was added.
+
+These isolated tests verify packaging and existing protocol/installer behavior. They do not
+establish that a chosen cloud directory survives a rebuild, encrypted identity state is portable,
+or a host restores network login and agent wake-ups after a real VM image replacement. See
+[the state and startup guide](GROK_BOT.md#preserve-tailscale-state-and-startup).
+
+## Resident session workflow (0.5.2)
+
+On 2026-10-19, the 0.5.2 release candidate passed **228 plugin tests and 146
+bridge/resident/installer tests (374 total)** on Python 3.12. The build consistency and
+public-file hygiene checks, `git diff --check`, and Python 3.8 syntax parsing passed.
+Syntax parsing is not execution on a Python 3.8 interpreter.
+
+This release updates the dispatcher template, inbox/wake/upgrade skills and maintenance
+documentation. Runtime code changes only its reported product version. The tests rerun
+packaging, isolated request lifecycle, service, bridge, installer and rollback behavior;
+they do not establish that a live host follows every workflow instruction or keeps a
+business session alive after handoff. No automatic business scheduler or resource-lock
+implementation was added. A stable resource key must still use the host's actual lock or lease.
+
+Existing custom dispatcher files are preserved by the installer. Applying these rules requires
+a reviewed merge into the configured file and verification of the installed skills and host
+capabilities. Keep newer development runtimes intact and report policy adoption separately
+from software versions. See [resident session maintenance](DISPATCHER_SESSIONS.md).
+
+## Restart and identity recovery observation (2026-10-19)
+
+A reachable Grok Bot receiver on 0.5.0 was displayed offline because discovery skipped its probe
+when Tailscale reported `Online=false`. Separately, the running receiver reported an older node name
+than fresh Tailscale identity checks, causing normal tracked-send preflight to reject the mismatch.
+After an operator restart with the existing configuration, `/info` matched the current identity and
+a request using the same stable hostname was accepted. This is limited recovery evidence, not proof
+of final task execution, a tested rebuild, or a runtime fix in 0.5.2. The
+[recovery record](RESTART_RECOVERY.md) separates observed facts, code causes, temporary remediation
+and proposed tests. No private node names, addresses or message records are included here.
 
 ## Host packaging and marketplace verification (0.5.1)
 
