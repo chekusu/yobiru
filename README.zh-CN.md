@@ -264,6 +264,10 @@ sh "$Y" codex-bridge status
 
 已有部署可以让指定的消息类型不进入入口会话：在 `codex-bridge.json` 中设置 `excluded_kinds` 和 `excluded_kind_adapter`（可信本机程序的绝对路径 argv）。这些消息从不进入 Codex 队列。只有接收端对一封已校验、未 ack、实际级别为 `now` 的消息直接唤醒时，才运行该程序，并只追加 inbox JSON 路径这一个参数（不经 shell，不含正文），超过 `excluded_kind_timeout_seconds`（默认 60 秒）即终止。扫描、重试和 `status` 都不会运行它。实际时限还会在接收端 `hook_timeout_s` 到期前 10 秒结束，先终止处理程序及其进程组。程序一旦启动，即使失败或超时，桥接也以 0 退出（结果会输出并记入日志），因此不会被自动重放；消息留在 inbox，重试和按消息 ID 去重由程序自己负责。升级时原样保留本地已有的入口指令，模板更新需自行合并。安装器在 `--dry-run` 中校验这些字段，并在升级时连同调整过的时间参数、自定义入口指令、已记录的 Codex CLI 和已授权的回复设置一并保留。
 
+**常驻 session 的工作方式。** 固定入口只短处理通知和协议；同一事项复用已有业务 session，新事项另开 session。具体执行和等待人工由业务 session 承担，避免一个耗时任务堵住后续消息。交接先持久落盘，用稳定的 `resource_key` 关联实际的锁或租约，对共享资源互斥，并指定唯一 `lifecycle_owner` 负责验收和结束请求，减少重复执行与结果丢失。这是宿主 agent 的工作流约定：bridge 负责持久入队，不能保证业务 session 持续运行或自动恢复。
+
+[入口模板](CODEX_DISPATCHER.md)和 [inbox](plugins/yobiru/skills/yobiru-inbox/SKILL.md)／[wake](plugins/yobiru/skills/yobiru-wake/SKILL.md) 技能由 Git 维护，修改后用 `python3 tools/build_plugin.py sync` 同步打包模板。已安装的插件缓存不是源码；升级时需主动合并本机自定义入口规则。完整交接流程、维护原因和核验步骤见[常驻会话维护说明](docs/DISPATCHER_SESSIONS.md)（英文）。
+
 | 信号 | 能说明什么 |
 |---|---|
 | `send` 返回 HTTP `202` | 接收端接受并保存了消息。 |
