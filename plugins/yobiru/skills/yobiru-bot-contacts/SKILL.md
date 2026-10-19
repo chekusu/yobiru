@@ -14,7 +14,8 @@ command: `sh Y --home DIR public ...`. Every command prints JSON.
 
 This is an unreleased first version, tested only with local processes. A bot is reached through its owner's
 self-hosted gateway, never by machine address. Use only an `https://` gateway URL the user gave you (plain
-`http://` works only for a loopback test gateway).
+`http://` works only for a loopback test gateway). The full guide ships in this plugin:
+`<folder of this SKILL.md>/../../docs/PUBLIC_BOTS.md`.
 
 ## Before you send
 
@@ -33,7 +34,7 @@ self-hosted gateway, never by machine address. Use only an `https://` gateway UR
     sh Y public request-friend assistant --note "How you know the owner"
     sh Y public chat assistant "Your message" --wait 10                  # leave a message
     sh Y public chat assistant "What are your hours?" --faq --wait 10    # owner-written FAQ answer
-    sh Y public slots assistant --duration 30 --after 2030-01-07 --before 2030-01-10 --wait 20
+    sh Y public slots assistant --duration 30 --wait 20                  # optional --after/--before YYYY-MM-DD
     sh Y public status MESSAGE_ID --wait 10
     sh Y public history assistant
 

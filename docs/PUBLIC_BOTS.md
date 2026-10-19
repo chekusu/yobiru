@@ -2,8 +2,11 @@
 
 **Status: unreleased first version on a development branch.** It has been tested only with synthetic data,
 local processes and loopback HTTP. It has not been deployed on a public address, packaged in a release,
-or verified inside a native Grok Bot, Codex or Cursor host. Private Tailscale messaging (tailmsg protocol v1,
-receiver port 7766) is unchanged and does not depend on anything described here.
+or verified inside a native Grok Bot, Codex or Cursor host. To try it, use a checkout of this development
+branch or a plugin archive built from it: the published 0.5.3 release and installs of the latest release do
+not include public bot contacts, although this branch deliberately keeps the version number 0.5.3. Private
+Tailscale messaging (tailmsg protocol v1, receiver port 7766) is unchanged and does not depend on anything
+described here.
 
 People and their agents add a **bot** as a contact, the way they would add an account in a chat app, instead
 of addressing a machine. A bot has an immutable id (`bot_...`) and an editable public handle (`@assistant`);
@@ -221,8 +224,13 @@ providers are not erased. Revocation stops later releases; it cannot recall what
 
 On the owner's devices: the worker inbox keeps delivered leave-messages, `leases.json` keeps claimed items
 until they finish, and the capability service's `ledger.sqlite3` keeps the slot answers it released. On the
-caller's device: `sent.sqlite3` keeps sent payloads (resolved rows beyond the newest 1000 are pruned), and
-the CLI stores contacts and credentials. None of these are deleted automatically.
+caller's device: `sent.sqlite3` keeps each send's payload and outcome, and the CLI stores contacts and
+credentials. The send log is bounded by count, not by age: each time a new send is recorded, finished
+(stored or refused) entries are pruned to the newest 1,000. Sends that were still open at that moment can
+finish before the next prune, so more than 1,000 finished entries can remain until the next send is
+recorded. Entries whose outcome is still open are never removed, and no new message is sent while 100 are
+open. Nothing on these devices is deleted by age or on a schedule; apart from that count limit, these files
+stay until their owner deletes them.
 
 ## Deploying the gateway
 
@@ -251,52 +259,69 @@ bots.example.com {
 The owner's worker and capability service connect outbound to the gateway; they need no open port. Running
 them continuously (systemd, launchd) is the owner's setup; this version ships no service templates for them.
 
-## A complete local walkthrough
+## Try it locally
 
-All commands run as written on one machine with loopback addresses, using separate data homes for the
-roles (`--home` before the command). `Y` is the plugin's `scripts/yobiru`.
-
-```sh
-G=/tmp/yobiru-demo; mkdir -p "$G"
-sh "$Y" gateway --gateway-home "$G/gateway" init --port 7780              # owner credential: $G/gateway/owner.token
-sh "$Y" gateway --gateway-home "$G/gateway" serve &                       # http://127.0.0.1:7780
-URL=http://127.0.0.1:7780
-
-# owner device
-sh "$Y" --home "$G/owner" public owner login "$URL" --token-file "$G/gateway/owner.token"
-sh "$Y" --home "$G/owner" public bot create --handle assistant --name "Demo assistant"
-sh "$Y" --home "$G/owner" public bot publish assistant
-
-# a caller (no Tailscale needed)
-sh "$Y" --home "$G/caller" public enroll "$URL" --name "Demo caller"
-sh "$Y" --home "$G/caller" public add "$URL/@assistant"
-sh "$Y" --home "$G/caller" public chat assistant "What can you do?" --faq          # 202 queued, not executed
-sh "$Y" --home "$G/caller" public request-friend assistant --note "Hello"
-
-# owner: approve with explicit capabilities, then hand a worker credential to the worker device
-sh "$Y" --home "$G/owner" public owner contacts assistant --pending                  # note the actor_id
-sh "$Y" --home "$G/owner" public owner contact assistant ACTOR_ID approve --capabilities faq,leave_message
-sh "$Y" --home "$G/owner" public worker bind assistant --token-file "$G/worker.token"
-
-# worker device: dedicated credential, deterministic responder, one pass
-sh "$Y" --home "$G/worker" public worker login "$URL" --token-file "$G/worker.token" --handle @assistant
-sh "$Y" --home "$G/worker" public responder init BOT_ID
-sh "$Y" --home "$G/worker" public worker run BOT_ID --once
-
-# the caller sees the final answer
-sh "$Y" --home "$G/caller" public history assistant
-```
-
-For calendar suggestions, the owner adds `calendar_slots` to the friend's grant, then:
+The plugin includes `examples/public-bot-demo.sh`, a self-contained demo of the main flow on one machine
+with synthetic data. It gives a gateway, the owner's device, a caller, the owner's worker device and
+the private calendar service their own directories in one new temporary directory. The gateway and the
+calendar service listen on `127.0.0.1` ports chosen by the operating system, calendar dates are computed from
+today, and ids are read from each command's JSON output. It never uses Tailscale, an existing Yobiru data
+home, a real calendar or any other address. When it ends, even after an error or Ctrl-C, it stops its
+services and deletes the temporary directory. It needs bash and Python 3.8+, was tested on Linux, and takes
+about ten seconds. Run it from the plugin's folder (`plugins/yobiru` in a source checkout):
 
 ```sh
-sh "$Y" calendar-service init --dir "$G/calendar" --gateway "$URL" --bot BOT_ID     # edit policy, write events.json
-sh "$Y" --home "$G/owner" public verifier bind assistant --token-file "$G/calendar/verifier.token"
-sh "$Y" calendar-service serve --dir "$G/calendar" &                                 # prints its loopback URL
-sh "$Y" --home "$G/worker" public responder init BOT_ID --force --calendar-url CAL_URL \
-    --calendar-token-file "$G/calendar/access.token"
-sh "$Y" --home "$G/caller" public slots assistant --duration 30 --after 2030-01-07 --before 2030-01-08
+sh examples/public-bot-demo.sh
 ```
+
+It prints one line per step and stops with an error if a step does not behave as described. These are the
+`yobiru` commands it runs, apart from the `status` and `history` reads that check each step. `Y` is the plugin's `scripts/yobiru` and `T` is the new private directory. The
+values in capitals come from earlier output: `PORT` is a free local port, `URL` comes from the gateway's
+`{"listening": ...}` line, `BOT_ID` from `bot create`, `ACTOR_ID` from `owner contacts --pending`,
+`CAL_URL` from the calendar service's `listening` line and each `MESSAGE_ID` from `chat` or `slots`. `DAY`
+is the date two days from today (UTC).
+
+```sh
+# 1. the gateway
+sh "$Y" gateway --gateway-home "$T/gateway" init --port "$PORT"    # writes $T/gateway/owner.token
+sh "$Y" gateway --gateway-home "$T/gateway" serve &                # prints {"listening": URL}
+# 2. the owner's device creates and publishes the bot
+sh "$Y" --home "$T/owner" public owner login "$URL" --token-file "$T/gateway/owner.token"
+sh "$Y" --home "$T/owner" public bot create --handle assistant --name "Demo assistant"
+sh "$Y" --home "$T/owner" public bot publish assistant
+# 3. a caller (no Tailscale) asks a first question: queued, that is stored and not answered yet
+sh "$Y" --home "$T/caller" public enroll "$URL" --name "Demo caller"
+sh "$Y" --home "$T/caller" public add "$URL/@assistant"
+sh "$Y" --home "$T/caller" public chat assistant "What can you do?" --faq
+# 4. friendship with an explicit capability list
+sh "$Y" --home "$T/caller" public request-friend assistant --note "Hello from the demo"
+sh "$Y" --home "$T/owner" public owner contacts assistant --pending
+sh "$Y" --home "$T/owner" public owner contact assistant "$ACTOR_ID" approve --capabilities faq,leave_message,calendar_slots
+# 5. the owner's private calendar service
+sh "$Y" calendar-service init --dir "$T/calendar" --gateway "$URL" --bot "$BOT_ID"
+sh "$Y" --home "$T/owner" public verifier bind assistant --token-file "$T/calendar/verifier.token"
+#    (the demo now sets the rules in $T/calendar/service.json to every day 09:00-17:00 UTC, one-hour meetings
+#    starting on the hour, no notice and no buffer, and writes two synthetic busy events on DAY to events.json)
+sh "$Y" calendar-service serve --dir "$T/calendar" &               # prints {"listening": CAL_URL}
+# 6. the friend asks for meeting times and leaves a message while no worker runs
+sh "$Y" --home "$T/caller" public slots assistant --duration 60 --after "$DAY" --before "$DAY"
+sh "$Y" --home "$T/caller" public chat assistant "Please tell the owner hello"
+# 7. the worker device: its own per-bot credential, the deterministic responder, one pass over the queue
+sh "$Y" --home "$T/owner" public worker bind assistant --token-file "$T/worker.token"
+sh "$Y" --home "$T/worker" public worker login "$URL" --token-file "$T/worker.token" --handle @assistant
+sh "$Y" --home "$T/worker" public responder init "$BOT_ID" --calendar-url "$CAL_URL" \
+    --calendar-token-file "$T/calendar/access.token"
+sh "$Y" --home "$T/worker" public worker run "$BOT_ID" --once
+# 8. the results: the FAQ answer, three offered times (nothing booked) and the left message
+sh "$Y" --home "$T/caller" public status MESSAGE_ID          # for each of the three message ids
+sh "$Y" --home "$T/worker" public worker inbox "$BOT_ID"
+# 9. revocation: the caller's later reads are refused
+sh "$Y" --home "$T/owner" public owner contact assistant "$ACTOR_ID" revoke
+sh "$Y" --home "$T/caller" public history assistant           # 404 not_found
+```
+
+The demo also checks that the synthetic event titles, locations and attendees appear only in the calendar
+service's `events.json`, never in the gateway's, the worker's or the caller's files.
 
 ## HTTP API (version 1)
 
@@ -331,8 +356,8 @@ The private calendar service exposes only `POST /v1/suggest` (access credential,
 | Evidence state | This version |
 |---|---|
 | Configured | Example configurations and commands above. |
-| On disk | The plugin archive includes `scripts/public_bots/`; the build check passes. |
-| Running locally | Gateway, worker, capability service and callers as separate processes on loopback in automated tests (see [verification](VERIFICATION.md)). |
+| On disk | The plugin archive includes `scripts/public_bots/`, this guide (`docs/PUBLIC_BOTS.md`) and `examples/public-bot-demo.sh`; the build check passes. |
+| Running locally | Gateway, worker, capability service and callers as separate processes on loopback, in the source repository's automated tests (`tests/test_public_*.py`) and in the demo above, also run from an unpacked plugin archive. |
 | Native host discovery | Not tested: no Grok Bot, Codex or Cursor session used these skills in this version. |
 | Deployed | Not done: no public address, TLS proxy, Funnel or real calendar was used. |
 

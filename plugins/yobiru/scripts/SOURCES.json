@@ -34,6 +34,10 @@
       "source": "install_codex_bridge_linux.py",
       "sha256": "00e3cd33d8ff9163880527b61a1ef44ecae78d2f8e289d934e72e436a6108e19"
     },
+    "docs/PUBLIC_BOTS.md": {
+      "source": "docs/PUBLIC_BOTS.md",
+      "sha256": "fb23eaea65b098f6b2e7f8e157baf6ab48ac7b4367a10e47679f77a346847c9e"
+    },
     "scripts/public_bots/bot_calendar.py": {
       "source": "public_bots/bot_calendar.py",
       "sha256": "ced6febf495e03a171edb306cc57bcec8edfb7ad6860c80d689a93a33abe14df"

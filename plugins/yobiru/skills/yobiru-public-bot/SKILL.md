@@ -10,8 +10,11 @@ description: Publish one of the user's bots as a contact that people outside the
 The command ships in this plugin: `scripts/yobiru`, two folders above this file
 (`<folder of this SKILL.md>/../../scripts/yobiru`). Use its quoted absolute path with `sh`; below it is
 written `Y`. Windows: `py -3 "<plugin>\scripts\yobiru.py"`. A non-default data home goes before the
-command: `sh Y --home DIR public ...`. Read the full design, limits and deployment notes in
-`docs/PUBLIC_BOTS.md` of the Yobiru repository before setting this up for real use.
+command: `sh Y --home DIR public ...`. The full guide (trust boundary, limits, storage, deployment and a
+local walkthrough) ships in this plugin: `<folder of this SKILL.md>/../../docs/PUBLIC_BOTS.md`. Read it
+before setting this up for real use. To show the whole flow without touching any real data, run the bundled
+demo `sh "<folder of this SKILL.md>/../../examples/public-bot-demo.sh"` (synthetic data, 127.0.0.1 only;
+it deletes everything it created).
 
 This is an unreleased first version, tested only with local processes and loopback HTTP. Say so when the
 user asks whether it is ready for strangers on the internet.
@@ -49,6 +52,8 @@ Worker device (it polls outbound; no open port):
     sh Y public worker run BOT_ID                                                   # or --once for one pass
 
 `faq.json` is a list of `{"id", "keywords", "answer"}` with answers the owner approved for anyone to read.
+Values in capitals come from earlier output: `BOT_ID` is the `bot_id` that `bot create` printed, `ACTOR_ID`
+comes from `owner contacts`, and `URL` is the address the calendar service prints when it starts.
 
 Calendar suggestions (optional): the owner exports busy events to a JSON file; rules decide work hours,
 durations, horizon, notice, buffers, at most 5 slots, which levels may ask, and daily budgets.
