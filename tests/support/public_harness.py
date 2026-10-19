@@ -204,3 +204,104 @@ def wait_until(fn, timeout=10.0, step=0.05):
             return value
         time.sleep(step)
     return fn()
+
+
+class FriendsGateway(Gateway):
+    """Gateway plus Friends-level builders over the real HTTP API (source bots, follows, native jobs, reviews)."""
+
+    def enroll_bot(self, handle, name=None, expect=201):
+        owner, source = C.new_token("owner"), C.new_token("source")
+        status, obj = self.call("POST", "/v1/enroll", {"display_name": name or "Synthetic %s" % handle,
+                                                        "handle": handle,
+                                                        "source_credential_sha256": C.token_hash(source)}, owner)
+        assert status == expect, (status, obj)
+        return obj.get("bot_id"), owner, source
+
+    def source_for(self, bot_id, owner=None):
+        token = C.new_token("source")
+        self.ok("POST", "/v1/owner/bots/%s/sources" % bot_id, {"credential_sha256": C.token_hash(token)},
+                owner or self.owner_token)
+        return token
+
+    def owned_bot(self, handle, policy=None):
+        """An admin-owner bot, published, with a source credential: -> (bot_id, source token)."""
+        bot_id = self.bot(handle, policy=policy)
+        return bot_id, self.source_for(bot_id)
+
+    def follow(self, source, ref):
+        return self.call("POST", "/v1/bots/%s/follow" % ref, {}, source)
+
+    def unfollow(self, source, ref):
+        return self.call("POST", "/v1/bots/%s/unfollow" % ref, {}, source)
+
+    def relation(self, token, ref):
+        return self.ok("GET", "/v1/bots/%s/contact" % ref, None, token)
+
+    def policy(self, bot_id, owner=None, **policy):
+        return self.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"policy": policy}, owner or self.owner_token)
+
+    def native(self, bot_id, replace=False, owner=None):
+        obj = self.ok("POST", "/v1/owner/bots/%s/workers" % bot_id, {"adapter": "native", "label": "synthetic host",
+                                                                     "replace": replace}, owner or self.owner_token)
+        return obj["token"], obj["worker_id"]
+
+    def chat(self, cid, token, text, op_key=None):
+        status, obj = self.send(cid, token, kind="chat", text=text, op_key=op_key)
+        assert status == 202, (status, obj)
+        return obj["message_id"]
+
+    def reviews(self, bot_id, owner=None):
+        return self.ok("GET", "/v1/owner/bots/%s/reviews" % bot_id, None, owner or self.owner_token)
+
+    def admit(self, bot_id, mid, owner=None):
+        match = [x for x in self.reviews(bot_id, owner)["inbound"] if x["job_id"] == mid]
+        assert match, ("not waiting for inbound review", mid)
+        return self.call("POST", "/v1/owner/messages/%s/review" % mid,
+                         {"action": "approve_inbound", "request_hash": match[0]["request_hash"]},
+                         owner or self.owner_token)
+
+    def claim_job(self, wtoken, mid, lease_seconds=120):
+        return self.call("POST", "/v1/worker/messages/%s/claim" % mid, {"lease_seconds": lease_seconds}, wtoken)
+
+    def reply_job(self, wtoken, job, text, outcome="completed", code=None):
+        body = {"lease_id": job["lease"]["lease_id"], "fence": job["lease"]["fence"], "outcome": outcome,
+                "reply": {"text": text} if outcome == "completed" else {}}
+        if code:
+            body["code"] = code
+        return self.call("POST", "/v1/worker/messages/%s/finish" % job["job_id"], body, wtoken)
+
+    def draft_hash(self, bot_id, mid, owner=None):
+        match = [x for x in self.reviews(bot_id, owner)["replies"] if x["job_id"] == mid]
+        return match[0]["draft_hash"] if match else None
+
+    def approve_reply(self, bot_id, mid, owner=None, draft_hash=None):
+        return self.call("POST", "/v1/owner/messages/%s/review" % mid,
+                         {"action": "approve_reply", "draft_hash": draft_hash or self.draft_hash(bot_id, mid, owner)},
+                         owner or self.owner_token)
+
+    def answer(self, bot_id, wtoken, mid, text, owner=None):
+        """Owner-admitted, host-claimed, host-answered, owner-approved: one complete supervised native turn."""
+        if [x for x in self.reviews(bot_id, owner)["inbound"] if x["job_id"] == mid]:
+            assert self.admit(bot_id, mid, owner)[0] == 200
+        status, job = self.claim_job(wtoken, mid)
+        assert status == 200, job
+        assert self.reply_job(wtoken, job, text)[0] == 200
+        assert self.approve_reply(bot_id, mid, owner)[0] == 200
+        return job
+
+    def resolve(self, mid, action, owner=None):
+        return self.call("POST", "/v1/owner/messages/%s/resolve" % mid, {"action": action}, owner or self.owner_token)
+
+    def db(self):
+        import sqlite3
+        db = sqlite3.connect(str(self.home / "gateway.sqlite3"), timeout=15, isolation_level=None)
+        db.row_factory = sqlite3.Row
+        return db
+
+    def sql(self, statement, args=()):
+        db = self.db()
+        try:
+            rows = db.execute(statement, args).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            db.close()

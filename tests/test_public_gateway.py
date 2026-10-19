@@ -164,9 +164,13 @@ class AdministrationTests(GatewayCase):
     def test_public_card_is_an_allowlist_and_unpublished_bots_do_not_exist(self):
         bot_id = self.published()
         card = self.gw.ok("GET", "/v1/bots/%s" % bot_id)
-        self.assertEqual({"ok", "bot_id", "handle", "address", "display_name", "description", "capabilities",
-                          "friend_capabilities_note", "accepts_visitors", "accepts_contact_requests"}, set(card))
+        self.assertEqual({"ok", "type", "card_version", "issuer", "bot_id", "handle", "address", "id_address",
+                          "display_name", "description", "capabilities", "capabilities_note", "accepts_visitors",
+                          "accepts_followers", "accepts_contact_requests", "chat", "identity", "api", "connect"},
+                         set(card))
         self.assertTrue(card["address"].endswith("/@" + self.handle()))
+        self.assertEqual(card, self.gw.ok("GET", "/@" + self.handle()), "the share link serves the same card")
+        self.assertEqual(card, self.gw.ok("GET", "/@" + bot_id))
         draft = self.gw.bot(self.handle("d"), publish=False)
         hidden = self.gw.bot(self.handle("u"))
         self.gw.ok("POST", "/v1/owner/bots/%s/unpublish" % hidden, {}, self.gw.owner_token)
@@ -226,12 +230,15 @@ class IsolationTests(GatewayCase):
         status, obj = self.gw.send(cid_y, token, kind="slots", text=None, query={"duration_minutes": 30})
         self.assertEqual((403, "capability_not_granted"), (status, obj["error"]))
         rel = self.gw.ok("GET", "/v1/bots/%s/contact" % y, None, token)
-        self.assertEqual(("visitor", ["faq", "leave_message"]), (rel["relationship"], rel["capabilities"]))
+        self.assertEqual(("visitor", ["faq", "leave_message", "chat"]), (rel["relationship"], rel["capabilities"]))
+        self.assertEqual([], rel["explicit_grants"])
 
     def test_two_friends_receive_exactly_their_own_capabilities(self):
         bot_id = self.published()
         a_id, a = self.friend(bot_id, ["faq", "leave_message", "calendar_slots"], "Friend A")
         b_id, b = self.friend(bot_id, ["faq"], "Friend B")
+        # no visitor preset: what each contact gets is exactly the owner's explicit grant
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"policy": {"visitor": []}}, self.gw.owner_token)
         self.assertEqual(["faq"], self.gw.ok("GET", "/v1/bots/%s/contact" % bot_id, None, b)["capabilities"])
         cid_b = self.gw.conversation(bot_id, b)
         for kind, extra in (("slots", {"query": {"duration_minutes": 30}, "text": None}), ("message", {"text": "hi"})):
@@ -245,8 +252,7 @@ class IsolationTests(GatewayCase):
                            (["faq", "faq"], "missing_capabilities"), ("faq", "missing_capabilities")):
             status, obj = self.gw.contact(bot_id, b_id, "approve", caps)
             self.assertEqual((400, code), (status, obj["error"]), caps)
-        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"policy": {"friend": {"capabilities": ["faq"]}}},
-                   self.gw.owner_token)
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"policy": {"offered": ["faq"]}}, self.gw.owner_token)
         status, obj = self.gw.contact(bot_id, b_id, "grant", ["faq", "calendar_slots"])
         self.assertEqual((400, "capability_not_offered"), (status, obj["error"]))
         empty = self.gw.contact(bot_id, b_id, "grant", [])[1]
@@ -351,14 +357,16 @@ class GrantChangeTests(GatewayCase):
         c_id, c = self.friend(bot_id, ["faq", "calendar_slots"], "C")
         cid_c, mid_c = self.completed_slots(bot_id, c, worker)
         _, queued = self.gw.send(cid_c, c, kind="slots", text=None, query={"duration_minutes": 30})
-        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"policy": {"friend": {"capabilities": ["faq"]}}}, owner)
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"policy": {"offered": ["faq", "leave_message", "chat"]}},
+                   owner)
         self.assert_withheld(c, cid_c, mid_c, "grant_changed")
         state = {m["message_id"]: m for m in self.gw.owner_view(cid_c)["messages"]}[queued["message_id"]]
         self.assertEqual(("cancelled", "policy_changed"), (state["state"], state["code"]))
         self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id,
-                   {"policy": {"friend": {"capabilities": ["faq", "leave_message", "calendar_slots"]}}}, owner)
+                   {"policy": {"offered": ["faq", "leave_message", "calendar_slots", "chat"]}}, owner)
         contacts = {x["actor_id"]: x for x in self.gw.ok("GET", "/v1/owner/bots/%s/contacts" % bot_id, None, owner)["contacts"]}
-        self.assertEqual(["faq"], contacts[c_id]["effective_capabilities"])
+        self.assertEqual(["faq"], contacts[c_id]["granted"], "re-offering regrants nobody")
+        self.assertNotIn("calendar_slots", contacts[c_id]["effective_capabilities"])
         self.assert_withheld(c, cid_c, mid_c, "grant_changed")
         # the owner still sees what happened
         self.assertIn("result", {m["message_id"]: m for m in self.gw.owner_view(cid_c)["messages"]}[mid_c])

@@ -86,14 +86,17 @@ Check and set up (read-only unless --apply):
                              app-server socket (install/rollback support --dry-run and --no-start)
   version
 
-Public bot contacts (first version; a separate self-hosted gateway, never the receiver on 7766;
+Public bots and Friends (unreleased; a separate self-hosted gateway, never the receiver on 7766;
 see docs/PUBLIC_BOTS.md):
-  gateway {{init,owner,serve,status}} [--gateway-home DIR]
+  gateway {{init,owner,migrate,serve,status}} [--gateway-home DIR]
                              the public mailbox: local-only owner bootstrap, loopback HTTP by default
-  public ...                 callers: enroll, add, request-friend, chat, slots, status, history
-                             owners: owner, bot, worker bind, verifier bind; workers: worker run/claim/...
+  public ...                 callers: connect LINK, enroll, enroll-bot, follow, unfollow, chat, status, history
+                             owners: owner, bot (create/share/edit/publish), review, worker bind, connector bind
+                             your own agent (native binding): job list/claim/reply; connector run; worker run
   calendar-service {{init,serve,check,preview}} --dir DIR
                              private read-only meeting-slot capability for one published bot
+  resource-service {{init,add,remove,list,serve}} --dir DIR
+                             private owner-approved text exports, released per caller through the gateway
 
 Messaging (passed unchanged to the bundled tailmsg.py):
   request send PEER[/AGENT] TEXT [--timeout-seconds 900] [--wake now|batch|none]
@@ -3588,12 +3591,17 @@ def cmd_calendar_service(home, home_source, argv):
     return run_public("bot_calendar.py", argv)
 
 
+def cmd_resource_service(home, home_source, argv):
+    return run_public("bot_resources.py", argv)
+
+
 PLUGIN_COMMANDS = {"paths": cmd_paths, "doctor": cmd_doctor, "status": cmd_status, "setup": cmd_setup,
                    "policy": cmd_policy,
                    "wake-config": cmd_wake_config, "install-runtime": cmd_install_runtime,
                    "service-template": cmd_service_template, "codex-bridge": cmd_codex_bridge,
                    "onboard": cmd_onboard, "agents": cmd_agents, "peers": cmd_agents, "session": cmd_session, "update": cmd_update,
-                   "gateway": cmd_gateway, "public": cmd_public, "calendar-service": cmd_calendar_service}
+                   "gateway": cmd_gateway, "public": cmd_public, "calendar-service": cmd_calendar_service,
+                   "resource-service": cmd_resource_service}
 
 
 def main(argv=None):

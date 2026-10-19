@@ -92,12 +92,12 @@ STATE=$(P caller status "$FAQ_ID" | j state)
 expect "state of the first question" "$STATE" queued
 echo "3. caller $ACTOR_ID asked a visitor question: $STATE (stored, not answered: no worker runs yet)"
 
-# 4. The caller asks to become a friend; the owner approves with an explicit list of capabilities.
+# 4. The caller asks for more; the owner approves with an explicit list of capabilities (an explicit grant).
 P caller request-friend assistant --note "Hello from the demo" > /dev/null
 PENDING=$(P owner owner contacts assistant --pending | j contacts.0.actor_id)
 expect "pending contact" "$PENDING" "$ACTOR_ID"
 P owner owner contact assistant "$PENDING" approve --capabilities faq,leave_message,calendar_slots > /dev/null
-echo "4. owner approved $PENDING as a friend with faq, leave_message and calendar_slots"
+echo "4. owner granted $PENDING faq, leave_message and calendar_slots explicitly"
 
 # 5. The owner's private calendar service: owner rules, synthetic busy events two days from today, and
 #    its own per-bot verifier credential. Event details stay in this service's directory.
@@ -124,9 +124,9 @@ sh "$Y" calendar-service serve --dir "$T/calendar" > "$T/calendar.out" 2> "$T/ca
 CAL_URL=$(listening calendar $!)
 echo "5. calendar service on $CAL_URL; synthetic busy times on $DAY: 09:00-10:00 and 10:30-11:00 UTC"
 
-# 6. The friend asks for meeting times and leaves a message while the owner's worker is still offline.
+# 6. The caller asks for meeting times and leaves a message while the owner's worker is still offline.
 SLOTS_ID=$(P caller slots assistant --duration 60 --after "$DAY" --before "$DAY" | j message_id)
-NOTE_ID=$(P caller chat assistant "Please tell the owner hello" | j message_id)
+NOTE_ID=$(P caller chat assistant "Please tell the owner hello" --leave-message | j message_id)
 STATES=$(P caller history assistant | j messages.*.state)
 expect "states before the worker runs" "$STATES" '["queued", "queued", "queued"]'
 echo "6. caller asked for times on $DAY and left a message; all three messages: $STATES"

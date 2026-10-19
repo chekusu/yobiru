@@ -26,11 +26,15 @@ from pathlib import Path
 API_VERSION = 1
 SERVICE = "yobiru-bot-gateway"
 MAX_RESPONSE_BYTES = 1024 * 1024
-ID_KINDS = ("bot", "act", "own", "wrk", "ver", "cnv", "msg")
-ID_RE = re.compile(r"^(?:bot|act|own|wrk|ver|cnv|msg)_[a-z2-7]{16}\Z")
+ID_KINDS = ("bot", "act", "own", "wrk", "ver", "cnv", "msg", "chk")
+ID_RE = re.compile(r"^(?:bot|act|own|wrk|ver|cnv|msg|chk)_[a-z2-7]{16}\Z")
+# source: speak and follow as one bot (minted only through that bot's owner); connector: wake one native
+# binding's host, never read message bodies.
 TOKEN_PREFIX = {"owner": "ybo", "actor": "yba", "worker": "ybw", "verifier": "ybv", "ticket": "ybt",
-                "access": "ybc"}
-TOKEN_RE = re.compile(r"^(ybo|yba|ybw|ybv|ybt|ybc)_[A-Za-z0-9_-]{43}\Z")
+                "access": "ybc", "source": "ybs", "connector": "ybn"}
+TOKEN_RE = re.compile(r"^(ybo|yba|ybw|ybv|ybt|ybc|ybs|ybn)_[A-Za-z0-9_-]{43}\Z")
+HASH_RE = re.compile(r"^[0-9a-f]{64}\Z")
+RESOURCE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}\Z")
 HANDLE_RE = re.compile(r"^[a-z](?:[a-z0-9]|-(?=[a-z0-9])){2,31}\Z")
 OP_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}\Z")
 DATE_RE = re.compile(r"^\d{4}-\d\d-\d\d\Z")
@@ -206,15 +210,22 @@ def parse_bot_ref(text):
 
 
 def parse_address(text):
-    """'https://gw.example/@handle' -> (base_url, '@handle'); a bare '@handle' or bot id -> (None, ref)."""
+    """'https://gw.example/@handle' or '.../@bot_...' (a share link) -> (base_url, '@handle' or bot id);
+    a bare '@handle' or bot id -> (None, ref). The last path segment must start with '@'."""
     if not isinstance(text, str) or not text:
         raise ValueError("invalid bot address")
     if "://" not in text:
         return None, parse_bot_ref(text)
     head, sep, tail = text.rpartition("/")
-    if not sep or not tail:
-        raise ValueError("bot address must end with /@handle")
-    return normalize_base_url(head), parse_bot_ref(tail)
+    if not sep or not tail.startswith("@"):
+        raise ValueError("a share link ends with /@handle or /@bot_...")
+    ref = tail[1:] if tail[1:].startswith("bot_") else tail
+    return normalize_base_url(head), parse_bot_ref(ref)
+
+
+def share_path(ref):
+    """The gateway path of a share link for a canonical reference ('@handle' or a bot id)."""
+    return "/" + ref if ref.startswith("@") else "/@" + ref
 
 
 # ---------------------------------------------------------------- private files
@@ -440,3 +451,58 @@ def api_ok(base_url, method, path, body=None, token=None, timeout=15.0, accept=(
         detail = obj.get("detail") if isinstance(obj.get("detail"), str) else ""
         raise ApiError(status, code[:64], detail[:300])
     return status, obj
+
+
+# ---------------------------------------------------------------- wake transport (connector -> owner's host)
+def wake_url(url):
+    """An owner-configured wake endpoint: https (http only for loopback), no credentials or fragment. Unlike a
+    gateway URL it may carry a path and query, because hosts issue such webhook URLs."""
+    if not isinstance(url, str) or not url or len(url) > 4096 or \
+            any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url):
+        raise ValueError("invalid wake URL")
+    try:
+        u = urllib.parse.urlsplit(url)
+        port = u.port
+    except ValueError:
+        raise ValueError("invalid wake URL")
+    host = (u.hostname or "").lower()
+    if u.scheme not in ("https", "http") or not host or u.fragment or u.username is not None or \
+            u.password is not None or (port is not None and not 1 <= port <= 65535):
+        raise ValueError("wake URL must be https://host/path (no credentials or fragment)")
+    if u.scheme == "http" and not is_loopback_host(host):
+        raise ValueError("refusing plain http:// for a non-loopback wake URL")
+    return u
+
+
+def post_wake(url, headers, body, timeout=20.0):
+    """POST one wake notification. -> (outcome, detail). Redirects are not followed and the answer body is not
+    interpreted: a 2xx means the host accepted the wake (not that any work happened).
+      accepted   2xx answer
+      refused    no connection could be made: the request never left, so nothing was delivered
+      uncertain  anything else once the request may have left: any non-2xx answer (a 5xx or a 429 can follow
+                 work the host already queued), a timeout or a reset. It is never treated as not delivered."""
+    u = wake_url(url)
+    if u.scheme == "https":
+        conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout,
+                                           context=ssl.create_default_context())
+    else:
+        conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
+    data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    hdrs = {"Content-Type": "application/json", "User-Agent": "yobiru-connector/%d" % API_VERSION}
+    hdrs.update(headers)
+    target = (u.path or "/") + ("?" + u.query if u.query else "")
+    with _Deadline(conn, timeout) as d:
+        try:
+            d.connect()
+        except (OSError, http.client.HTTPException) as e:
+            return "refused", "connect: %s" % type(e).__name__
+        try:
+            conn.request("POST", target, body=data, headers=hdrs)
+            resp = conn.getresponse()
+            resp.read(64 * 1024)
+            d.check()
+        except (OSError, http.client.HTTPException) as e:
+            return "uncertain", "%s%s" % (type(e).__name__, " (deadline)" if d.expired else "")
+    if 200 <= resp.status < 300:
+        return "accepted", "http %d" % resp.status
+    return "uncertain", "http %d" % resp.status

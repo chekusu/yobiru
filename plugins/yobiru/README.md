@@ -23,14 +23,15 @@ Repository installation does not establish a public listing.
 | `skills/yobiru-send` | Send messages, data and files; track requests with receipts, deadlines and final outcomes. |
 | `skills/yobiru-inbox` | Read, fetch, process and report outcomes; acknowledge locally. Notifications need no reply. |
 | `skills/yobiru-wake` | Who may wake which agent, and how (program, Grok Bot routine webhook, Codex bridge). |
-| `skills/yobiru-bot-contacts` | Unreleased: add someone's published bot by address and talk to it through their gateway. |
-| `skills/yobiru-public-bot` | Unreleased: publish a bot through a self-hosted gateway and run its deterministic worker. |
+| `skills/yobiru-bot-contacts` | Unreleased: talk to someone's published bot from its share link (connect, follow, chat). |
+| `skills/yobiru-public-bot` | Unreleased: publish and share a bot, set who may use what, review chat for your own agent, run the deterministic worker. |
+| `skills/yobiru-friends-host` | Unreleased: your own agent answers your bot's chat jobs (supervised: you approve every reply). |
 | `scripts/yobiru`, `scripts/yobiru.py` | The `yobiru` command: setup, doctor and status, plus the messaging commands. |
 | `scripts/tailmsg.py` | The bundled tailmsg CLI and receiver (stdlib only). |
 | `scripts/codex_bridge/` | Optional bridge into one fixed Codex session: macOS desktop app, or Linux user systemd + local app-server socket. |
-| `scripts/public_bots/` | Unreleased public bot contacts: the gateway, the caller/owner/worker client and the private calendar capability service (stdlib only). |
-| `docs/PUBLIC_BOTS.md` | The public bot contacts guide: trust boundary, limits, storage, deployment and a local walkthrough. |
-| `examples/public-bot-demo.sh` | A self-contained public bot demo: synthetic data on 127.0.0.1 only, deleted when it ends (`sh examples/public-bot-demo.sh`). |
+| `scripts/public_bots/` | Unreleased public bots and Friends: the gateway, the client (callers, owners, your agent, connector, worker) and the private calendar and resource services (stdlib only). |
+| `docs/PUBLIC_BOTS.md` | The public bots and Friends guide: identities, follows and permissions, supervised chat, limits, storage, deployment. |
+| `examples/public-bot-demo.sh` | A self-contained demo of the deterministic part: synthetic data on 127.0.0.1 only, deleted when it ends (`sh examples/public-bot-demo.sh`). |
 | `scripts/SOURCES.json` | Where the bundled files come from, with SHA-256. |
 
 No hooks, MCP servers or permission settings are included. Installing the plugin runs nothing.
@@ -46,11 +47,12 @@ See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/main/docs/GROK_B
 Private messaging: Python 3.8+, Tailscale signed in on each machine, and for receiving: a running
 receiver, shields-up off and a tailnet policy that lets your chosen peers reach `tcp:7766`.
 
-Public bot contacts (unreleased) are only in a checkout of the development branch or an archive built from
-it; the published 0.5.3 release does not include them, although the version number here is unchanged.
-Their callers and the bot's worker need only Python 3.8+ and outbound HTTPS to the gateway, not Tailscale;
-plain HTTP is accepted only for a gateway on the same machine (loopback). The gateway host needs an HTTPS
-reverse proxy that you set up (see `docs/PUBLIC_BOTS.md`).
+Public bots and Friends (unreleased) are only in a checkout of the development branch or an archive built
+from it; the published 0.5.3 release does not include them, although the version number here is unchanged.
+Callers, your answering agent, the connector and the worker need only Python 3.8+ and outbound HTTPS to the
+gateway, not Tailscale; plain HTTP is accepted only for a gateway on the same machine (loopback). The gateway
+host needs an HTTPS reverse proxy that you set up (see `docs/PUBLIC_BOTS.md`). Chat is answered by your own
+agent only after you admit each message and approve each reply; automatic native answering is not available.
 
 ## Quick start
 
@@ -119,9 +121,10 @@ task execution authority. Preserve local scope restrictions when updating dispat
 | `request send`, `request respond`, `request maintain` | save request/response state; maintain may retry responses over the network |
 | `request status`, `request list` | read-only; status `--refresh` contacts the original receiver and saves the reconciled response |
 | `send`, `reply`, `inbox`, `show`, `fetch`, `ack`, `wake`, `serve` | tailmsg commands; tracked requests require a durable outcome before ack |
-| `gateway init`, `gateway owner add/rotate` | write a new gateway home or credential file (never overwrite); `gateway serve` runs the public mailbox |
-| `public ...` | unreleased public bot contacts; state in `<home>/public/` only (guide: `docs/PUBLIC_BOTS.md` in this plugin) |
+| `gateway init`, `gateway owner add/rotate`, `gateway migrate` | write a new gateway home or credential file (never overwrite), or upgrade a first-version database in one transaction; `gateway serve` runs the public mailbox |
+| `public ...` | unreleased public bots and Friends; state in `<home>/public/` only (guide: `docs/PUBLIC_BOTS.md` in this plugin) |
 | `calendar-service init/serve/check/preview` | private read-only calendar capability for one public bot |
+| `resource-service init/add/remove/list/serve` | private owner-approved text exports for one public bot; `add` copies a file into its directory |
 
 ## Safety
 

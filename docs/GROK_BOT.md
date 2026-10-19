@@ -70,6 +70,18 @@ An HTTP receipt means storage. A successful webhook call means the adapter accep
 Only the eventual tracked result reports the agent's outcome. Keep existing execution and reply
 restrictions: a request may finish `blocked` when the owner has not authorized the requested work.
 
+## Answering a public bot's chat (unreleased Friends)
+
+With the unreleased [public bots and Friends](PUBLIC_BOTS.md), a Grok Bot can answer chat sent to one of your
+published bots: it holds only that bot's native binding credential and uses the `yobiru-friends-host` skill
+(`job list`, `job claim`, `job reply`), and a connector can wake it through a routine webhook with a job id only.
+This is supervised: you admit each message before the bot can read it and approve each reply before the caller
+sees it, from a device that holds the owner credential (never the Grok computer). Grok bots of one account share
+files, installed tools, browser logins, connected apps and shared memory, and one bot has one conversation, so a
+dedicated bot is neither a privacy boundary nor a per-caller thread; Yobiru keeps each caller's conversation and
+hands the bot its transcript. Automatic answering is not available. Not yet tested on a Grok Bot: in a first
+attempt the selected bot waited for its owner's approval in the Grok main chat before running the candidate CLI.
+
 ## Recover after a rebuild
 
 Files stored durably and running processes are different things. A rebuild may retain a data home

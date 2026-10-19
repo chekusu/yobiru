@@ -3,6 +3,57 @@
 Yobiru release verification. This page separates what has actually been run from what has not. It is not a
 security guarantee: the tests show the behaviors listed below, nothing more.
 
+## Public bots and Friends (unreleased development branch)
+
+On 2026-10-20, on a development branch based on 0.5.3 (version unchanged; nothing released, deployed to
+production or installed), on Python 3.12:
+
+- On an intermediate snapshot, taken before the final client, resource and documentation fixes,
+  `python3 -m unittest discover -s tests` passed **346 tests**, and the bridge, resident and installer suite
+  passed its **146 tests** (that code is unchanged since). A later full run on another intermediate snapshot
+  (347 tests) had one failure: a check that the bundled guide's walkthrough runs the demo, which was restored.
+- On the final snapshot, the affected suites (`test_friends_gateway`, `test_friends_client`,
+  `test_public_gateway`, `test_public_calendar`, `test_public_client`, `test_public_e2e` and
+  `test_public_bundle`) passed **121 tests**; `python3 tools/build_plugin.py check`, `git diff --check` and
+  Python 3.8 syntax parsing of every Python file passed (parsing is not execution on a Python 3.8 interpreter).
+  The full suite was not rerun on the final snapshot.
+
+New tests (real gateway, connector, deterministic worker, calendar and resource services and callers as separate
+processes on loopback ports, synthetic homes and data; where a native agent is needed, the synthetic
+`tests/support/synthetic_host.py` process plays it through the real CLI, which proves the protocol only):
+
+- `test_friends_gateway.py` (real HTTP): retry-safe visitor and source-bot self-enrollment that can never claim an
+  existing bot, owner or handle, also after enrollment closes; credential realms and identity taken only from the
+  credential; share-link cards that equal the profile and expose no private data; directed follows, exact reverse
+  edges for friends, idempotent and concurrent follows, block dominating both edges; directional presets, a
+  per-contact ceiling surviving mutual follows, explicit grants surviving unfollow, and fail-closed scopes;
+  inbound review hiding bodies from the binding and the owner's own views, drafts invisible until an exact-hash
+  approval that rechecks permissions, rejections releasing no host text; per-conversation order and a single
+  in-flight turn, also behind an uncertain turn and under concurrent claims; unfollow cancelling queued and
+  in-flight work and withholding earlier results and owner messages from readback and transcripts; rebind,
+  revoke and lease expiry making native work uncertain instead of requeued, with fenced late answers; the wake
+  ledger never repeating an intent-only or uncertain wake; check acknowledgements kept apart from correlated route
+  evidence and monotonic check results; migration of real first-version databases (made by
+  `tests/fixtures/bot_gateway_v1.py`) preserving every contact's capabilities, and a rolled-back failed migration.
+- `test_friends_client.py` (the CLI): connecting from only a share link, source bots following and following
+  back, two supervised chat turns through a connector `exec` route and the synthetic host with transcript
+  continuity and no duplicate wakes, binding-check evidence, connector-ledger recovery after a crash, wake
+  transport classification (only pre-send failures count as refused), resource exports released only to the
+  granted caller and never after a removal, replacement or title change before the final check, op keys bound
+  to one identity, a native rebind validated before any change, and enrollment credentials kept after a lost
+  answer, a later refusal or a concurrent late refusal.
+- The earlier `test_public_*.py` suites, adapted to the new defaults (chat for visitors) and the new policy
+  format, still cover the deterministic worker, calendar service, transport, retries and the archive demo.
+
+Separately, a maintainers' test drove a real local Codex agent through an earlier snapshot of this branch: two
+original freeform chat turns over a temporary public HTTPS staging route, a scoped native binding, inbound and
+exact-draft reply approval and one Yobiru conversation, read back by the caller CLI; the second turn used the
+first through the transcript. Later fixes (enrollment retries, wake classification, ordering, owner-message
+generations, resource checks) are covered by the automated tests above, not by that run. No Grok Bot dialogue
+has completed: the selected bot waited for its owner's approval in the Grok main chat before running the
+candidate CLI. None of this establishes host isolation, production deployment, real calendar exports, macOS or
+Windows runs, or use from an installed plugin in a native host.
+
 ## Public bot contacts, first version (unreleased development branch)
 
 On 2026-10-19, on a development branch based on 0.5.3 (version unchanged; nothing released or deployed),

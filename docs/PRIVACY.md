@@ -12,9 +12,9 @@ marketplace, an AI provider, Tailscale, GitHub, or the Yobiru website.
 Yobiru connects agents on computers that you choose over your Tailscale network.
 It has no Chekusu-operated messaging account, message relay, or central file store.
 The plugin does not send usage analytics or message contents to Chekusu. The
-unreleased public bot contacts feature adds an optional gateway that **you** host;
-it is a central message store for your public bots, described in its own section
-below.
+unreleased public bots and Friends feature adds an optional gateway that **you**
+host; it is a central message store for your public bots, described in its own
+section below.
 
 Data is processed on the participating computers to deliver messages, transfer
 files, discover peers, wake configured agents, track requests, and diagnose errors:
@@ -51,31 +51,47 @@ network request information. An installed update-check timer performs these
 checks on its configured schedule. Yobiru does not include inbox contents or
 attachments in its GitHub release checks.
 
-## Optional public bot gateway (unreleased first version)
+## Optional public bot gateway (unreleased development version)
 
-This section applies only if you run the public bot contacts feature from a
+This section applies only if you run the public bots and Friends feature from a
 development build ([details](PUBLIC_BOTS.md)). Its gateway is a separate service
 on a host you choose, and it does not change private Tailscale messaging.
 
 | Data | Where and why it is processed |
 | --- | --- |
 | Public message bodies, stored meeting-slot queries, bot results and owner replies | Stored in plaintext in the gateway's SQLite database so that callers and your worker can exchange them while either side is offline. There is no end-to-end encryption: whoever operates the gateway host can read them. |
-| Caller display names, contact requests with their notes, relationships, grants and conversation membership | Stored by the gateway to authorize each request. Display names are self-asserted and unverified. |
-| Bot profiles and policies | Stored by the gateway; the public card shows only the handle, name, description and offered capabilities. |
-| Credential hashes | The gateway stores SHA-256 hashes of owner, caller, worker and capability credentials, never the credentials themselves. Your devices store the credentials in `0600` files. |
+| Caller display names, contact requests with their notes, follows between bots, relationships, grants, ceilings and conversation membership | Stored by the gateway to authorize each request. Display names are self-asserted and unverified. |
+| Drafts written by your own agent, review decisions, wake records and binding test results | Stored by the gateway; drafts are released to the caller only after you approve them. Wake records hold opaque job ids and outcomes, never message text. |
+| Bot profiles and policies | Stored by the gateway; the public card shows only the handle, name, description, fixed capabilities per relationship level and whether chat is connected. Resource names are not shown. |
+| Credential hashes | The gateway stores SHA-256 hashes of owner, caller, source, worker, connector and capability credentials, never the credentials themselves. Your devices store the credentials in `0600` files. |
+| Chat messages your agent answers | Read by your own agent and therefore by its host and model provider, after you admit each message; a webhook route sends only a job id to the host. |
+| Resource exports | Copies of text you chose, kept by the resource service on your device and released to one caller per authorized request. |
 | Client IP addresses | Used for enrollment rate limits and kept in counters for about an hour; also written to the gateway's request log with routes and status codes (never bodies or credentials). |
 | Leave-messages, claimed work items and calendar answers | On the device that runs your worker (its local inbox and lease file) and in the calendar service's ledger of released slot suggestions. |
 | Your calendar events file | Read only by the calendar capability service on your device. Titles, attendees, locations and notes are never sent; only up to a few suggested start and end times leave it. |
 
-Finished message bodies and results are deleted from the gateway after its
-retention period (30 days by default). Caller identities, contacts, bot profiles
-and conversation metadata are not deleted automatically. The owner can delete a
-conversation's stored messages; deleted content is overwritten in the database
-file, but write-ahead-log files, backups and copies that callers, workers or agent
-providers already received are not erased. Revoking a contact stops future
-releases; it cannot recall results already delivered. Local files on owner and
-caller devices (sent-message log, worker inbox, calendar ledger) are not deleted
-automatically.
+Finished message bodies, results and drafts are deleted from the gateway after
+its retention period (30 days by default). Caller identities, follows, contacts,
+bot profiles and conversation metadata are not deleted automatically. The owner
+can delete a conversation's stored messages; deleted content is overwritten in
+the database file, but write-ahead-log files, backups and copies that callers,
+workers or agent providers already received are not erased. Revoking a contact
+stops future releases; it cannot recall results already delivered.
+
+On owner, agent and caller devices:
+
+- The caller's sent-message log (`public/sent.sqlite3`) keeps each send's payload
+  and outcome. Finished sends (stored or refused) are pruned to the newest 1,000
+  whenever a new send is recorded; sends with an open outcome are never pruned, and
+  no new message is sent while 100 are open.
+- Lease files (`public/leases.json`) keep a claimed job, including its message and
+  transcript on your agent's device, until it is finished, released or refused.
+- The connector's wake ledger (`public/connector-ledger.json`) keeps an entry only
+  until its wake result is recorded at the gateway; its wake-route configuration
+  (`public/connectors.json`, pointing at your private URL and key files) stays until
+  you change it.
+- The worker inbox, the calendar service's ledger and resource exports stay until
+  you delete them; `resource-service remove` deletes one export.
 
 ## Retention and deletion
 

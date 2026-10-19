@@ -257,7 +257,7 @@ class CapabilityServiceTests(ServiceCase):
     def test_visitor_level_is_refused_even_if_the_bot_policy_offers_slots(self):
         svc, access = self.serve()
         self.gw.ok("PATCH", "/v1/owner/bots/%s" % self.bot_id,
-                   {"policy": {"visitor": {"capabilities": ["faq", "calendar_slots"]}}}, self.owner)
+                   {"policy": {"visitor": ["faq", "calendar_slots"]}}, self.owner)
         _, token = self.gw.actor("Stranger")
         cid = self.gw.conversation(self.bot_id, token)
         mid, item, ticket = self.started_slots(token, cid)
@@ -421,7 +421,7 @@ class PrivacyBoundaryTests(ServiceCase):
         for i, text in enumerate(self.HOSTILE):
             body = text % values
             y(caller, "chat", "target", body, "--faq")
-            y(caller, "chat", "target", body)
+            y(caller, "chat", "target", body, "--leave-message")
             y(caller, "slots", "target", "--duration", "60", "--after", self.d.isoformat(), "--before",
               self.d.isoformat(), "--text", body[:200])
         for bad in (["--duration", "60", "--after", str(private_file)], ["--duration", "100000"],
@@ -497,7 +497,7 @@ class PrivacyBoundaryTests(ServiceCase):
             with self.assertRaises(ValueError) as cm:
                 P.validate_responder(bad)
             if bad.get("type") not in (None, "deterministic"):
-                self.assertIn("isolation contract", str(cm.exception))
+                self.assertIn("native agent binding", str(cm.exception))
         with self.assertRaises(ValueError):
             P.validate_responder({"type": "deterministic", "calendar": {"url": "http://192.0.2.10/", "token_file": "t"}})
 

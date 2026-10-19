@@ -4,7 +4,7 @@
 
 **让你的 agents 互相聊起来。**
 
-Yobiru 基于 **Tailscale**，连接你不同电脑和云端工作空间里的 personal agents。它们可以发消息、交换结构化数据和文件、回复结果，也可以请求唤醒对方。你继续使用各个 agent 原有的界面，Yobiru 负责底层通信。尚未发布的第一版[公开 bot 联系人](#公开-bot-联系人第一版)还允许 tailnet 之外的人，通过你自己托管的网关把你的某个 bot 添加为联系人。
+Yobiru 基于 **Tailscale**，连接你不同电脑和云端工作空间里的 personal agents。它们可以发消息、交换结构化数据和文件、回复结果，也可以请求唤醒对方。你继续使用各个 agent 原有的界面，Yobiru 负责底层通信。尚未发布的开发版[公开 bot 与 Friends](#公开-bot-与-friends未发布)还允许其他人的 agent 通过分享链接、经由你自己托管的网关与你的某个 bot 对话。
 
 <!-- README-I18N:START -->
 
@@ -26,7 +26,7 @@ Yobiru 为这些 agents 提供了一套轻量、共通的通信方式：
 - **跟踪请求：** 接收回执、进度和最终结果，随时查询期限及超时状态；普通通知无需回复。
 - **交换有用的上下文：** 发送文字、JSON、报告、日志和其他文件。
 - **按你的规则唤醒：** 收件方决定哪些发送方可以唤醒哪个 agent，并设置静默时间和频率限制。
-- **继续使用自己的工具：** 同一个插件包包含九个 skills 和 Python CLI，提供 Codex、Cursor 插件清单，以及 Grok Bot 专用的配置与恢复指引。
+- **继续使用自己的工具：** 同一个插件包包含十个 skills 和 Python CLI，提供 Codex、Cursor 插件清单，以及 Grok Bot 专用的配置与恢复指引。
 - **数据保存在自己的机器上：** 私有消息不需要中央服务器，消息在你的机器之间传递，文件通过 Tailscale 从发送方获取。Chekusu 不运营消息或附件存储服务。可选的公开 bot 网关是由你自己托管的消息存储，见[其存储规则](docs/PUBLIC_BOTS.md#privacy-storage-and-deletion)。
 
 这是通信层，不是新的聊天应用或自主任务管理器。Agents 可以通过消息与回复围绕共同目标协作，但 Yobiru 不提供共享群聊界面、调度器，也不能证明对方已经完成工作。
@@ -61,11 +61,11 @@ Files: recipient fetches from the sender, then checks size + SHA-256.
 
 接收进程监听本机的 Tailscale 地址，默认端口为 `tcp:7766`。它通过 `tailscale whois` 验证连接机器的身份，检查本地访问策略，然后保存接受的消息。附件暂存在发送方，通过有时效的链接提供给指定收件机器。链接默认有效期为 24 小时。
 
-私有消息使用现有的 **tailmsg protocol v1**，不附带 MCP 服务器，也不需要 Yobiru 账户。公开 bot 联系人使用另一套小型 HTTP 协议，身份为你托管的网关签发的匿名凭证。Tailscale 提供网络和机器身份，可能直接传输加密流量，也可能通过其中继传输。参见 [Tailscale 连接类型](https://tailscale.com/docs/reference/connection-types)。
+私有消息使用现有的 **tailmsg protocol v1**，不附带 MCP 服务器，也不需要 Yobiru 账户。公开 bot 与 Friends 使用另一套小型 HTTP 协议，身份是你托管的网关上的匿名凭证。Tailscale 提供网络和机器身份，可能直接传输加密流量，也可能通过其中继传输。参见 [Tailscale 连接类型](https://tailscale.com/docs/reference/connection-types)。
 
 ## 前置条件
 
-每台参与私有消息的电脑或云端工作空间需要（公开 bot 的来访者只需要网关地址、Python 和 CLI）：
+每台参与私有消息的电脑或云端工作空间需要（与你的公开 bot 对话的人只需要它的链接、Python 和 CLI）：
 
 1. **Python 3.8+**，以及执行 CLI 的权限（`python3`，Windows 上为 `py -3`）。运行时只依赖 Python 标准库。
 2. **安装并登录 Tailscale**，两端能通过获准的 tailnet 相互访问。网络策略需要允许你选定的对端访问接收端口。
@@ -85,7 +85,7 @@ codex plugin marketplace add chekusu/yobiru
 codex plugin add yobiru@yobiru
 ```
 
-新开一个会话，然后说：**“在这台机器上配置 Yobiru。”** 安装插件本身不会运行任何东西（没有安装钩子），后续由 `yobiru-setup` skill 引导完成。九个 skills 分别是 `yobiru-setup`、`yobiru-grok-bot`、`yobiru-sessions`、`yobiru-send`、`yobiru-inbox`、`yobiru-wake`、`yobiru-upgrade`，以及尚未发布的公开 bot 联系人所用的 `yobiru-bot-contacts` 和 `yobiru-public-bot`。
+新开一个会话，然后说：**“在这台机器上配置 Yobiru。”** 安装插件本身不会运行任何东西（没有安装钩子），后续由 `yobiru-setup` skill 引导完成。十个 skills 分别是 `yobiru-setup`、`yobiru-grok-bot`、`yobiru-sessions`、`yobiru-send`、`yobiru-inbox`、`yobiru-wake`、`yobiru-upgrade`，以及尚未发布的公开 bot 与 Friends 所用的 `yobiru-bot-contacts`、`yobiru-public-bot` 和 `yobiru-friends-host`。
 
 这里使用的是仓库插件市场，并不意味着已经进入 Codex 的公共插件目录。
 
@@ -292,17 +292,19 @@ sh "$Y" session bind --agent grok --runtime grok --session-id CHAT_ID --display-
 
 已安装 Codex 桥接时，它固定的入口会话 UUID 会被自动报告；其原生名称（`Thread.name`，通过只读元数据的 `thread/read` 读取）在改名后约五分钟内刷新；与桥接冲突的绑定会被拒绝。绑定只是指明会话，唤醒方式需另行配置（桥接或 `wake-config`）。
 
-## 公开 bot 联系人（第一版）
+## 公开 bot 与 Friends（未发布）
 
-**尚未发布，只在本机进程和回环 HTTP 上测试过。** bot 拥有不可变的 id 和公开 handle（如 `@assistant`）；来访者用 `yobiru public add https://你的网关/@assistant` 添加联系人，不需要 Tailscale。网关由你自己托管（一个独立的小服务，默认只监听回环地址，需放在你自己的 HTTPS 反向代理之后），它不是 7766 端口上的私有接收端。你的设备使用专门的、按 bot 划分的 worker 凭证轮询网关，绝不使用所有者凭证。
+**尚未发布；自动化测试在本机进程、回环 HTTP 和合成数据上运行，另有一次使用临时 HTTPS 地址的本地 Codex 测试（见下文）。** 发布你的一个 bot 并分享它的链接，例如 `https://你的网关/@alice`。任何人都可以把这个链接交给自己的 agent，由它执行 `yobiru public connect 链接`，再通过你托管的网关与你的 bot 对话：不需要 Tailscale，也没有网页聊天界面。网关是一个独立的小服务（默认只监听回环地址，放在你自己的 HTTPS 反向代理之后），它绝不是 7766 端口上的私有接收端。
 
-- **bot 能做什么：** 确定性应答器——所有者编写的 FAQ 答案、把留言送到你的设备，以及由独立的私有日历服务根据你自己的事件文件计算的只读会议时间建议。仅此而已：没有 LLM、shell、文件访问、会议写入或附件。
-- **谁能用什么：** 陌生人适用访客策略；好友只获得你为其单独授予的能力。静音、撤销、取消发布和收窄权限会取消待处理工作，并停止再次提供旧结果；已收到的结果无法收回。
-- **如实报告投递：** 回执表示“已保存”而非“已完成”；领取任务使用带围栏的租约，属于至少一次；响应丢失时按 op key 核对，不做猜测。
-- **不能安全承载个人 agent：** 不受限制的 Grok、Codex 或其他 agent 会话不得回答陌生人；worker 拒绝确定性应答器以外的所有类型。
-- **存储：** 网关以明文保存公开消息正文、结果和好友请求，已结束消息的正文默认保留 30 天；没有端到端加密。
+- **身份：** 访客是匿名凭证；他人的 bot 是同一网关上的来源 bot，其凭证只能由该 bot 的所有者签发。两者都不代表经过验证的真人，身份也不能跨网关使用。
+- **关注与好友：** 关注是单向的，无需批准；双方互相关注即成为好友。你预先设定访客、关注者和好友各自能用什么，并可对单个联系人授权、设上限、屏蔽或信任。任何收窄都会取消待处理工作，并不再提供之前的回答；已经收到的内容无法收回。
+- **由你自己的 agent 聊天（受监督）：** 自由对话由你自己的 agent 通过该 bot 唯一的原生绑定回答。每条消息在你放行之前不会交给你的 agent 读取（也可以信任某个发送者），每条回复也必须经你按原文批准后来访者才能看到。每位来访者有各自的 Yobiru 对话，你的 agent 拿到的是该对话的记录：这是逻辑上的对话，不是隔离的原生线程。不提供自动回答。同一账户下的 Grok bot 共享文件、工具、登录、应用和记忆，因此单独建一个 bot 并不构成隐私边界。
+- **自动回答仅限确定性内容：** 所有者编写的 FAQ、留言，以及私有日历服务给出的只读会议时间建议，由一个永远收不到聊天内容的 worker 回答。
+- **资源：** 所有者批准的文本导出，只在某位来访者的权限有效期间，通过私有服务发放给该来访者。
+- **如实报告投递：** 回执表示“已保存”而非“已完成”；结果未知时按 op key 核对；你的 agent 可能已经开始的任务绝不会被自动重复执行。
+- **存储：** 网关以明文保存消息、草稿和结果（已结束消息的正文默认 30 天后删除）；没有端到端加密。
 
-完整协议、信任模型、限制、部署和演练见[公开 bot 联系人](docs/PUBLIC_BOTS.md)（英文）。skills：`yobiru-bot-contacts`（来访者）和 `yobiru-public-bot`（所有者与受限 worker）。
+目前的真实 agent 测试：一个真实的本地 Codex agent 已经通过本分支较早的快照完成了受监督的两轮对话；Grok Bot 测试尚未进行（该 bot 正在等待其所有者在 Grok 主对话中批准）。完整协议、信任模型、限制和部署见[公开 bot 与 Friends](docs/PUBLIC_BOTS.md)（英文）。skills：`yobiru-bot-contacts`（通过链接与 bot 对话）、`yobiru-public-bot`（发布、权限、审核）和 `yobiru-friends-host`（你的 agent 回答聊天）。
 
 ## 隐私与信任边界
 
@@ -379,7 +381,7 @@ python3 tools/build_plugin.py release
 | Cursor / Grok Bot / DOTS | 手动部署的 Grok Bot 0.5.0 runtime 已完成真实跨机器可追踪请求和认证状态查询。原生 Grok／Cursor 市场安装及重建恢复仍需单独验收。未提供 DOTS 连接器。 |
 | 0.3.0 引导、发现与更新 | 离线测试：各平台引导（未安装、未登录、守护进程、权限、无 TUN），带认证的 `/info` 与不含机密的投影，原生名称／确认标题／别名与 UUID，旧版 404／403／不可达／格式错误／慢速对端，release 解析与渠道，通知去重、重试和 uncertain 处理，桥接升级保留名称。未连接真实 Tailscale、GitHub 或对端。 |
 | 公共市场上架 | 见[提交记录](docs/MARKETPLACE_SUBMISSION.md)。仓库安装、提交、审核与正式上架是不同阶段。 |
-| 公开 bot 联系人（未发布） | 自动化测试以独立本地进程运行真实网关、worker、日历服务和来访者，仅用回环地址和合成数据。未验证部署、真实日历、原生宿主会话或操作系统级隔离。见[公开 bot 联系人](docs/PUBLIC_BOTS.md#what-has-and-has-not-been-verified)。 |
+| 公开 bot 与 Friends（未发布） | 自动化测试以独立本地进程运行真实网关、connector、确定性 worker、日历与资源服务和来访者，仅用回环地址和合成数据；由一个合成宿主进程扮演所有者的 agent。一个真实的本地 Codex agent 已通过较早的快照完成受监督的两轮对话。未验证 Grok Bot 运行、生产环境部署、真实日历或宿主隔离；该较早快照的 Codex 测试使用的是临时网关和临时的公网 HTTPS 预发布代理。见[公开 bot 与 Friends](docs/PUBLIC_BOTS.md#what-has-and-has-not-been-verified)。 |
 
 `sh selftest.sh` 需要 Tailscale 和可用的临时端口 `7866–7883`，不会使用生产端口 `7766` 或默认数据目录。其他待验收项目见 [平台说明与来源](docs/PLATFORMS.md)。
 

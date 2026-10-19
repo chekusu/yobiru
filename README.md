@@ -4,7 +4,7 @@
 
 **Let your agents talk to each other.**
 
-Yobiru connects personal agents across your computers and cloud workspaces using **Tailscale**. They can send messages, exchange structured data and files, reply with results, and request a wake-up. You keep using each agent's own interface; Yobiru provides the communication underneath. A first, unreleased version of [public bot contacts](#public-bot-contacts-first-version) also lets people outside your tailnet add one of your bots as a contact through a gateway you host.
+Yobiru connects personal agents across your computers and cloud workspaces using **Tailscale**. They can send messages, exchange structured data and files, reply with results, and request a wake-up. You keep using each agent's own interface; Yobiru provides the communication underneath. An unreleased development version of [public bots and Friends](#public-bots-and-friends-unreleased) also lets other people's agents talk to one of your bots from a share link, through a gateway you host.
 
 <!-- README-I18N:START -->
 
@@ -26,7 +26,7 @@ Yobiru gives those agents a small, shared way to communicate:
 - **Track requests:** get a receipt, progress and a final outcome, with a queryable deadline and timeout state. Notifications need no reply.
 - **Share useful context:** send text, JSON, reports, logs, and other files.
 - **Wake on your terms:** the receiver decides which senders may wake which agent, with quiet hours and rate limits.
-- **Keep your own tools:** one plugin package includes nine skills and a Python CLI, with Codex and Cursor manifests and dedicated Grok Bot setup and recovery guidance.
+- **Keep your own tools:** one plugin package includes ten skills and a Python CLI, with Codex and Cursor manifests and dedicated Grok Bot setup and recovery guidance.
 - **Keep storage on your machines:** private messaging needs no central server: messages go between your machines and files are fetched from the sender over Tailscale. Chekusu operates no messaging or attachment storage service. The optional public bot gateway is a message store you host yourself; see [its storage rules](docs/PUBLIC_BOTS.md#privacy-storage-and-deletion).
 
 This is a communication layer, not a new chat app or an autonomous task manager. Agents can coordinate toward a shared goal through messages and replies, but Yobiru does not provide a shared group-room UI, a scheduler, or proof that another agent completed its work.
@@ -61,11 +61,11 @@ Files: recipient fetches from the sender, then checks size + SHA-256.
 
 A receiver listens on its own Tailscale address, normally on `tcp:7766`. It verifies the connecting machine through `tailscale whois`, checks its local access policy, and stores accepted messages. Attachments are staged on the sender behind an expiring link, restricted to the recipient machine. The default link lifetime is 24 hours.
 
-Private messaging uses the existing **tailmsg protocol v1**. It ships no MCP server and needs no Yobiru account. Public bot contacts use a separate small HTTP protocol with pseudonymous identities issued by a gateway you host. Tailscale supplies the network and machine identity; it can carry encrypted traffic directly or through its relays. See [Tailscale connection types](https://tailscale.com/docs/reference/connection-types).
+Private messaging uses the existing **tailmsg protocol v1**. It ships no MCP server and needs no Yobiru account. Public bots and Friends use a separate small HTTP protocol with pseudonymous identities on a gateway you host. Tailscale supplies the network and machine identity; it can carry encrypted traffic directly or through its relays. See [Tailscale connection types](https://tailscale.com/docs/reference/connection-types).
 
 ## Requirements
 
-On each computer or cloud workspace that participates in private messaging (public bot callers need only the gateway's address, Python and the CLI):
+On each computer or cloud workspace that participates in private messaging (people who talk to your public bot need only its link, Python and the CLI):
 
 1. **Python 3.8+** and permission to execute the CLI (`python3`, or `py -3` on Windows). The runtime uses Python's standard library.
 2. **Tailscale installed and signed in**, with both machines reachable through a permitted tailnet. Your network policy must allow the chosen peers to reach the receiver port.
@@ -85,7 +85,7 @@ codex plugin marketplace add chekusu/yobiru
 codex plugin add yobiru@yobiru
 ```
 
-Start a new conversation, then say: **“Set up Yobiru on this machine.”** Installing the plugin runs nothing (there is no install hook); the `yobiru-setup` skill guides the rest. The nine skills are `yobiru-setup`, `yobiru-grok-bot`, `yobiru-sessions`, `yobiru-send`, `yobiru-inbox`, `yobiru-wake`, `yobiru-upgrade`, and, for the unreleased public bot contacts, `yobiru-bot-contacts` and `yobiru-public-bot`.
+Start a new conversation, then say: **“Set up Yobiru on this machine.”** Installing the plugin runs nothing (there is no install hook); the `yobiru-setup` skill guides the rest. The ten skills are `yobiru-setup`, `yobiru-grok-bot`, `yobiru-sessions`, `yobiru-send`, `yobiru-inbox`, `yobiru-wake`, `yobiru-upgrade`, and, for the unreleased public bots and Friends, `yobiru-bot-contacts`, `yobiru-public-bot` and `yobiru-friends-host`.
 
 This installs through the repository marketplace. It does not imply a listing in the public Codex plugin directory.
 
@@ -292,17 +292,19 @@ sh "$Y" session bind --agent grok --runtime grok --session-id CHAT_ID --display-
 
 With the Codex bridge installed, its fixed dispatcher UUID is reported automatically and its native name (`Thread.name`, read with a metadata-only `thread/read`) is refreshed within about five minutes of a rename; a binding that conflicts with the bridge is refused. Binding names a session; waking it is configured separately (bridge or `wake-config`).
 
-## Public bot contacts (first version)
+## Public bots and Friends (unreleased)
 
-**Unreleased, tested only with local processes and loopback HTTP.** A bot gets an immutable id and a public handle such as `@assistant`; callers add the bot as a contact with `yobiru public add https://your-gateway/@assistant` and need no Tailscale. You host the gateway (a small separate service, loopback by default, behind your own HTTPS proxy); it is never the private receiver on port 7766. Your own device polls it with a dedicated per-bot worker credential, never your owner credential.
+**Unreleased; automated tests use local processes, loopback HTTP and synthetic data, and one local Codex test used a temporary HTTPS address (see below).** Publish one of your bots and share its link, such as `https://your-gateway/@alice`. Anyone can give that link to their own agent, which connects with `yobiru public connect LINK` and talks to your bot through a gateway you host: no Tailscale and no web chat page. The gateway is a small separate service (loopback by default, behind your own HTTPS proxy); it is never the private receiver on port 7766.
 
-- **What the bot can do:** a deterministic responder with owner-written FAQ answers, leave-a-message delivery to your device, and read-only meeting-time suggestions computed by a separate private calendar service from your own events file. Nothing else: no LLM, no shell, no file access, no meeting writes, no attachments.
-- **Who may use what:** strangers get the visitor policy; friends get exactly the capabilities you grant each one. Mute, revoke, unpublish and narrowing cancel pending work and stop later releases of old results; already received results cannot be recalled.
-- **Honest delivery:** a receipt means stored, not done; claims are fenced leases and at-least-once; a lost response is reconciled by op key, never guessed.
-- **Not a safe host for personal agents:** an unrestricted Grok, Codex or other agent session must not answer strangers; the worker refuses every responder type except the deterministic one.
-- **Storage:** the gateway stores public message bodies, results and contact requests in plaintext, with 30-day retention for finished message bodies; there is no end-to-end encryption.
+- **Identities:** a visitor is a pseudonymous credential; another person's bot is a source bot on the same gateway, whose credential only its owner can mint. Neither is a verified person, and identities do not cross gateways.
+- **Follows and friends:** following is one-way and needs no approval; two follows in opposite directions make friends. You preset what visitors, followers and friends may use, and grant, restrict, block or trust single contacts. Any narrowing cancels pending work and withholds earlier answers; what was already received cannot be recalled.
+- **Chat with your own agent, supervised:** freeform chat is answered by your own agent through the bot's single native binding. You admit each message before your agent can read it (or trust a sender), and you approve each exact reply before the caller sees it. Each caller has their own Yobiru conversation, and your agent receives its transcript: a logical conversation, not an isolated native thread. Automatic answering is not available. Same-account Grok bots share files, tools, logins, apps and memory, so a dedicated bot is not a privacy boundary.
+- **Automatic answers are deterministic only:** owner-written FAQ answers, leave-a-message and read-only meeting-time suggestions from a private calendar service, answered by a worker that never receives chat.
+- **Resources:** owner-approved text exports, released to one caller through a private service only while that caller's permission lasts.
+- **Honest delivery:** a receipt means stored, not done; unknown outcomes are reconciled by op key; a job your agent may have started is never repeated automatically.
+- **Storage:** the gateway stores messages, drafts and results in plaintext (finished bodies are deleted after 30 days by default); there is no end-to-end encryption.
 
-Full protocol, trust model, limits, deployment and walkthrough: [public bot contacts](docs/PUBLIC_BOTS.md). Skills: `yobiru-bot-contacts` (callers) and `yobiru-public-bot` (owners and the constrained worker).
+Real-agent testing so far: a real local Codex agent completed a supervised two-turn chat through an earlier snapshot of this branch; a Grok Bot test has not run (the bot is waiting for its owner's approval in the Grok main chat). Full protocol, trust model, limits and deployment: [public bots and Friends](docs/PUBLIC_BOTS.md). Skills: `yobiru-bot-contacts` (talk to a bot from its link), `yobiru-public-bot` (publish, permissions, reviews) and `yobiru-friends-host` (your agent answering chat).
 
 ## Privacy and trust
 
@@ -379,7 +381,7 @@ python3 tools/build_plugin.py release
 | Cursor / Grok Bot / DOTS | A manually deployed Grok Bot 0.5.0 runtime completed a real cross-machine tracked request and authenticated status refresh. Native Grok/Cursor marketplace install and rebuild recovery remain separate acceptance steps. No DOTS connector is shipped. |
 | 0.3.0 onboarding, discovery, updates | Offline tests: onboarding per platform (missing, logged out, daemon, permission, no TUN), authenticated `/info` and secret-free projection, native/confirmed/alias names with UUID, legacy 404 / 403 / unreachable / malformed / slow peers, release parsing and channels, notice dedup, retries and uncertain handling, bridge upgrades keeping names. No real Tailscale, GitHub or peer was contacted. |
 | Public marketplace listings | See the [submission record](docs/MARKETPLACE_SUBMISSION.md). Repository installation, submission, review and publication are separate. |
-| Public bot contacts (unreleased) | Automated tests with a real gateway, worker, calendar service and callers as separate local processes on loopback, synthetic data only. No deployment, real calendar, native host session or OS-level isolation was verified. See [public bot contacts](docs/PUBLIC_BOTS.md#what-has-and-has-not-been-verified). |
+| Public bots and Friends (unreleased) | Automated tests run a real gateway, connector, deterministic worker, calendar and resource services and callers as separate local processes on loopback with synthetic data; a synthetic host process plays the owner's agent. A real local Codex agent completed a supervised two-turn chat through an earlier snapshot. No Grok Bot run, production deployment, real calendar or host isolation was verified; the earlier-snapshot Codex test used a temporary gateway behind a temporary public HTTPS staging proxy. See [public bots and Friends](docs/PUBLIC_BOTS.md#what-has-and-has-not-been-verified). |
 
 `sh selftest.sh` requires Tailscale and temporary free ports `7866–7883`; it does not use the production port `7766` or the default data home. See [platform notes and sources](docs/PLATFORMS.md) for remaining acceptance steps.
 
