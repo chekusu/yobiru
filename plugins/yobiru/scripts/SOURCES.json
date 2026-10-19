@@ -8,7 +8,7 @@
     },
     "scripts/codex_bridge/CODEX_DISPATCHER.md": {
       "source": "CODEX_DISPATCHER.md",
-      "sha256": "832c90f972cba6f95dd6ccb7a00fff11a2f5cda347d60495c1ef6ec57c7f209d"
+      "sha256": "7720878955277a65db2b0e55b3b3ed35279e799bca70cc2389385264e347e91b"
     },
     "scripts/codex_bridge/codex_bridge.py": {
       "source": "codex_bridge.py",
