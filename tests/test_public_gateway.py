@@ -405,6 +405,59 @@ class GrantChangeTests(GatewayCase):
                           two["message_id"]: ("cancelled", "bot_unpublished")}, states)
 
 
+class RetentionAndDecisionTests(GatewayCase):
+    def test_reject_is_a_decision_with_a_cooldown_not_a_block(self):
+        bot_id = self.published()
+        actor_id, token = self.gw.actor("Asker")
+        self.assertEqual(202, self.gw.call("POST", "/v1/bots/%s/contact-request" % bot_id, {"note": "hi"}, token)[0])
+        self.assertEqual("rejected", self.gw.contact(bot_id, actor_id, "reject")[1]["request"])
+        self.assertEqual(409, self.gw.contact(bot_id, actor_id, "reject")[0], "nothing pending to reject")
+        status, obj = self.gw.call("POST", "/v1/bots/%s/contact-request" % bot_id, {}, token)
+        self.assertEqual((429, "request_cooldown"), (status, obj["error"]))
+        rel = self.gw.ok("GET", "/v1/bots/%s/contact" % bot_id, None, token)
+        self.assertEqual(("visitor", "rejected"), (rel["relationship"], rel["request"]))
+        cid = self.gw.conversation(bot_id, token)
+        self.assertEqual(202, self.gw.send(cid, token, text="still a visitor")[0])
+
+    def test_owner_deletion_and_retention_remove_stored_bodies(self):
+        import sqlite3
+        bot_id = self.published()
+        actor_id, token = self.gw.actor()
+        cid = self.gw.conversation(bot_id, token)
+        secret = "DELETE-ME-%s" % C.new_token("ticket")[4:16]
+        self.assertEqual(202, self.gw.send(cid, token, text=secret)[0])
+        self.gw.ok("DELETE", "/v1/owner/conversations/%s" % cid, None, self.gw.owner_token)
+        self.assertEqual(404, self.gw.call("GET", "/v1/conversations/%s" % cid, None, token)[0])
+        self.assertEqual(404, self.gw.call("GET", "/v1/owner/conversations/%s" % cid, None, self.gw.owner_token)[0])
+        self.assertEqual(409, self.gw.call("POST", "/v1/owner/conversations/%s/messages" % cid,
+                                           {"op_key": "reply-after-delete", "text": "x"}, self.gw.owner_token)[0])
+        db_path = self.gw.home / "gateway.sqlite3"
+
+        def sql(statement, args=()):
+            db = sqlite3.connect(str(db_path), timeout=15)   # always closed: a stray WAL connection skews the test
+            try:
+                db.execute(statement, args)
+                db.commit()
+            finally:
+                db.close()
+        sql("PRAGMA wal_checkpoint(TRUNCATE)")
+        self.assertNotIn(secret.encode(), db_path.read_bytes(), "secure_delete overwrote the deleted body")
+        # retention: finished messages older than retention_days are purged by the running gateway
+        cid2 = self.gw.conversation(bot_id, token)
+        old = "RETENTION-%s" % C.new_token("ticket")[4:16]
+        _, sent = self.gw.send(cid2, token, text=old)
+        worker = self.gw.worker(bot_id)
+        item = self.gw.claim(worker)[0]
+        self.gw.start_work(worker, item)
+        self.gw.finish(worker, item)
+        sql("UPDATE messages SET finished_ts=finished_ts-31*86400 WHERE id=?", (sent["message_id"],))
+        self.assertTrue(wait_until(lambda: self.message(sent["message_id"], token)[0] == 404, 6))
+        sql("PRAGMA wal_checkpoint(TRUNCATE)")
+        self.assertNotIn(old.encode(), db_path.read_bytes())
+        self.assertEqual(200, self.gw.call("GET", "/v1/conversations/%s" % cid2, None, token)[0],
+                         "conversation metadata is kept; only bodies and results are purged")
+
+
 class LeaseTests(GatewayCase):
     def queued(self, n=1, caps=("faq",)):
         bot_id = self.published()

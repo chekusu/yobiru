@@ -270,6 +270,34 @@ class CapabilityServiceTests(ServiceCase):
         self.assertEqual(0, self.ledger_rows())
 
 
+class UnavailableCapabilityTests(ServiceCase):
+    def test_an_unreachable_calendar_service_is_reported_as_unconfirmed(self):
+        _, token, cid = self.friend()
+        query = {"duration_minutes": 60, "after": self.d.isoformat(), "before": self.d.isoformat()}
+        status, sent = self.gw.send(cid, token, kind="slots", text=None, query=query)
+        self.assertEqual(202, status)
+        home = self.root / "unreachable worker"
+        st = P.State(home)
+        st.save("credentials.json", {"v": 1, "gateways": {self.gw.url: {"workers": {self.bot_id: {
+            "worker_id": "w", "token": self.worker, "epoch": 0, "handle": None}}}}})
+        closed = C.new_token("access")
+        token_file = self.root / "unreachable-access.token"
+        C.create_private_file(token_file, closed + "\n")
+        import socket
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            dead = "http://127.0.0.1:%d" % s.getsockname()[1]
+        st.save("responder.json", {"v": 1, "bots": {self.bot_id: {
+            "type": "deterministic", "faq": [], "calendar": {"url": dead, "token_file": str(token_file)}}}})
+        r = subprocess.run([sys.executable, str(PUBLIC / "bot_client.py"), "--home", str(home), "worker", "run",
+                            self.bot_id, "--once"], capture_output=True, text=True, env=plain_env(self.root), timeout=60)
+        self.assertEqual(0, r.returncode, r.stderr)
+        msg = self.gw.ok("GET", "/v1/messages/%s" % sent["message_id"], None, token)
+        self.assertEqual(("failed", "capability_unavailable"), (msg["state"], msg["code"]))
+        self.assertNotIn("slots", msg["result"])
+        self.assertIn("No time is confirmed", msg["result"]["text"])
+
+
 class RaceAndFreshnessTests(ServiceCase):
     """In-process Service against the real gateway, to place revocations exactly inside an answer."""
 
