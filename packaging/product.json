@@ -63,6 +63,12 @@
       "CODEX_DISPATCHER.md": "scripts/codex_bridge/CODEX_DISPATCHER.md",
       "docs/CODEX_SANDBOX.md": "scripts/codex_bridge/CODEX_SANDBOX.md"
     },
+    "publicBots": {
+      "public_bots/bot_common.py": "scripts/public_bots/bot_common.py",
+      "public_bots/bot_gateway.py": "scripts/public_bots/bot_gateway.py",
+      "public_bots/bot_client.py": "scripts/public_bots/bot_client.py",
+      "public_bots/bot_calendar.py": "scripts/public_bots/bot_calendar.py"
+    },
     "license": {
       "LICENSE": "LICENSE"
     }

@@ -45,6 +45,7 @@ HERE = Path(__file__).resolve().parent
 PLUGIN_ROOT = HERE.parent
 CORE = HERE / "tailmsg.py"
 BRIDGE = HERE / "codex_bridge"
+PUBLIC_BOTS = HERE / "public_bots"   # separate public gateway, its clients and the private calendar capability
 CORE_COMMANDS = ("serve", "send", "reply", "request", "inbox", "show", "fetch", "ack", "wake")
 LEVELS = ("none", "batch", "now")
 SERVICE_LABEL = "dev.tailmsg"    # receiver service names stay tailmsg's, matching existing installs
@@ -84,6 +85,15 @@ Check and set up (read-only unless --apply):
                              optional Codex bridge: macOS desktop app, or Linux user systemd + a local
                              app-server socket (install/rollback support --dry-run and --no-start)
   version
+
+Public bot contacts (first version; a separate self-hosted gateway, never the receiver on 7766;
+see docs/PUBLIC_BOTS.md):
+  gateway {{init,owner,serve,status}} [--gateway-home DIR]
+                             the public mailbox: local-only owner bootstrap, loopback HTTP by default
+  public ...                 callers: enroll, add, request-friend, chat, slots, status, history
+                             owners: owner, bot, worker bind, verifier bind; workers: worker run/claim/...
+  calendar-service {{init,serve,check,preview}} --dir DIR
+                             private read-only meeting-slot capability for one published bot
 
 Messaging (passed unchanged to the bundled tailmsg.py):
   request send PEER[/AGENT] TEXT [--timeout-seconds 900] [--wake now|batch|none]
@@ -3548,11 +3558,42 @@ def run_core(home, cmd, rest):
     return subprocess.call(argv)
 
 
+def run_public(script, args):
+    """Public bot contacts run as their own processes from the bundled public_bots/ folder: they never
+    load tailmsg.py, read config.json or touch the inbox, so legacy private messaging is unaffected."""
+    path = PUBLIC_BOTS / script
+    if not path.is_file():
+        die("bundled %s is missing; reinstall the plugin" % script, 2)
+    python = os.environ.get(PYTHON_ENV) or sys.executable
+    argv = [python, str(path)] + list(args)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if os.name == "posix":
+        try:
+            os.execvp(python, argv)
+        except OSError as e:
+            die("cannot run %s: %s" % (python, e), 127)
+    return subprocess.call(argv)
+
+
+def cmd_gateway(home, home_source, argv):
+    return run_public("bot_gateway.py", argv)
+
+
+def cmd_public(home, home_source, argv):
+    return run_public("bot_client.py", ["--home", str(home)] + list(argv))
+
+
+def cmd_calendar_service(home, home_source, argv):
+    return run_public("bot_calendar.py", argv)
+
+
 PLUGIN_COMMANDS = {"paths": cmd_paths, "doctor": cmd_doctor, "status": cmd_status, "setup": cmd_setup,
                    "policy": cmd_policy,
                    "wake-config": cmd_wake_config, "install-runtime": cmd_install_runtime,
                    "service-template": cmd_service_template, "codex-bridge": cmd_codex_bridge,
-                   "onboard": cmd_onboard, "agents": cmd_agents, "peers": cmd_agents, "session": cmd_session, "update": cmd_update}
+                   "onboard": cmd_onboard, "agents": cmd_agents, "peers": cmd_agents, "session": cmd_session, "update": cmd_update,
+                   "gateway": cmd_gateway, "public": cmd_public, "calendar-service": cmd_calendar_service}
 
 
 def main(argv=None):

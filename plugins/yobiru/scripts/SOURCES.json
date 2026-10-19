@@ -34,6 +34,22 @@
       "source": "install_codex_bridge_linux.py",
       "sha256": "00e3cd33d8ff9163880527b61a1ef44ecae78d2f8e289d934e72e436a6108e19"
     },
+    "scripts/public_bots/bot_calendar.py": {
+      "source": "public_bots/bot_calendar.py",
+      "sha256": "2575add26452229dd281320de6be6732fa9144883374ab7c919ebbc0a8c7a437"
+    },
+    "scripts/public_bots/bot_client.py": {
+      "source": "public_bots/bot_client.py",
+      "sha256": "54d135d20f318c575b66d27fd9b2c467c9d107745e6b827da50075f175e8cc29"
+    },
+    "scripts/public_bots/bot_common.py": {
+      "source": "public_bots/bot_common.py",
+      "sha256": "f3e85b61109c4075ae7b0eae3c9999c8822373ebb66aa92da048c6f31844db20"
+    },
+    "scripts/public_bots/bot_gateway.py": {
+      "source": "public_bots/bot_gateway.py",
+      "sha256": "fee60f71d34431274b086e711eb93003dbbbebe805538b49a978afc7ca12a2f4"
+    },
     "LICENSE": {
       "source": "LICENSE",
       "sha256": "50780112dfc9a9a9f9ffae7b2c80279e60e259446246375644f397eb7bbdb5aa"
