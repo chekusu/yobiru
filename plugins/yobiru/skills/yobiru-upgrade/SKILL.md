@@ -45,6 +45,11 @@ outbox/retry guarantee.
 
 ## Upgrade this machine (when the user or a standing instruction authorizes it)
 
+First inspect the installed plugin, durable runtime and running receiver versions. If an installation
+already uses a newer version, including a development build, preserve it rather than downgrading to
+the announced release. Review applicable workflow changes separately, without replacing its runtime
+or bridge with older files, and report software versions and policy adoption independently.
+
 1. Update the plugin from the official source only, the way it was installed:
    - Codex marketplace: `codex plugin marketplace upgrade yobiru`, then `codex plugin add yobiru@yobiru`,
      and continue in a new conversation. Cursor or Grok Bot marketplace: update it from the plugin page.
@@ -68,12 +73,37 @@ outbox/retry guarantee.
 5. `sh Y doctor` and `sh Y update status`: plugin, durable runtime and running receiver must show the
    new version. Data, sessions, permissions and custom instructions are untouched by these steps.
 
+## Resident session rules migration for 0.5.2
+
+Updating the plugin or receiver does not replace an existing customized dispatcher file. Under the
+owner's upgrade authority, locate the instructions path actually used by the bridge, back it up and
+compare it with `scripts/codex_bridge/CODEX_DISPATCHER.md` in the verified release package. Merge the
+applicable rules alongside the updated inbox/wake skills; do not overwrite local scope restrictions,
+excluded routes, project paths, fixed session identity, access policy or wake/reply permissions.
+
+- Keep short notices and protocol work in the entry session. Reuse the business session for the same
+  matter; route independent work separately within the host's capabilities and concurrency limits.
+- Before execution, persist the real target and a single capable lifecycle owner after a bounded
+  readiness check. Release the entry turn only after a confirmed durable handoff. Stable resource
+  keys must use actual locks or leases; separate sessions do not authorize concurrent resource writes.
+- Report `running` only after work starts. The owner verifies and persists the final result before
+  responding and acknowledging. Reconcile uncertain creation, delivery or response with the original
+  target and record; do not create duplicates or restart overdue or terminal requests.
+
+Verify the configured instructions path and merged content, the installed inbox/wake skill source,
+and the host's ability to keep or resume the business owner after the entry turn ends. Preserve the
+explicit data home and owner-only inbox permissions. Report missing capabilities as limitations.
+Record policy evidence separately from `update status`: a matching receiver version or HTTP receipt
+does not prove these rules are active, a handoff completed or a business task succeeded. These are
+host-agent workflow instructions, not an automatic scheduler. See `docs/DISPATCHER_SESSIONS.md` in
+the official repository for rationale and source maintenance.
+
 ## Request lifecycle migration for 0.5
 
 Upgrade the plugin, durable receiver and installed bridge together. Confirm the receiver advertises
 `request-lifecycle-v1`; merely updating the plugin does not add remote receipts or status queries.
 Preserve customized dispatcher instructions, but merge the new request-handling contract into them:
-`running` before authorized work, one final `completed|failed|rejected|blocked` outcome before ack,
+`running` only after authorized work starts, one final `completed|failed|rejected|blocked` outcome before ack,
 and no replies to notifications or protocol responses. Review the bundled dispatcher template.
 Do not overwrite local scope restrictions, excluded message routing, session IDs or reply settings.
 

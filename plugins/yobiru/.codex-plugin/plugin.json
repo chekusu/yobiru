@@ -1,6 +1,6 @@
 {
   "name": "yobiru",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Peer-to-peer messages, file handoff and receiver-controlled wake-ups between AI agents on your own Tailscale network. Speaks the tailmsg protocol v1; no central server.",
   "author": {
     "name": "Chekusu"
