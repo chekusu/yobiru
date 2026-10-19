@@ -81,6 +81,13 @@ authorized setup or repair scope.
 The bridge queues each authenticated codex message's ID and local paths (never its text) into one
 existing Codex session with the official `codex queue`, using a durable queue with retries.
 
+Use the [yobiru-inbox routing workflow](../yobiru-inbox/SKILL.md) by default: keep short protocol work
+in the fixed entry session, reuse a business session for the same matter and create one for a new
+independent requirement. Persist deduplication, resource ownership and a single capable lifecycle
+owner before releasing the entry turn. The entry session does not wait for business completion;
+the owner verifies the final result before ack. Queue delivery is not a completed handoff or task.
+This routing policy does not grant new execution or reply authority, restart services or change models.
+
 - macOS, Codex desktop app: `sh Y codex-bridge install --thread-id UUID --dry-run`.
 - Linux, user systemd + the user's own running Codex app-server on a local Unix socket:
 
@@ -118,8 +125,8 @@ runs. Protocol responses use `wake: none` and never trigger another response. Th
 receiver's wake policy or enable model-generated business replies. A request can therefore be received
 but still waiting for its agent, or time out with an unknown execution result.
 
-For authorized work and replies, the agent must record `running`, then one final outcome via
-`request respond` before `ack` (yobiru-inbox skill). Missing authority or prerequisites are a blocker,
+For authorized work and replies, the lifecycle owner records `running` only after work starts, then
+one final outcome via `request respond` before `ack` (yobiru-inbox skill). Missing authority or prerequisites are a blocker,
 not completion. Keep `allow_replies=false` when the owner has not authorized changing it; automatic
 receipts are not permission to send user content.
 
