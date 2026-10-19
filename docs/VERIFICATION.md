@@ -14,7 +14,7 @@ production or installed), on Python 3.12:
   (347 tests) had one failure: a check that the bundled guide's walkthrough runs the demo, which was restored.
 - On the final snapshot, the affected suites (`test_friends_gateway`, `test_friends_client`,
   `test_public_gateway`, `test_public_calendar`, `test_public_client`, `test_public_e2e` and
-  `test_public_bundle`) passed **121 tests**; `python3 tools/build_plugin.py check`, `git diff --check` and
+  `test_public_bundle`) passed **127 tests**; `python3 tools/build_plugin.py check`, `git diff --check` and
   Python 3.8 syntax parsing of every Python file passed (parsing is not execution on a Python 3.8 interpreter).
   The full suite was not rerun on the final snapshot.
 
@@ -33,8 +33,12 @@ processes on loopback ports, synthetic homes and data; where a native agent is n
   in-flight work and withholding earlier results and owner messages from readback and transcripts; rebind,
   revoke and lease expiry making native work uncertain instead of requeued, with fenced late answers; the wake
   ledger never repeating an intent-only or uncertain wake; check acknowledgements kept apart from correlated route
-  evidence and monotonic check results; migration of real first-version databases (made by
-  `tests/fixtures/bot_gateway_v1.py`) preserving every contact's capabilities, and a rolled-back failed migration.
+  evidence and monotonic check results; an owner removing a follower, republishing that revives no queued,
+  in-flight or earlier answer, a wrong source bot (also one of the same owner) refused another bot's
+  conversation, injected display names and bodies kept out of every metadata listing, replayed and conflicting
+  drafts, and a hard gateway restart in the middle of a native job; migration of real first-version databases
+  (made by `tests/fixtures/bot_gateway_v1.py`) preserving every contact's capabilities, and a rolled-back failed
+  migration.
 - `test_friends_client.py` (the CLI): connecting from only a share link, source bots following and following
   back, two supervised chat turns through a connector `exec` route and the synthetic host with transcript
   continuity and no duplicate wakes, binding-check evidence, connector-ledger recovery after a crash, wake
