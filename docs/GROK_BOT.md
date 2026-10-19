@@ -87,6 +87,11 @@ not prove it will start after a rebuild. Report separately which files persist, 
 mechanism was installed and whether a real restart was tested. Do not deliberately reboot a live
 computer merely to demonstrate plugin installation.
 
+Known limits include discovery treating a false Tailscale online flag as an offline receiver without
+probing, and a running receiver retaining its startup node name after a rename or relogin. See
+[restart and identity recovery](RESTART_RECOVERY.md) for the observed symptoms, code paths, bounded
+recovery steps and proposed regression coverage. These runtime fixes are not part of 0.5.2.
+
 ## Test the actual integration
 
 Record the installed version and execution path, without exposing private device names or keys:

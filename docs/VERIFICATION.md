@@ -22,6 +22,17 @@ a reviewed merge into the configured file and verification of the installed skil
 capabilities. Keep newer development runtimes intact and report policy adoption separately
 from software versions. See [resident session maintenance](DISPATCHER_SESSIONS.md).
 
+## Restart and identity recovery observation (2026-10-19)
+
+A reachable Grok Bot receiver on 0.5.0 was displayed offline because discovery skipped its probe
+when Tailscale reported `Online=false`. Separately, the running receiver reported an older node name
+than fresh Tailscale identity checks, causing normal tracked-send preflight to reject the mismatch.
+After an operator restart with the existing configuration, `/info` matched the current identity and
+a request using the same stable hostname was accepted. This is limited recovery evidence, not proof
+of final task execution, a tested rebuild, or a runtime fix in 0.5.2. The
+[recovery record](RESTART_RECOVERY.md) separates observed facts, code causes, temporary remediation
+and proposed tests. No private node names, addresses or message records are included here.
+
 ## Host packaging and marketplace verification (0.5.1)
 
 The package adds the Grok Bot setup/recovery skill and declares the local execution needed by
