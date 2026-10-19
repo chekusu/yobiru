@@ -36,7 +36,7 @@
     },
     "scripts/public_bots/bot_calendar.py": {
       "source": "public_bots/bot_calendar.py",
-      "sha256": "2575add26452229dd281320de6be6732fa9144883374ab7c919ebbc0a8c7a437"
+      "sha256": "ced6febf495e03a171edb306cc57bcec8edfb7ad6860c80d689a93a33abe14df"
     },
     "scripts/public_bots/bot_client.py": {
       "source": "public_bots/bot_client.py",
@@ -48,7 +48,7 @@
     },
     "scripts/public_bots/bot_gateway.py": {
       "source": "public_bots/bot_gateway.py",
-      "sha256": "fee60f71d34431274b086e711eb93003dbbbebe805538b49a978afc7ca12a2f4"
+      "sha256": "6dd96290ead9c568d4faed0cdee7cafb6985379f811656e46423dc8f1597c314"
     },
     "LICENSE": {
       "source": "LICENSE",

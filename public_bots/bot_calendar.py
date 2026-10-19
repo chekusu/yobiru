@@ -404,6 +404,9 @@ def make_handler(service):
         sys_version = ""
         timeout = 10
 
+        def version_string(self):
+            return self.server_version
+
         def log_message(self, fmt, *args):
             log("%s %s" % (self.client_address[0], (fmt % args)[:120]))
 

@@ -6,7 +6,7 @@ security guarantee: the tests show the behaviors listed below, nothing more.
 ## Public bot contacts, first version (unreleased development branch)
 
 On 2026-10-19, on a development branch based on 0.5.3 (version unchanged; nothing released or deployed),
-`python3 -m unittest discover -s tests` passed **291 tests** (the 228 existing plugin tests plus 63 new
+`python3 -m unittest discover -s tests` passed **294 tests** (the 228 existing plugin tests plus 66 new
 public bot tests) on Python 3.12, and the bridge, resident and installer suite passed its **146 tests**.
 `python3 tools/build_plugin.py check`, `git diff --check` and Python 3.8 syntax parsing of all 52 Python
 files passed. Syntax parsing is not execution on a Python 3.8 interpreter.
@@ -30,13 +30,14 @@ as separate processes on loopback ports with synthetic homes and synthetic calen
   scope removal, demotion and policy narrowing, mute and unpublish semantics, atomic concurrent claims,
   expired and stale leases, a finish whose body arrives after its lease expired, worker replacement,
   malformed, oversized, slow and concurrent connections, deadlines, per-caller, per-bot and gateway-wide
-  admission limits, unknown kinds and scopes, and receipts and claims across hard restarts.
+  admission limits, unknown kinds and scopes, receipts and claims across hard restarts, rejection with a
+  cooldown, and owner deletion and the retention purge removing stored bodies from the database file.
 - `test_public_calendar.py`: conflict-aware suggestions (busy, cancelled, transparent and all-day events,
   buffers, notice, horizon, work days, fixed offsets, daylight-saving transitions), malformed calendars that
   refuse, ticket authorization through the gateway, levels, budgets and budget-free retries, revocation while
   an answer waits for or holds its lock, stale cached answers after rule, calendar or age changes, encoded
-  sentinel checks of every caller-visible surface and stored file under hostile prompts, and the worker's
-  configuration and process inputs.
+  sentinel checks of every caller-visible surface and stored file under hostile prompts, an unreachable
+  capability service reported as unconfirmed, and the worker's configuration and process inputs.
 - `test_public_client.py`: the HTTP client's total deadline for slow close-delimited bodies, refused
   redirects, credentials bound to their exact gateway, refused plain `http://`, op-key retries, lost requests
   and lost responses through a dropping proxy, crashes after a real commit, lookups during an in-flight

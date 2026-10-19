@@ -1427,6 +1427,9 @@ def make_handler(api):
         sys_version = ""
         timeout = limits["read_timeout_seconds"]
 
+        def version_string(self):
+            return self.server_version
+
         def setup(self):
             BaseHTTPRequestHandler.setup(self)
             # Total budget for the request line, headers and body: a client that trickles bytes is cut off.

@@ -517,7 +517,13 @@ class LeaseTests(GatewayCase):
                        "Content-Type: application/json\r\nContent-Length: %d\r\n\r\n" % (mid, worker, len(body))).encode())
             time.sleep(1.35)                        # headers arrived in time; the body after expiry
             s.sendall(body)
-            reply = s.recv(65536).decode()
+            reply = b""
+            while True:                             # the gateway closes the connection after its answer
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                reply += chunk
+            reply = reply.decode()
         self.assertIn(" 409 ", reply.split("\r\n")[0])
         self.assertIn("lease_expired", reply)
         self.assertEqual("started", self.gw.owner_view(cid)["messages"][0]["state"])
@@ -637,6 +643,8 @@ class InputLimitTests(GatewayCase):
         self.assertEqual((429, "too_many_conversations"), (status, obj["error"]))
 
     def test_new_identities_cannot_bypass_bot_and_gateway_admission(self):
+        if time.time() % 3600 > 3590:
+            time.sleep(3601 - time.time() % 3600)        # keep the hourly windows from resetting mid-test
         gw = self.dedicated(new_contacts_per_hour_per_bot=2, enroll_per_hour=4, enroll_per_hour_per_ip=100)
         bot_id = gw.bot("admission")
         tokens = [gw.actor("Sybil %d" % i)[1] for i in range(3)]

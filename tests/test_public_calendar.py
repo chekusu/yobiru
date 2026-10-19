@@ -226,6 +226,9 @@ class CapabilityServiceTests(ServiceCase):
                          "a finished work item's ticket is dead")
 
     def test_levels_budgets_and_retries(self):
+        import time
+        if 86400 - time.time() % 86400 < 60:
+            time.sleep(86401 - time.time() % 86400)       # daily budgets must not reset during the test
         svc, access = self.serve(per_contact_per_day=2, per_bot_per_day=3)
         _, a, cid_a = self.friend(name="A")
         _, b, cid_b = self.friend(name="B")
