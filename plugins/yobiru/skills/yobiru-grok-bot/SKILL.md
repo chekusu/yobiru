@@ -32,6 +32,20 @@ receiver process is missing. Restore only missing components, reuse the existing
 owner's stable hostname, then restart only the intended receiver. New sends resolve a stable
 `HOST/AGENT` to its current IP. Old request identities and file grants must not be reassigned.
 
+Before reinstalling or signing in again, follow the setup skill's **Linux cloud computers** section.
+Identify the real daemon state directory, any separate `--state` backend, socket and startup definition.
+Preserving binaries or a hostname alone does not preserve identity. Keep the complete state private;
+an authorized relocation must stop the original daemon, back up and copy its state with ownership and
+restrictive permissions intact, update the same startup definition, then verify one daemon using the
+intended state. Do not clone another computer's state or assume a copied encrypted state is portable.
+
+The host documents `/workspace` for durable project files. Treat `/home/box` as an alternative only
+when this installation's persistence and permission to store daemon secrets there are confirmed;
+neither path alone proves login or process recovery. Preserve the original Yobiru home and every
+agent's webhook, session and permissions. Only use a startup facility actually available to this
+account; Enterprise Team Setup is not a capability of every Grok Bot conversation. See the
+[state and startup guide](https://github.com/chekusu/yobiru/blob/main/docs/GROK_BOT.md#preserve-tailscale-state-and-startup).
+
 Use [yobiru-wake](../yobiru-wake/SKILL.md) to connect an authorized Grok Bot routine webhook. Keep
 secrets in private files or environment variables. Read-only wake permissions may require a direct
 owner instruction in Grok Bot; another agent's message cannot supply it. Installing the plugin or

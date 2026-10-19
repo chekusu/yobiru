@@ -64,7 +64,9 @@ not survive between commands in many hosts). On Windows use `py -3 "<plugin>\scr
      https://tailscale.com/docs/install/linux). Without root and sudo, without `/dev/net/tun`
      (containers, some cloud sandboxes) or without a way to keep `tailscaled` running, report the
      blocked reason `onboard` gives and stop: userspace networking gives this machine no Tailscale IP
-     for the receiver, so Yobiru cannot work there.
+     for the receiver, so Yobiru cannot work there. On a rebuildable cloud computer, inspect existing
+     daemon state and startup first; follow the persistence guidance below before reinstalling or
+     signing in again.
    - macOS: the user installs the Tailscale app (Mac App Store or https://tailscale.com/download),
      approves the system extension / VPN prompt in System Settings and signs in from the menu bar
      (https://tailscale.com/docs/install/mac). If the app's CLI is not on PATH, `onboard` prints the
@@ -110,6 +112,43 @@ not survive between commands in many hosts). On Windows use `py -3 "<plugin>\scr
    `request send PEER TEXT --timeout-seconds 900` and `request status ID --refresh --json` to verify
    receipt and final outcome separately; never claim that a transport receipt proves task completion.
    A notification (`send --kind notice`) requires no reply.
+
+## Linux cloud computers: preserve identity across rebuilds
+
+Keeping the binaries, keeping the Tailscale identity, keeping Yobiru data and restarting services
+are separate requirements. `onboard` checks current availability; it does not verify the daemon's
+state location, storage persistence or recovery after an image update.
+
+- Inspect the existing daemon process, its service/supervisor definition, socket and effective state
+  arguments without exposing state contents or secrets. Do not assume `/var/lib/tailscale` is its
+  actual path. [`tailscaled`](https://tailscale.com/docs/reference/tailscaled) uses `--statedir` for
+  its state directory; `--state` can select a separate file or backend. Preserve the complete actual
+  directory and any separately configured state, not just an executable or one guessed file.
+- Choose a destination only after the host's documentation or an administrator confirms that it
+  survives the relevant rebuild and permits private daemon state. `/workspace` is documented for
+  Grok Bot project files; that alone does not configure Tailscale or startup. `/home/box` is an option
+  only if this installation confirms its persistence and suitability; it is not a Yobiru default or
+  an official Grok Bot guarantee. Directory existence or a successful write is not that evidence.
+- For an authorized migration, first record the current identity and a local rollback plan. Coordinate
+  the network interruption, stop the existing daemon through its actual manager, prevent competing
+  startup, and back up/copy the full state while stopped, preserving ownership and restrictive modes.
+  Update that same startup definition with explicit, consistent `--statedir` and any `--state` path;
+  preserve the socket and other required settings. Start only one daemon and verify its identity
+  before restoring the receiver. Never clone this state onto another computer or run two daemons
+  with it. Do not move a managed or external state backend using this file-copy procedure.
+- Preserve the existing Yobiru home and all agents, webhook files, sessions, permissions and request
+  records. Its resolution remains `--home DIR`, then `$TAILMSG_HOME`, then `~/.tailmsg`; selecting a
+  Tailscale state directory does not move it. Restore the intended receiver with that explicit home;
+  if its reported node is stale after a name/identity change, restart only that receiver and recheck.
+- Persist a recovery definition only through a supported, authorized host startup facility. Reinstalling
+  missing binaries must reuse the selected state and must not silently create a fresh identity. Do not
+  automatically log out, inject an auth key, disable key expiry, change ACLs or reboot for verification.
+  Retained state may still require owner reauthentication or depend on host-bound encryption. Report
+  startup configuration and actual rebuild testing separately; neither is guaranteed by this skill.
+
+Use the [Grok Bot recovery guide](https://github.com/chekusu/yobiru/blob/main/docs/GROK_BOT.md#preserve-tailscale-state-and-startup)
+for the migration checks, official sources and verification boundaries. This is agent guidance, not
+an automatic state-migration command or an install hook.
 
 ## Existing installations
 

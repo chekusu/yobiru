@@ -74,8 +74,9 @@ restrictions: a request may finish `blocked` when the owner has not authorized t
 
 Files stored durably and running processes are different things. A rebuild may retain a data home
 while removing installed packages or stopping the receiver. Start with `onboard`, `doctor` and
-`update status` against the existing home. Restore missing prerequisites through the host's normal
-setup path, sign in if needed, then restart only the intended Yobiru receiver.
+`update status` against the existing home. Inspect the daemon's existing state and startup definition
+before reinstalling or signing in again. Restore missing prerequisites through the host's normal
+setup path; any needed sign-in remains the owner's action. Then restore the intended Yobiru receiver.
 
 Keep the owner's chosen stable Tailscale hostname. New messages addressed as `HOST/AGENT` resolve
 the current address, so a changed IP need not require editing every sender. If the node also lost
@@ -91,6 +92,73 @@ Known limits include discovery treating a false Tailscale online flag as an offl
 probing, and a running receiver retaining its startup node name after a rename or relogin. See
 [restart and identity recovery](RESTART_RECOVERY.md) for the observed symptoms, code paths, bounded
 recovery steps and proposed regression coverage. These runtime fixes are not part of 0.5.2.
+
+### Preserve Tailscale state and startup
+
+Grok Bot documents `/workspace` as durable storage for project files. It separately warns that image
+updates recreate the computer and login state may need restoring. Enterprise Team Setup scripts run
+on boot and daily, but require the corresponding account capability. A saved script or a process
+started with `nohup` does not establish that this account will run it after a rebuild.
+Sources: [workspace files](https://cursor.com/docs/grok-bot/work#files-and-the-workspace),
+[private networks and Team Setup](https://cursor.com/docs/grok-bot/private-networks).
+
+Keep these four layers distinct:
+
+| Layer | What must survive or be restored |
+| --- | --- |
+| Software | Verified Tailscale and Yobiru packages; reinstalling binaries does not restore identity. |
+| Tailscale identity | The complete actual daemon state and any separately configured state backend. |
+| Yobiru data | The original data home, including all agents, webhook files, sessions, permissions and request records. |
+| Startup | A supported recovery/service definition that reuses those same paths and starts the intended processes. |
+
+`tailscaled --statedir` selects a directory containing configuration, keys and other state.
+`--state` may select another file or backend; when omitted, its file is `<statedir>/tailscaled.state`.
+Inspect the actual process and service configuration instead of assuming a default path or copying
+only that file. State encryption can depend on the local TPM, so moving files does not guarantee
+they can be reused after a host rebuild. See the [daemon reference](https://tailscale.com/docs/reference/tailscaled).
+
+Tailscale's [Docker state guidance](https://tailscale.com/docs/features/containers/docker/docker-params#ts_state_dir)
+explains that persistent state prevents a container restart from registering a new node. Applying
+that principle to a Grok Bot installation is an operational inference, not a verified guarantee about
+Grok Bot's filesystem or rebuild behavior. `TS_STATE_DIR` is a Docker-container setting, not a
+replacement for configuring an arbitrary Linux daemon.
+
+For a new setup, choose storage that this host confirms survives the relevant image update and is
+suitable for private daemon state. `/home/box` may be used only with that confirmation for the current
+installation; the cited official guidance does not guarantee it. Existing Yobiru data homes remain
+unchanged: `--home DIR` overrides `$TAILMSG_HOME`, otherwise the default is `~/.tailmsg`. Always pass
+the selected absolute home in recovery commands; a different shell user can have a different default.
+
+For an existing installation, use this sequence only within the owner's migration/repair authorization:
+
+1. Read the actual daemon/service/supervisor configuration, state paths and socket. Record the current
+   node identity, startup definition and a rollback plan locally. Do not print key/state contents or
+   copy them into a plugin, repository, issue or message. Inventory the original Yobiru home and all
+   agents' bindings and webhook references without exposing their secrets.
+2. Confirm destination persistence, access restrictions and how the same logical machine is restored.
+   Coordinate the network interruption using a working local recovery path. Stop the existing daemon
+   through its manager and prevent a second startup while taking a consistent private backup. Do not
+   copy a live state file or start a replacement alongside the original.
+3. Copy the complete actual state directory and any separately configured file state while stopped,
+   retaining ownership, restrictive modes and the backup. Update the same service or supported setup
+   definition with explicit `--statedir=<CONFIRMED_STATE_DIR>` and, if used, the intended `--state` path.
+   Preserve required socket and other settings. External/managed state backends and host-bound
+   encryption need their own supported recovery method; do not convert them blindly to local files.
+4. Start one daemon through that manager. Verify its state selection, socket, authenticated node
+   identity and chosen hostname. If identity differs or login is required, stop and report that fact;
+   do not clone another host, force logout, supply a new auth key, disable expiry or bypass ACLs.
+   [Key expiry](https://tailscale.com/docs/features/access-control/key-expiry) can still require owner
+   reauthentication even when files survive.
+5. Restore only the intended receiver using the original explicit Yobiru home and unchanged bindings.
+   Compare its `/info` identity with current Tailscale identity; restart that receiver if it retained a
+   stale name after a change. Verify receiver version, session and all agent adapters, then a harmless
+   tracked request and final result in both directions with an owner-selected peer. Reconcile existing
+   uncertain requests instead of rerunning them.
+
+The skills provide this procedure; Yobiru does not automatically migrate Tailscale state or install
+a host recovery script. Report separately what was configured, whether identity was retained and
+whether a real image rebuild was observed. Do not reboot merely to test it. A successful manual
+package command, native skill discovery and successful rebuild recovery remain separate evidence.
 
 ## Test the actual integration
 
