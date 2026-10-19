@@ -3,6 +3,51 @@
 Yobiru release verification. This page separates what has actually been run from what has not. It is not a
 security guarantee: the tests show the behaviors listed below, nothing more.
 
+## Public bot contacts, first version (unreleased development branch)
+
+On 2026-10-19, on a development branch based on 0.5.3 (version unchanged; nothing released or deployed),
+`python3 -m unittest discover -s tests` passed **291 tests** (the 228 existing plugin tests plus 63 new
+public bot tests) on Python 3.12, and the bridge, resident and installer suite passed its **146 tests**.
+`python3 tools/build_plugin.py check`, `git diff --check` and Python 3.8 syntax parsing of all 52 Python
+files passed. Syntax parsing is not execution on a Python 3.8 interpreter.
+
+The new tests run a real gateway, the constrained worker, the private calendar capability service and callers
+as separate processes on loopback ports with synthetic homes and synthetic calendar events:
+
+- `test_public_e2e.py` (through the unpacked plugin archive): owner bootstrap, publish, caller enrollment,
+  visitor FAQ while no worker exists (durable `queued` receipt), friend request, approval with an explicit
+  capability list, slot query and leave-message while the worker is absent, a killed and restarted gateway,
+  a dedicated per-bot worker credential (no owner credential on the worker device), deterministic answers,
+  conflict-aware slots, owner reply, idempotent retries across processes and restarts, sentinel-free gateway
+  and caller state, an untouched private tailmsg installation in the same data home, relocation to a new
+  worker device that fences the old one with the same bot id, and revocation and unpublish through the CLI.
+  A running private receiver with a wake-everything adapter shares the worker's data home: no public message
+  reaches its inbox or adapter, and its `/info` reveals nothing about the bot.
+- `test_public_gateway.py` (real HTTP): local-only bootstrap that never overwrites, credential realms that
+  never substitute for each other, other owners, handle rules and renames, allowlisted public cards, no
+  enumeration or private-receiver routes, cross-contact and cross-bot isolation, per-friend capability subsets,
+  spoofed identity fields, revocation of queued and in-flight work and later reads, result withholding after
+  scope removal, demotion and policy narrowing, mute and unpublish semantics, atomic concurrent claims,
+  expired and stale leases, a finish whose body arrives after its lease expired, worker replacement,
+  malformed, oversized, slow and concurrent connections, deadlines, per-caller, per-bot and gateway-wide
+  admission limits, unknown kinds and scopes, and receipts and claims across hard restarts.
+- `test_public_calendar.py`: conflict-aware suggestions (busy, cancelled, transparent and all-day events,
+  buffers, notice, horizon, work days, fixed offsets, daylight-saving transitions), malformed calendars that
+  refuse, ticket authorization through the gateway, levels, budgets and budget-free retries, revocation while
+  an answer waits for or holds its lock, stale cached answers after rule, calendar or age changes, encoded
+  sentinel checks of every caller-visible surface and stored file under hostile prompts, and the worker's
+  configuration and process inputs.
+- `test_public_client.py`: the HTTP client's total deadline for slow close-delimited bodies, refused
+  redirects, credentials bound to their exact gateway, refused plain `http://`, op-key retries, lost requests
+  and lost responses through a dropping proxy, crashes after a real commit, lookups during an in-flight
+  send, refusals that cannot settle earlier uncertain sends, large multibyte send logs, the open-outcome
+  quota, concurrent processes and kernel locks, private file modes, the per-bot worker lock and lease
+  revalidation before any computation.
+
+These tests do not establish a deployment behind a real HTTPS proxy, behavior with real calendar exports,
+macOS or Windows runs, OS-level isolation between same-user processes, or use from a native Grok Bot,
+Codex or Cursor session. See [public bot contacts](PUBLIC_BOTS.md#what-has-and-has-not-been-verified).
+
 ## Cloud-computer setup guidance (0.5.3)
 
 On 2026-10-19, the 0.5.3 release candidate passed **228 plugin tests and 146

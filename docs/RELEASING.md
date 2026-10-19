@@ -83,6 +83,9 @@ CLI and loopback-only receivers. No test reads or writes `~/.tailmsg`, calls the
 port 7766, or contacts another machine. The Codex bridge tests use temporary AF_UNIX sockets and fake `codex` and
 `systemctl` executables; they never reach a real app-server or the user's systemd manager.
 
+`tests/test_public_*.py` cover the unreleased public bot contacts: a real gateway, worker, calendar capability
+service and callers as separate processes on loopback ports, with synthetic homes and synthetic calendar data.
+
 `sh selftest.sh` is the upstream end-to-end check. It needs Tailscale on the machine and runs
 temporary receivers on the machine's own Tailscale address, ports 7866-7883 (and a stub webhook on
 127.0.0.1:7879); confirm those ports are free first. It never uses port 7766 or `~/.tailmsg`. The

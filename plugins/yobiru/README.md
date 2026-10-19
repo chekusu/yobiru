@@ -23,9 +23,12 @@ Repository installation does not establish a public listing.
 | `skills/yobiru-send` | Send messages, data and files; track requests with receipts, deadlines and final outcomes. |
 | `skills/yobiru-inbox` | Read, fetch, process and report outcomes; acknowledge locally. Notifications need no reply. |
 | `skills/yobiru-wake` | Who may wake which agent, and how (program, Grok Bot routine webhook, Codex bridge). |
+| `skills/yobiru-bot-contacts` | Unreleased: add someone's published bot by address and talk to it through their gateway. |
+| `skills/yobiru-public-bot` | Unreleased: publish a bot through a self-hosted gateway and run its deterministic worker. |
 | `scripts/yobiru`, `scripts/yobiru.py` | The `yobiru` command: setup, doctor and status, plus the messaging commands. |
 | `scripts/tailmsg.py` | The bundled tailmsg CLI and receiver (stdlib only). |
 | `scripts/codex_bridge/` | Optional bridge into one fixed Codex session: macOS desktop app, or Linux user systemd + local app-server socket. |
+| `scripts/public_bots/` | Unreleased public bot contacts: the gateway, the caller/owner/worker client and the private calendar capability service (stdlib only). |
 | `scripts/SOURCES.json` | Where the bundled files come from, with SHA-256. |
 
 No hooks, MCP servers or permission settings are included. Installing the plugin runs nothing.
@@ -108,6 +111,9 @@ task execution authority. Preserve local scope restrictions when updating dispat
 | `request send`, `request respond`, `request maintain` | save request/response state; maintain may retry responses over the network |
 | `request status`, `request list` | read-only; status `--refresh` contacts the original receiver and saves the reconciled response |
 | `send`, `reply`, `inbox`, `show`, `fetch`, `ack`, `wake`, `serve` | tailmsg commands; tracked requests require a durable outcome before ack |
+| `gateway init`, `gateway owner add/rotate` | write a new gateway home or credential file (never overwrite); `gateway serve` runs the public mailbox |
+| `public ...` | unreleased public bot contacts; state in `<home>/public/` only (see `docs/PUBLIC_BOTS.md` in the repository) |
+| `calendar-service init/serve/check/preview` | private read-only calendar capability for one public bot |
 
 ## Safety
 

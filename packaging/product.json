@@ -6,7 +6,7 @@
   "publisher": "Chekusu",
   "repository": "https://github.com/chekusu/yobiru",
   "license": "MIT",
-  "description": "Peer-to-peer messages, file handoff and receiver-controlled wake-ups between AI agents on your own Tailscale network. Speaks the tailmsg protocol v1; no central server.",
+  "description": "Peer-to-peer messages, file handoff and receiver-controlled wake-ups between AI agents on your own Tailscale network; private messaging speaks the tailmsg protocol v1 with no central server. Includes an unreleased first version of public bot contacts through a gateway you host.",
   "keywords": [
     "tailscale",
     "tailnet",
@@ -26,7 +26,7 @@
   },
   "codex": {
     "shortDescription": "Connect your personal agents",
-    "longDescription": "Yobiru lets your personal agents exchange messages, structured data and files between your own computers over Tailscale. Send a request with a receipt and a final result, check its status, or send a notification without requiring a reply. Use your existing Codex session or a receiver-controlled wake adapter. This plugin runs local commands: it requires Python 3.8+, Tailscale and an approved setup on each participating computer. A plugin install alone does not start a receiver, connect a network or grant task permissions. Yobiru has no central message or file storage.",
+    "longDescription": "Yobiru lets your personal agents exchange messages, structured data and files between your own computers over Tailscale. Send a request with a receipt and a final result, check its status, or send a notification without requiring a reply. Use your existing Codex session or a receiver-controlled wake adapter. This plugin runs local commands: it requires Python 3.8+, Tailscale and an approved setup on each participating computer. A plugin install alone does not start a receiver, connect a network or grant task permissions. Private messaging has no central message or file storage. An unreleased first version of public bot contacts lets people outside your tailnet message one of your bots through a gateway you host: that gateway stores public conversations in plaintext with retention limits, and the bot answers only through a deterministic responder (owner-written FAQ, leave a message, read-only calendar slot suggestions), never an unrestricted agent session.",
     "category": "Productivity",
     "capabilities": [
       "Interactive",
@@ -82,11 +82,11 @@
       "translations": {
         "zh-CN": {
           "subtitle": "连接你的个人 agents",
-          "description": "Yobiru 通过 Tailscale，让不同电脑上的个人 agent 交换消息、结构化数据和文件。请求包含回执和最终结果，并可查询状态；通知无需回复。可以沿用 Codex 常驻会话，或由接收端配置唤醒入口。插件执行本地命令，每台参与通信的电脑需要 Python 3.8+、Tailscale 和经用户授权的配置。仅安装插件不会启动接收服务、连接网络或授予任务权限。Yobiru 不集中存储消息或文件。"
+          "description": "Yobiru 通过 Tailscale，让不同电脑上的个人 agent 交换消息、结构化数据和文件。请求包含回执和最终结果，并可查询状态；通知无需回复。可以沿用 Codex 常驻会话，或由接收端配置唤醒入口。插件执行本地命令，每台参与通信的电脑需要 Python 3.8+、Tailscale 和经用户授权的配置。仅安装插件不会启动接收服务、连接网络或授予任务权限。私有消息不集中存储消息或文件。尚未发布的第一版公开 bot 联系人允许 tailnet 之外的人通过你托管的网关给你的 bot 发消息：该网关以明文保存公开对话并有保留期限，bot 只通过确定性应答器回答（所有者编写的 FAQ、留言、只读日程时段建议），不会交给不受限制的 agent 会话处理。"
         },
         "ja-JP": {
           "subtitle": "パーソナルエージェントをつなぐ",
-          "description": "Yobiru は Tailscale を通じて、別々のコンピューター上のパーソナルエージェント間でメッセージ、構造化データ、ファイルを受け渡します。リクエストには受信確認と最終結果があり、状態を確認できます。通知への返信は不要です。既存の Codex セッションや、受信側で設定した起動アダプターを利用できます。このプラグインはローカルコマンドを実行します。通信する各コンピューターに Python 3.8 以降、Tailscale、ユーザーが承認した設定が必要です。インストールだけでは受信サービスの起動、ネットワークへの接続、タスク権限の付与は行いません。Yobiru はメッセージやファイルを中央に保存しません。"
+          "description": "Yobiru は Tailscale を通じて、別々のコンピューター上のパーソナルエージェント間でメッセージ、構造化データ、ファイルを受け渡します。リクエストには受信確認と最終結果があり、状態を確認できます。通知への返信は不要です。既存の Codex セッションや、受信側で設定した起動アダプターを利用できます。このプラグインはローカルコマンドを実行します。通信する各コンピューターに Python 3.8 以降、Tailscale、ユーザーが承認した設定が必要です。インストールだけでは受信サービスの起動、ネットワークへの接続、タスク権限の付与は行いません。プライベートメッセージはメッセージやファイルを中央に保存しません。未リリースの初版の公開ボット連絡先では、tailnet の外の人もあなたが運用するゲートウェイ経由であなたのボットにメッセージを送れます。このゲートウェイは公開会話を平文で保存して保持期限を設け、ボットは決定的な応答器（所有者が書いた FAQ、伝言、読み取り専用の予定候補）だけで答え、制限のないエージェントセッションには渡しません。"
         }
       }
     }
