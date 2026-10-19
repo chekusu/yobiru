@@ -1,6 +1,6 @@
 # Restart, relogin and receiver identity recovery
 
-This record separates an observed Grok Bot recovery from proposed fixes. The 0.5.2 release did
+This record separates an observed Grok Bot recovery from proposed fixes. The 0.5.2 and 0.5.3 releases do
 not change discovery or live identity refresh. A stable hostname helps new sends find the current
 address; it does not guarantee that a receiver, authentication state or wake routine survives a
 cloud-computer rebuild. Keep private hostnames, addresses, session IDs and operational logs out of
@@ -59,7 +59,7 @@ file grants must not be redirected to a replacement node merely because its disp
    Retain unresolved restrictions. Never use `--legacy-request`, a renamed target or a broader access
    policy to bypass an identity mismatch. A process restart is not a verified machine-rebuild test.
 
-## Proposed fixes, not implemented in 0.5.2
+## Proposed fixes, not implemented in 0.5.2 or 0.5.3
 
 - Treat the Tailscale online flag as a signal independent from bounded receiver reachability probes.
   Make an unprobed/unknown state distinct from a failed probe; retain deadlines and concurrency bounds.

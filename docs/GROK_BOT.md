@@ -91,7 +91,7 @@ computer merely to demonstrate plugin installation.
 Known limits include discovery treating a false Tailscale online flag as an offline receiver without
 probing, and a running receiver retaining its startup node name after a rename or relogin. See
 [restart and identity recovery](RESTART_RECOVERY.md) for the observed symptoms, code paths, bounded
-recovery steps and proposed regression coverage. These runtime fixes are not part of 0.5.2.
+recovery steps and proposed regression coverage. These runtime fixes are not part of 0.5.2 or 0.5.3.
 
 ### Preserve Tailscale state and startup
 

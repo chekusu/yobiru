@@ -3,6 +3,23 @@
 Yobiru release verification. This page separates what has actually been run from what has not. It is not a
 security guarantee: the tests show the behaviors listed below, nothing more.
 
+## Cloud-computer setup guidance (0.5.3)
+
+On 2026-10-19, the 0.5.3 release candidate passed **228 plugin tests and 146
+bridge/resident/installer tests (374 total)** on Python 3.12. Build consistency,
+public-file hygiene, `git diff --check` and Python 3.8 syntax parsing passed.
+Syntax parsing is not execution on a Python 3.8 interpreter.
+
+The package includes updated setup/Grok Bot skills for inspecting and preserving Tailscale
+identity state, keeping existing Yobiru data, and configuring supported startup recovery.
+The runtime changes only its reported product version. No automatic state migration,
+startup installer, discovery fix or live receiver identity refresh was added.
+
+These isolated tests verify packaging and existing protocol/installer behavior. They do not
+establish that a chosen cloud directory survives a rebuild, encrypted identity state is portable,
+or a host restores network login and agent wake-ups after a real VM image replacement. See
+[the state and startup guide](GROK_BOT.md#preserve-tailscale-state-and-startup).
+
 ## Resident session workflow (0.5.2)
 
 On 2026-10-19, the 0.5.2 release candidate passed **228 plugin tests and 146
