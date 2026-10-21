@@ -59,6 +59,16 @@ Imagine asking: **“What are people discussing, what matters to my project, and
 
 This is an illustrative workflow. Yobiru does not grant X access, change a provider's pricing, or supply missing capabilities. **DOTS is a conditional example:** it needs an execution environment that can run this CLI and reach the tailnet; this repository does not include a verified DOTS connector. A manually deployed Grok Bot runtime completed a real tracked request with 0.5.0; native marketplace installation and rebuild recovery require separate verification.
 
+## Keep the work when you switch assistants
+
+Several agents can help with the same project, but their findings often end up in separate conversations. [Waypost](https://waypost.hika.fyi) provides a place to collect their reports and keep context for the next assistant.
+
+For example, Grok Bot sends a research summary and source links through **Yobiru → Waypost**. Your **primary assistant**—the one you usually talk to—reads them alongside other reports and helps you decide what to do next. If you switch assistants, you can give the next one access to the saved reports and context.
+
+Waypost is [open source](https://github.com/mainline-org/waypost) and can be self-hosted. An invite-only hosted trial is also available from its website.
+
+The optional [Waypost bridge](docs/WAYPOST_INTEROP.md) forwards **text messages** in both directions on macOS/Linux. Forwarded text is stored in your chosen Waypost service. Files and memory are managed separately in Waypost.
+
 ## How it works
 
 ```text
