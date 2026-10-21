@@ -8,7 +8,9 @@ reconciled by a human and are never automatically sent again. A processed
 receipt means the bridge confirmed forwarding, not that a remote task ran.
 A message the bridge refuses (no route, unverified sender, attachments, an
 unreadable record) is quarantined in the journal: recorded once, never
-forwarded or acknowledged, and it never stops the bridge.
+forwarded or acknowledged, and it never stops the bridge. The decision
+belongs to the inbox file and holds when the file later changes, until an
+explicit --retry-refused.
 """
 import argparse
 import contextlib
@@ -262,6 +264,7 @@ class Journal:
                 CREATE TABLE IF NOT EXISTS incoming(
                   source_key TEXT PRIMARY KEY,envelope_id TEXT NOT NULL,record TEXT NOT NULL,
                   payload TEXT,error TEXT,state TEXT NOT NULL,waypost_message_id TEXT);
+                CREATE INDEX IF NOT EXISTS incoming_by_file ON incoming(envelope_id);
                 CREATE TABLE IF NOT EXISTS outgoing(
                   item_id TEXT PRIMARY KEY,resource_id TEXT NOT NULL,producer_id TEXT NOT NULL,
                   feed TEXT NOT NULL,message TEXT NOT NULL,address TEXT,state TEXT NOT NULL,
@@ -359,6 +362,16 @@ class Bridge:
 
     def poll_yobiru_once(self):
         failures, refused, count = [], [], 0
+        if not self.args.dry_run:
+            db = self.journal.db
+            # Earlier builds could plan one inbox file again after its record changed. While none of those plans
+            # is known to be sent, which one may go is ambiguous: quarantine them all, reported once.
+            for row in db.execute("SELECT envelope_id FROM incoming GROUP BY envelope_id "
+                                  "HAVING COUNT(*)>1 AND SUM(state='pending')=COUNT(*)").fetchall():
+                with db:
+                    db.execute("UPDATE incoming SET state='refused',error='PLANNED_MORE_THAN_ONCE' "
+                               "WHERE envelope_id=?", (row[0],))
+                refused.append(BridgeError('PLANNED_MORE_THAN_ONCE', item=row[0]))
         for mid, envelope, received, problem in read_inbox_envelopes(self.args.home):
             if problem:
                 # Nothing in an unreadable record can be trusted, so its file name is the only key.
@@ -383,24 +396,33 @@ class Bridge:
                     count += 1
                 continue
             db = self.journal.db
-            existing = db.execute('SELECT record,payload FROM incoming WHERE source_key=?', (key,)).fetchone()
-            if existing is not None:
-                old = strict_json(existing['record'])
-                if old.get('envelope') != envelope:
+            # Every decision belongs to the inbox file (envelope_id holds its name), not to what the file
+            # holds now: the key changes when a record becomes readable or names another sender.
+            rows = db.execute('SELECT source_key,record,state FROM incoming WHERE envelope_id=?', (mid,)).fetchall()
+            if any(row['state'] in ('refused', 'dismissed') for row in rows):
+                continue  # Quarantined whatever the file holds now, until an explicit --retry-refused.
+            if rows:
+                # The forwarded record, once there is one, is what the file must still hold.
+                sent = [row for row in rows if row['state'] == 'sent']
+                same = [row for row in sent or rows if row['source_key'] == key]
+                if not problem and (not same or strict_json(same[0]['record']).get('envelope') != envelope):
                     raise BridgeError('INBOX_RECORD_CONFLICT', item=mid)
-            else:
-                # A refusal is quarantined at once: recorded with its reason, reported this time only, never
-                # forwarded, and never a reason to stop the bridge or to retry.
-                with db:
-                    db.execute('INSERT INTO incoming VALUES(?,?,?,?,?,?,NULL)',
-                               (key, mid, record, canonical(payload) if payload else None, error,
-                                'refused' if error else 'pending'))
-                if error:
-                    refused.append(BridgeError(error, item=mid))
+                continue  # Planned or forwarded once; a file that is now unreadable leaves nothing to compare.
+            # A refusal is quarantined at once: recorded with its reason, reported this time only, never
+            # forwarded, and never a reason to stop the bridge or to retry.
+            with db:
+                db.execute('INSERT INTO incoming VALUES(?,?,?,?,?,?,NULL)',
+                           (key, mid, record, canonical(payload) if payload else None, error,
+                            'refused' if error else 'pending'))
+            if error:
+                refused.append(BridgeError(error, item=mid))
         if self.args.dry_run:
             return count, refused, failures
         db = self.journal.db
-        for row in db.execute("SELECT * FROM incoming WHERE state='pending' ORDER BY source_key").fetchall():
+        # One forward per inbox file: only a file's sole row is ever dispatched. A plan an earlier build left next
+        # to a refusal, a sent record or another plan is never sent, and its outcome is never claimed.
+        for row in db.execute("SELECT * FROM incoming AS plan WHERE state='pending' AND (SELECT COUNT(*) FROM "
+                              "incoming WHERE envelope_id=plan.envelope_id)=1 ORDER BY source_key").fetchall():
             try:
                 result = waypost_request(self.args.waypost_url, self.token, 'POST', '/v0/messages', strict_json(row['payload']))
                 if result.get('submission_state') != 'committed' or not valid_resource(result.get('message_id')):
@@ -563,21 +585,24 @@ class Bridge:
 
     def resolve_refused(self, item, action):
         """dismiss: the operator has looked at a quarantined item; it stays unforwarded and unacknowledged.
-        retry: forget an incoming refusal so that the next run plans the current inbox record again; this
-        command forwards nothing. Outgoing refusals depend on the journal's fixed routes and cannot be retried."""
+        retry: forget an incoming refusal, dismissed or not, so that the next run plans the current inbox
+        record again; this command forwards nothing. Either covers every row the journal holds for that inbox
+        file. Outgoing refusals depend on the journal's fixed routes and cannot be retried."""
         db = self.journal.db
-        incoming = db.execute("SELECT source_key FROM incoming WHERE envelope_id=? AND state='refused'",
-                              (item,)).fetchall()
-        outgoing = db.execute("SELECT item_id FROM outgoing WHERE item_id=? AND state='refused'", (item,)).fetchall()
-        if len(incoming) + len(outgoing) != 1:
+        held = ('refused',) if action == 'dismiss' else ('refused', 'dismissed')
+        incoming = [r for r in db.execute('SELECT state FROM incoming WHERE envelope_id=?', (item,)) if r['state'] in held]
+        outgoing = [r for r in db.execute('SELECT state FROM outgoing WHERE item_id=?', (item,)) if r['state'] in held]
+        if bool(incoming) == bool(outgoing):
             raise BridgeError('ONLY_ONE_REFUSED_ITEM_CAN_BE_RESOLVED')
         with db:
             if action == 'dismiss' and incoming:
-                db.execute("UPDATE incoming SET state='dismissed' WHERE source_key=?", (incoming[0]['source_key'],))
+                db.execute("UPDATE incoming SET state='dismissed' WHERE envelope_id=? AND state='refused'", (item,))
             elif action == 'dismiss':
                 db.execute("UPDATE outgoing SET state='dismissed' WHERE item_id=?", (item,))
             elif incoming:
-                db.execute("DELETE FROM incoming WHERE source_key=?", (incoming[0]['source_key'],))
+                # Rows an earlier build planned next to the refusal go too; sent rows stay as the record.
+                db.execute("DELETE FROM incoming WHERE envelope_id=? AND state IN ('refused','dismissed','pending')",
+                           (item,))
             else:
                 raise BridgeError('ONLY_INCOMING_REFUSALS_CAN_BE_RETRIED')
 
@@ -621,7 +646,7 @@ def main(argv=None):
     reconcile.add_argument('--retry-unsent',metavar='ITEM_ID',help='ONLY after verifying the unknown attempt did not reach the peer; authorize a later retry')
     reconcile.add_argument('--list-refused',action='store_true',help='print quarantined and dismissed items (ids and reasons only)')
     reconcile.add_argument('--dismiss-refused',metavar='ITEM_ID',help='mark a quarantined item as reviewed; it stays unforwarded and unacknowledged')
-    reconcile.add_argument('--retry-refused',metavar='ENVELOPE_ID',help='forget an incoming refusal so the next run plans its current inbox record again')
+    reconcile.add_argument('--retry-refused',metavar='ENVELOPE_ID',help='forget an incoming refusal, dismissed or not, so the next run plans its current inbox record again')
     args=parser.parse_args(argv)
     bridge=None
     try:

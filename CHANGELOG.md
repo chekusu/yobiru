@@ -25,7 +25,8 @@ prerelease, and the version stays 0.5.3 until a release is chosen.
   push or pull, and a refused or failed attempt leaves no extra copy of its files.
 - **Waypost bridge** (#14): an optional text bridge between Yobiru and a Waypost service
   (`tools/waypost_bridge.py` in a source checkout, POSIX, not part of the plugin) with a durable journal.
-  Unknown outcomes are never resent automatically, and refused messages are quarantined without stopping it.
+  Unknown outcomes are never resent automatically, and refused messages are quarantined without stopping it,
+  even when their inbox record later changes, until the operator retries them.
 - **Documentation** (#13): a community-reported Grok Bot run and an OpenClaw wake recipe.
 - **Tests** (#18 and follow-ups): portable `false`, path and connection-refusal checks for macOS, and a
   process-group check that no longer mistakes an unreaped zombie for a surviving process.

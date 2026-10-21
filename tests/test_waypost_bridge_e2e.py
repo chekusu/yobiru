@@ -334,6 +334,8 @@ class BridgeIntegration(unittest.TestCase):
         record['received']['peer'] = {'node': 'alpha.example.ts.net'}
         record['envelope']['from'] = 'other.example.ts.net'
         path.write_text(json.dumps(record))
+        self.assertEqual(self.refusals(self.run_bridge()), [], 'a changed record stays quarantined until retried')
+        self.assertEqual(self.refusals(self.run_bridge('--retry-refused', mid)), [])
         self.assertEqual(self.refusals(self.run_bridge()), [('AUTHENTICATED_SENDER_MISMATCH', mid)])
         self.assertEqual(self.inspect('messages'), [])
         path.unlink()
