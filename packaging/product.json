@@ -69,6 +69,7 @@
       "public_bots/bot_client.py": "scripts/public_bots/bot_client.py",
       "public_bots/bot_calendar.py": "scripts/public_bots/bot_calendar.py",
       "public_bots/bot_resources.py": "scripts/public_bots/bot_resources.py",
+    "public_bots/bot_mcp.py": "scripts/public_bots/bot_mcp.py",
       "docs/PUBLIC_BOTS.md": "docs/PUBLIC_BOTS.md"
     },
     "license": {

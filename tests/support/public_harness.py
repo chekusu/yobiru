@@ -18,6 +18,25 @@ if str(PUBLIC) not in sys.path:
 import bot_common as C  # noqa: E402
 
 
+def cli(home, *args):
+    """bot_client in this process: -> (exit code, parsed JSON stdout or text, stderr). Never for `mcp`, which
+    rebinds file descriptor 1: run that one as a subprocess."""
+    import io
+    from contextlib import redirect_stderr, redirect_stdout
+    import bot_client
+    out, err, code = io.StringIO(), io.StringIO(), 0
+    with redirect_stdout(out), redirect_stderr(err):
+        try:
+            bot_client.main(["--home", str(home)] + list(args))
+        except SystemExit as e:
+            code = e.code or 0
+    text = out.getvalue()
+    try:
+        return code, json.loads(text), err.getvalue()
+    except ValueError:
+        return code, text, err.getvalue()
+
+
 def plain_env(home):
     return {"HOME": str(home), "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"}
@@ -291,6 +310,38 @@ class FriendsGateway(Gateway):
 
     def resolve(self, mid, action, owner=None):
         return self.call("POST", "/v1/owner/messages/%s/resolve" % mid, {"action": action}, owner or self.owner_token)
+
+    def raw(self, method, path, body=b"", headers=None):
+        """One raw HTTP exchange: -> (status, headers dict, body bytes)."""
+        import http.client
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=15)
+        try:
+            conn.request(method, path, body=body, headers=headers or {})
+            resp = conn.getresponse()
+            return resp.status, {k.lower(): v for k, v in resp.getheaders()}, resp.read()
+        finally:
+            conn.close()
+
+    def mcp(self, token, message, version="2025-11-25", origin=None, extra=None, raw_body=None):
+        """POST one JSON-RPC message to /mcp as an MCP client would. -> (status, headers, parsed body or None)."""
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+        if token:
+            headers["Authorization"] = "Bearer " + token
+        if version:
+            headers["MCP-Protocol-Version"] = version
+        if origin:
+            headers["Origin"] = origin
+        headers.update(extra or {})
+        body = raw_body if raw_body is not None else json.dumps(message).encode("utf-8")
+        status, hdrs, data = self.raw("POST", "/mcp", body, headers)
+        return status, hdrs, (json.loads(data) if data else None)
+
+    def tool(self, token, name, arguments, rid=1):
+        """tools/call -> the MCP tool result (content, structuredContent, isError); asserts a JSON-RPC result."""
+        status, _, obj = self.mcp(token, {"jsonrpc": "2.0", "id": rid, "method": "tools/call",
+                                          "params": {"name": name, "arguments": arguments}})
+        assert status == 200 and "result" in obj, (status, obj)
+        return obj["result"]
 
     def db(self):
         import sqlite3

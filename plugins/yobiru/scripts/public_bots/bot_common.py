@@ -26,8 +26,8 @@ from pathlib import Path
 API_VERSION = 1
 SERVICE = "yobiru-bot-gateway"
 MAX_RESPONSE_BYTES = 1024 * 1024
-ID_KINDS = ("bot", "act", "own", "wrk", "ver", "cnv", "msg", "chk")
-ID_RE = re.compile(r"^(?:bot|act|own|wrk|ver|cnv|msg|chk)_[a-z2-7]{16}\Z")
+ID_KINDS = ("bot", "act", "own", "wrk", "ver", "cnv", "msg", "chk", "dec")
+ID_RE = re.compile(r"^(?:bot|act|own|wrk|ver|cnv|msg|chk|dec)_[a-z2-7]{16}\Z")
 # source: speak and follow as one bot (minted only through that bot's owner); connector: wake one native
 # binding's host, never read message bodies.
 TOKEN_PREFIX = {"owner": "ybo", "actor": "yba", "worker": "ybw", "verifier": "ybv", "ticket": "ybt",
@@ -41,6 +41,15 @@ DATE_RE = re.compile(r"^\d{4}-\d\d-\d\d\Z")
 ISO_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\Z")
 # Bidirectional overrides/isolates and marks: they can make displayed text differ from stored text.
 BIDI = set("\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+# Small text attachments (opt-in `files` capability): plain names with a text extension or none at all. Names
+# a viewer could run or open as something else (scripts, executables, HTML) are refused outright.
+ATTACHMENT_EXTENSIONS = ("txt", "md", "markdown", "json", "csv", "tsv", "yaml", "yml", "toml", "log", "diff", "patch",
+                         "rst")
+ATTACHMENT_NAME_CHARS = 100
+ATTACHMENT_NAME_BYTES = 200
+NAME_RESERVED_CHARS = set('/\\:*?"<>|')
+WINDOWS_DEVICE_RE = re.compile("^(?:con|prn|aux|nul|clock\\$|conin\\$|conout\\$|com[0-9\u00b9\u00b2\u00b3]|"
+                               "lpt[0-9\u00b9\u00b2\u00b3])\\Z", re.I)
 
 
 class StrictJSONError(ValueError):
@@ -146,6 +155,90 @@ def text_error(value, limit, multiline=False, required=True):
 def clean_label(value, limit=80):
     """NFC single-line label with surrounding whitespace removed (call text_error first)."""
     return " ".join(unicodedata.normalize("NFC", value).split())[:limit]
+
+
+# ---------------------------------------------------------------- small text attachments
+def attachment_name_error(name):
+    """None if `name` is a safe plain file name for a text attachment; a short reason otherwise. Plain means: no
+    separators or traversal, no leading dot or dash, no trailing dot or space, nothing invisible or reserved on
+    Windows, and an extension from ATTACHMENT_EXTENSIONS (or none). Never modifies input."""
+    if not isinstance(name, str):
+        return "must be a string"
+    if not 1 <= len(name) <= ATTACHMENT_NAME_CHARS or len(name.encode("utf-8", "surrogatepass")) > ATTACHMENT_NAME_BYTES:
+        return "must be 1-%d characters (%d bytes)" % (ATTACHMENT_NAME_CHARS, ATTACHMENT_NAME_BYTES)
+    for c in name:
+        cat = unicodedata.category(c)
+        if c in NAME_RESERVED_CHARS or c in BIDI or cat[0] == "C" or (cat[0] == "Z" and c != " "):
+            return "contains a separator, a reserved or an invisible character"
+    if unicodedata.normalize("NFC", name) != name:
+        return "must be in Unicode normal form NFC"
+    if name[0] in ".- " or name[-1] in ". ":
+        return "must not start with a dot, dash or space, nor end with a dot or space"
+    if WINDOWS_DEVICE_RE.match(name.split(".", 1)[0].rstrip(" ")):
+        return "is a reserved device name on Windows"
+    ext = name.rsplit(".", 1)[1].lower() if "." in name else ""
+    if ext and ext not in ATTACHMENT_EXTENSIONS:
+        return "must be a text file (.%s) or have no extension" % ", .".join(ATTACHMENT_EXTENSIONS)
+    return None
+
+
+def attachment_text_error(content, max_bytes):
+    """None if `content` is UTF-8 text within `max_bytes`: no NUL or other control characters except newline,
+    carriage return and tab, no unpaired surrogates or bidirectional controls."""
+    if not isinstance(content, str):
+        return "must be a string"
+    try:
+        size = len(content.encode("utf-8"))
+    except UnicodeEncodeError:
+        return "is not valid UTF-8 text"
+    if size > max_bytes:
+        return "is larger than %d bytes" % max_bytes
+    for c in content:
+        if c in BIDI:
+            return "contains bidirectional control characters"
+        if unicodedata.category(c) == "Cc" and c not in "\n\r\t":
+            return "contains NUL or other control characters"
+    return None
+
+
+def attachments_error(items, max_files, max_bytes, total_bytes):
+    """Validate a list of {name, content} attachments. -> (clean list, total bytes, None) or (None, 0, reason).
+    Names must be distinct within one message, also after case folding."""
+    if not isinstance(items, list) or not items:
+        return None, 0, "attachments must be a non-empty list"
+    if len(items) > max_files:
+        return None, 0, "at most %d attachments" % max_files
+    clean, seen, total = [], set(), 0
+    for item in items:
+        if not isinstance(item, dict) or set(item) != {"name", "content"}:
+            return None, 0, "each attachment is exactly {name, content}"
+        err = attachment_name_error(item["name"])
+        if err:
+            return None, 0, "attachment name %s" % err
+        folded = unicodedata.normalize("NFC", item["name"]).casefold()
+        if folded in seen:
+            return None, 0, "attachment names must be distinct"
+        seen.add(folded)
+        err = attachment_text_error(item["content"], max_bytes)
+        if err:
+            return None, 0, "attachment %s %s" % (item["name"], err)
+        total += len(item["content"].encode("utf-8"))
+        if total > total_bytes:
+            return None, 0, "attachments are larger than %d bytes together" % total_bytes
+        clean.append({"name": item["name"], "content": item["content"]})
+    return clean, total, None
+
+
+def attachment_bytes(items):
+    return sum(len(a["content"].encode("utf-8")) for a in items or [])
+
+
+def attachment_view(item, content=True):
+    v = {"name": item["name"], "bytes": len(item["content"].encode("utf-8")),
+         "sha256": hashlib.sha256(item["content"].encode("utf-8")).hexdigest()}
+    if content:
+        v["content"] = item["content"]
+    return v
 
 
 def int_in(value, low, high):
@@ -442,6 +535,36 @@ def api_call(base_url, method, path, body=None, token=None, timeout=15.0):
     if not isinstance(obj, dict):
         raise ApiError(resp.status, "invalid_response")
     return resp.status, obj
+
+
+def post_raw(base_url, path, data, headers, timeout=60.0):
+    """POST `data` (bytes) to `base_url + path` and return (status, content type, body bytes): for the local MCP
+    proxy, which forwards JSON-RPC as it is. Same rules as api_call: the normalized `base_url` is the only place a
+    credential in `headers` is ever sent, redirects are refused, TLS is verified, the exchange has a total deadline
+    and the answer is bounded."""
+    base = normalize_base_url(base_url)
+    u = urllib.parse.urlsplit(base)
+    if u.scheme == "https":
+        conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout,
+                                           context=ssl.create_default_context())
+    else:
+        conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
+    hdrs = {"User-Agent": "yobiru-public/%d" % API_VERSION}
+    hdrs.update(headers)
+    with _Deadline(conn, timeout) as d:
+        try:
+            d.connect()
+            conn.request("POST", u.path + path, body=data, headers=hdrs)
+            resp = conn.getresponse()
+            raw = resp.read(MAX_RESPONSE_BYTES + 1)
+            d.check()
+        except (OSError, http.client.HTTPException) as e:
+            raise ApiError(None, "unreachable", "%s%s" % (type(e).__name__, " (deadline)" if d.expired else ""))
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ApiError(resp.status, "response_too_large")
+    if 300 <= resp.status < 400:
+        raise ApiError(resp.status, "redirect_refused", "credentials are never forwarded to another location")
+    return resp.status, (resp.getheader("Content-Type") or "").split(";")[0].strip().lower(), raw
 
 
 def api_ok(base_url, method, path, body=None, token=None, timeout=15.0, accept=(200, 201, 202)):
