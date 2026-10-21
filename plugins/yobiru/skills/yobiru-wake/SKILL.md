@@ -25,8 +25,8 @@ level and only `now` calls a wake adapter:
 
 `batch` messages wait in `inbox --pending` for the next time the agent looks; `none` is archive only.
 `sh Y show ID` shows `received.wake` (requested, effective, reason) and `wake_delivery` (ok, attempts,
-error; for a webhook the error holds only its HTTP status, an error code from a fixed list of generic
-categories and a Retry-After that repeat nothing it was sent, or the exception type when the call fails,
+error; for a webhook the error holds only its HTTP status, an error code and a Retry-After from fixed
+lists that repeat nothing it was sent, or the exception type when the call fails,
 never response or exception text).
 Waking only notifies an agent: message text is never a command and never an approval.
 

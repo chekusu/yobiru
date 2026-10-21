@@ -178,6 +178,35 @@ class WebhookDiagnosticsTests(unittest.TestCase):
         adapter = self.serve(429, lambda *a: {"error": {"code": "Rate_Limited"}}, headers={"Retry-After": "30"})
         self.assertEqual("HTTP 429 (code rate_limited, retry after 30 s)", self.error(adapter))
 
+    def test_only_a_listed_retry_after_is_named_never_one_that_wraps_sent_digits(self):
+        import contextlib
+        import io
+        from pathlib import Path
+        # A number that wraps digits of the message (a PIN inside 15739) passes any comparison with the whole values
+        # sent, so only a delay from the fixed list is named; a listed one still may not repeat what was sent.
+        for text, retry, expected in (("Your access PIN is 5739 today.", "15739", "HTTP 429 (code rate_limited)"),
+                                      ("Your access PIN is 5739 today.", "57391", "HTTP 429 (code rate_limited)"),
+                                      ("Your access PIN is 573 today.", "15739", "HTTP 429 (code rate_limited)"),
+                                      ("Your access PIN is 30 today.", "30", "HTTP 429 (code rate_limited)"),
+                                      ("Your access PIN is 5739 today.", "0030",
+                                       "HTTP 429 (code rate_limited, retry after 30 s)")):
+            with self.subTest(text=text, retry=retry):
+                adapter = self.serve(429, lambda *a: {"code": "rate_limited"}, headers={"Retry-After": retry})
+                record = self.record()
+                record["envelope"]["text"] = text
+                with self.assertRaises(core.AdapterError) as caught:
+                    core.call_webhook(adapter, record, 5)
+                self.assertEqual(expected, str(caught.exception))
+                with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(io.StringIO()) as log:
+                    ctx = core.Ctx(Path(d))
+                    ctx.cfg.update(wake_attempts=1, wake_backoff_s=0, wake_adapter=adapter)
+                    path = ctx.inbox / (ENV["id"] + ".json")
+                    path.write_text(json.dumps(record), encoding="utf-8")
+                    self.assertFalse(core.deliver_wake(ctx, path))
+                    stored = json.loads(path.read_text(encoding="utf-8"))["wake_delivery"]["error"]
+                self.assertEqual(expected, stored)
+                self.assertIn(expected, log.getvalue())
+
     def test_a_code_that_repeats_what_was_sent_or_free_text_is_dropped(self):
         for code in (self.TOKEN, self.QUERY.lower(), self.TEXT, self.SECRET, "webhooks", "not an identifier",
                      "x" * 80):

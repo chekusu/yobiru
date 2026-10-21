@@ -1666,6 +1666,9 @@ WEBHOOK_ERROR_CODES = frozenset((
     "method_not_allowed", "conflict", "payload_too_large", "unsupported_media_type", "rate_limited",
     "too_many_requests", "internal_error", "bad_gateway", "service_unavailable", "gateway_timeout", "timeout"))
 WEBHOOK_RETRY_AFTER_RE = re.compile(r"[0-9]{1,5}\Z")
+# Likewise the only Retry-After delays it may name: any other number could wrap digits that were sent (a PIN
+# inside 15739), so it is left out.
+WEBHOOK_RETRY_AFTER_SECONDS = frozenset((1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600))
 
 
 def webhook_sensitive(url, secret, payload):
@@ -1691,8 +1694,9 @@ def webhook_error(status, retry_after, body, sensitive):
     """Bounded, non-secret diagnostics for a non-2xx webhook answer. A webhook can echo anything it received
     (its own path, headers, the message), so no free text from the body is ever kept: only the HTTP status, one
     error code from a JSON body (`code`, `error_code`, `error` or `error.code`) that names a category of the
-    fixed WEBHOOK_ERROR_CODES, such as `invalid_hook`, and a numeric Retry-After, each kept only when it repeats
-    nothing that was sent (the Retry-After neither as written nor without its leading zeros)."""
+    fixed WEBHOOK_ERROR_CODES, such as `invalid_hook`, and a Retry-After of the fixed WEBHOOK_RETRY_AFTER_SECONDS,
+    each kept only when it repeats nothing that was sent (the Retry-After neither as written nor without its
+    leading zeros)."""
     detail = []
     try:
         obj = json.loads(body.decode("utf-8"))
@@ -1706,7 +1710,8 @@ def webhook_error(status, retry_after, body, sensitive):
                 detail.append("code " + low)
                 break
     seconds = retry_after.strip() if isinstance(retry_after, str) else ""
-    if WEBHOOK_RETRY_AFTER_RE.match(seconds) and not any(repeats_sent(v, sensitive) for v in (seconds, str(int(seconds)))):
+    if (WEBHOOK_RETRY_AFTER_RE.match(seconds) and int(seconds) in WEBHOOK_RETRY_AFTER_SECONDS
+            and not any(repeats_sent(v, sensitive) for v in (seconds, str(int(seconds))))):
         detail.append("retry after %d s" % int(seconds))
     return "HTTP %d" % status + (" (%s)" % ", ".join(detail) if detail else "")
 
