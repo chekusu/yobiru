@@ -497,6 +497,29 @@ class SharedRequestTests(unittest.TestCase):
         for path in files:
             self.assertEqual("0o600", mode(path), path)
 
+    def test_identical_reply_retry_with_files_is_idempotent_and_leaves_no_copy(self):
+        # Reported in the PR #19 discussion: an identical `reply --file` retry was refused and left a
+        # persistent copy that no sweep removes.
+        mid = self.request()
+        artifact = self.root / "result.txt"
+        original = b"same bytes\n" * 100
+        artifact.write_bytes(original)
+        outbox = self.homes["bravo"] / "outbox"
+        first = self.tm_json("bravo", "reply", mid, "Finished", "--file", str(artifact))
+        copies = sorted(outbox.iterdir())
+        self.assertEqual(1, len(copies))
+        self.assertEqual(first, self.tm_json("bravo", "reply", mid, "Finished", "--file", str(artifact)))
+        artifact.write_bytes(b"different bytes")
+        changed = self.tm("bravo", "reply", mid, "Finished", "--file", str(artifact))
+        self.assertEqual(1, changed.returncode)
+        self.assertIn("durable final result", changed.stderr)
+        self.assertEqual(copies, sorted(outbox.iterdir()))
+        response = self.state(mid)["response"]
+        self.assertEqual(first["response_id"], response["id"])
+        fetched = self.tm("alpha", "fetch", response["id"])
+        self.assertEqual(0, fetched.returncode, fetched.stdout + fetched.stderr)
+        self.assertEqual(original, (self.homes["alpha"] / "inbox" / response["id"] / "files" / "result.txt").read_bytes())
+
     def test_upload_requires_preparation_correct_token_complete_size_and_hash(self):
         data = b"validated staged upload"
         env = self.envelope(data)

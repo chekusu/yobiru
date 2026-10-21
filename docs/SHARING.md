@@ -101,7 +101,9 @@ sh "$Y" request respond REQUEST_ID "Completed; result attached." --state complet
 response. Use `request respond ... --state running` for progress or `failed`, `rejected` or `blocked`
 for the appropriate final outcome. The result is saved on the shared receiver for the original
 authenticated requester. Pull responses create no reverse push connection and do not wake a
-requester-side agent.
+requester-side agent. Repeating the identical final reply (same state, text and files) returns the
+stored result and its original download links; a different final result is refused, and a refused or
+failed attempt leaves no extra copy of its files.
 
 Back on the visitor's machine:
 

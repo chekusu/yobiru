@@ -143,6 +143,159 @@ class RequestTests(unittest.TestCase):
         with core.request_db(restarted) as db:
             self.assertIsNotNone(db.execute("SELECT delivered_at FROM response_outbox").fetchone()[0])
 
+    def reply_with(self, files, text="Finished", state="completed", ctx=None):
+        a = argparse.Namespace(file=[str(f) for f in files], ttl_hours=None, text=text)
+        return core.respond_with_files(ctx or self.b, self.rec, a, state)
+
+    def staged(self):
+        return sorted(p.name for p in self.b.outbox.iterdir())
+
+    def ledger(self):
+        with core.request_db(self.b) as db:
+            row = db.execute("SELECT seq, latest FROM requests WHERE direction='incoming' AND id=?", (MID,)).fetchone()
+            outbox = db.execute("SELECT id FROM response_outbox WHERE request_id=?", (MID,)).fetchall()
+        return row["seq"], json.loads(row["latest"]), [r["id"] for r in outbox]
+
+    def artifact(self, data=b"same bytes\n" * 100, name="result.txt"):
+        path = Path(self.temp.name) / "files" / name
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(data)
+        return path
+
+    def test_an_identical_final_reply_with_files_returns_the_stored_response(self):
+        self.send()
+        result = self.artifact()
+        first = self.reply_with([result])
+        copies, before = self.staged(), self.ledger()
+        self.assertEqual(1, len(copies))
+        again = self.reply_with([result])            # re-staged under a new token, then found identical
+        self.assertEqual(first, again)                # the stored id, seq and original fetch URLs
+        self.assertEqual((copies, before), (self.staged(), self.ledger()))
+        changed = [lambda: self.reply_with([self.artifact(b"same bytez\n" * 100)]),      # same size, other hash
+                   lambda: self.reply_with([self.artifact(b"other size")]),
+                   lambda: self.reply_with([self.artifact(name="renamed.txt")]),
+                   lambda: self.reply_with([self.artifact()], text="Finished!"),
+                   lambda: self.reply_with([self.artifact()], state="failed"),
+                   lambda: self.reply_with([])]
+        for attempt in changed:
+            with self.assertRaisesRegex(ValueError, "durable final result"):
+                attempt()
+            self.artifact()                          # restore the original content for the next case
+        self.assertEqual((copies, before), (self.staged(), self.ledger()), "no refused retry leaves a copy")
+
+    def test_cleanup_follows_the_ledger_not_the_exception(self):
+        self.send()
+        result = self.artifact()
+        real = core.respond_request
+        with mock.patch.object(core, "respond_request", side_effect=OSError("before the commit")):
+            with self.assertRaises(OSError):
+                self.reply_with([result])
+        self.assertEqual([], self.staged(), "nothing refers to a copy whose response never committed")
+
+        def commit_then_fail(*args, **kwargs):
+            real(*args, **kwargs)
+            raise OSError("after the durable commit")
+        with mock.patch.object(core, "respond_request", side_effect=commit_then_fail):
+            with self.assertRaises(OSError):
+                self.reply_with([result])
+        copies = self.staged()
+        self.assertEqual(1, len(copies), "the committed response refers to its copy: it must stay")
+        seq, latest, _ = self.ledger()
+        self.assertIn("/f/%s/" % copies[0], latest["fetch"][0]["url"])
+        self.assertEqual(result.read_bytes(), (self.b.outbox / copies[0] / "files" / result.name).read_bytes())
+        self.assertEqual(latest, self.reply_with([result]))
+        self.assertEqual(copies, self.staged())
+
+    def test_a_copy_is_kept_when_the_ledger_cannot_be_read(self):
+        self.send()
+        with mock.patch.object(core, "respond_request", side_effect=OSError("failed")), \
+                mock.patch.object(core, "staged_result_referenced", side_effect=core.sqlite3.OperationalError("locked")), \
+                contextlib.redirect_stderr(io.StringIO()) as log:
+            with self.assertRaises(OSError):
+                self.reply_with([self.artifact()])
+        self.assertEqual(1, len(self.staged()))
+        self.assertIn("kept staged result files", log.getvalue())
+
+    def test_an_uncertain_ledger_keeps_the_copy_and_creates_nothing(self):
+        import sqlite3
+
+        def remove_ledger(path):
+            for part in path.parent.glob(path.name + "*"):
+                part.rename(part.with_name(part.name + ".moved"))
+
+        def drop_row(path):
+            with contextlib.closing(sqlite3.connect(str(path))) as db, db:
+                db.execute("DELETE FROM requests WHERE direction='incoming' AND id=?", (MID,))
+
+        def corrupt_latest(path):
+            with contextlib.closing(sqlite3.connect(str(path))) as db, db:
+                db.execute("UPDATE requests SET latest='{not json' WHERE direction='incoming' AND id=?", (MID,))
+        for name, change in (("missing ledger", remove_ledger), ("missing request row", drop_row),
+                             ("malformed response", corrupt_latest)):
+            with self.subTest(name):
+                home = Path(self.temp.name) / name.replace(" ", "-")
+                self.a, self.b = core.Ctx(home / "a"), core.Ctx(home / "b")
+                self.send()
+                ledger = self.b.home / "requests" / "ledger.sqlite3"
+
+                def fail_after_change(*args, **kwargs):
+                    change(ledger)
+                    raise OSError("failed while the ledger changed")
+                with mock.patch.object(core, "respond_request", side_effect=fail_after_change), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    with self.assertRaises(OSError):
+                        self.reply_with([self.artifact()])
+                self.assertEqual(1, len(self.staged()), "uncertainty is not proof that the copy is unused")
+                if name == "missing ledger":
+                    self.assertFalse(ledger.exists(), "cleanup must not create an empty ledger")
+
+    def test_failed_staging_leaves_no_partial_copy(self):
+        self.send()
+        first, missing = self.artifact(), Path(self.temp.name) / "files" / "missing.txt"
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            self.reply_with([first, missing])                    # the second file is missing
+        real_open, calls = core.private_open, []
+
+        def second_copy_fails(path, *args, **kwargs):
+            calls.append(path)
+            if len(calls) == 2:
+                raise OSError("disk full")
+            return real_open(path, *args, **kwargs)
+        with mock.patch.object(core, "private_open", side_effect=second_copy_fails):
+            with self.assertRaises(OSError):
+                self.reply_with([first, self.artifact(name="second.txt")])
+        with mock.patch.object(core, "atomic_write", side_effect=OSError("meta.json not written")):
+            with self.assertRaises(OSError):
+                self.reply_with([first])
+        self.assertEqual([], self.staged())
+        self.assertEqual("received", self.state(self.b)["state"])
+
+    def test_concurrent_identical_replies_store_one_response_and_one_copy(self):
+        import threading
+        self.send()
+        result, results, errors = self.artifact(), [], []
+        barrier = threading.Barrier(4)
+
+        def reply():
+            try:
+                ctx = core.Ctx(self.b.home)                     # as separate processes would
+                barrier.wait(10)
+                results.append(self.reply_with([result], ctx=ctx))
+            except Exception as exc:                            # pragma: no cover - reported below
+                errors.append(exc)
+        workers = [threading.Thread(target=reply) for _ in range(4)]
+        with contextlib.redirect_stderr(io.StringIO()):
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(30)
+        self.assertEqual([], errors)
+        self.assertEqual(4, len(results))
+        self.assertTrue(all(r == results[0] for r in results), "BEGIN IMMEDIATE serializes the final result")
+        self.assertEqual(1, len(self.staged()))
+        seq, latest, outbox = self.ledger()
+        self.assertEqual((results[0], 1), (latest, len([x for x in outbox if x == latest["id"]])))
+
     def test_read_only_snapshot_does_not_create_state(self):
         path = Path(self.temp.name) / "absent"
         self.assertIsNone(core.request_snapshot(path, MID))

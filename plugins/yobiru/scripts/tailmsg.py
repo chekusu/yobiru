@@ -856,6 +856,13 @@ def accept_response(ctx, env, peer):
     return True
 
 
+def same_result_files(stored, fresh):
+    """Attachment identity for an identical retry. Each attempt stages its files under a new outbox token, so
+    names, sizes and SHA-256 are compared in order, never the tokened URLs."""
+    key = lambda items: [(i.get("name"), i.get("size"), i.get("sha256")) for i in items or []]  # noqa: E731
+    return key(stored) == key(fresh)
+
+
 def respond_request(ctx, mid, state, text, fetch=None):
     if state not in ("running",) + REQUEST_FINAL:
         raise ValueError("invalid response state")
@@ -866,7 +873,7 @@ def respond_request(ctx, mid, state, text, fetch=None):
             raise ValueError("no tracked incoming request with this ID")
         if row["state"] in REQUEST_FINAL:
             previous = json.loads(row["latest"])
-            if row["state"] == state and previous["text"] == text and previous.get("fetch", []) == (fetch or []):
+            if row["state"] == state and previous["text"] == text and same_result_files(previous.get("fetch"), fetch):
                 return previous
             raise ValueError("request already has a durable final result")
         expired = parse_iso(row["deadline"]) <= now_utc()
@@ -1960,47 +1967,59 @@ def prepare_attachments(ctx, a, env, to_fqdn, persistent_request=None):
         token = secrets.token_urlsafe(32)
         d = ctx.outbox / token
         private_mkdir(d / "files")
-        meta = {"id": msg_id, "to": to_fqdn, "expires": expires, "files": {}}
-        if persistent_request:
-            meta["persistent_request"] = persistent_request
-        items = []
-        copied_bytes = 0
-        for f in a.file:
-            src = Path(f)
-            if not src.is_file():
-                die("not a file: %s" % f)
-            name = safe_name(src.name)
-            while name in meta["files"]:
-                name = "_" + name
-            dst = d / "files" / name
-            if persistent_request:
-                with open(src, "rb") as reader, private_open(dst) as writer:
-                    while True:
-                        chunk = reader.read(1 << 20)
-                        if not chunk:
-                            break
-                        copied_bytes += len(chunk)
-                        if copied_bytes > ctx.cfg["max_fetch_bytes"]:
-                            raise ValueError("result attachments exceed max_fetch_bytes")
-                        writer.write(chunk)
-                    writer.flush()
-                    os.fsync(writer.fileno())
-            else:
-                with open(src, "rb") as reader, private_open(dst) as writer:
-                    shutil.copyfileobj(reader, writer)  # snapshot: hash stays valid even if the original changes
-            mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
-            item = {"name": name, "size": dst.stat().st_size, "sha256": sha256_file(dst), "mime": mime,
-                    "url": "http://%s:%d/f/%s/%s" % (me, int(ctx.cfg["port"]), token, urllib.parse.quote(name)),
-                    "expires": expires}
-            if persistent_request:
-                del item["expires"]
-            meta["files"][name] = item
-            items.append(item)
-        if persistent_request:
-            sync_directory(d / "files")
-        (durable_write if persistent_request else atomic_write)(
-            d / "meta.json", json.dumps(meta, ensure_ascii=False, indent=2).encode("utf-8"))
+        try:
+            items = stage_attachment_files(ctx, a, d, me, msg_id, to_fqdn, token, expires, persistent_request)
+        except BaseException:
+            shutil.rmtree(d, ignore_errors=True)       # nothing refers to a copy that was never completed
+            raise
         env["fetch"] = items
+        return d
+    return None
+
+
+def stage_attachment_files(ctx, a, d, me, msg_id, to_fqdn, token, expires, persistent_request):
+    """Snapshot each file under outbox/<token>/files and write meta.json -> the fetch entries."""
+    meta = {"id": msg_id, "to": to_fqdn, "expires": expires, "files": {}}
+    if persistent_request:
+        meta["persistent_request"] = persistent_request
+    items = []
+    copied_bytes = 0
+    for f in a.file:
+        src = Path(f)
+        if not src.is_file():
+            die("not a file: %s" % f)
+        name = safe_name(src.name)
+        while name in meta["files"]:
+            name = "_" + name
+        dst = d / "files" / name
+        if persistent_request:
+            with open(src, "rb") as reader, private_open(dst) as writer:
+                while True:
+                    chunk = reader.read(1 << 20)
+                    if not chunk:
+                        break
+                    copied_bytes += len(chunk)
+                    if copied_bytes > ctx.cfg["max_fetch_bytes"]:
+                        raise ValueError("result attachments exceed max_fetch_bytes")
+                    writer.write(chunk)
+                writer.flush()
+                os.fsync(writer.fileno())
+        else:
+            with open(src, "rb") as reader, private_open(dst) as writer:
+                shutil.copyfileobj(reader, writer)  # snapshot: hash stays valid even if the original changes
+        mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        item = {"name": name, "size": dst.stat().st_size, "sha256": sha256_file(dst), "mime": mime,
+                "url": "http://%s:%d/f/%s/%s" % (me, int(ctx.cfg["port"]), token, urllib.parse.quote(name)),
+                "expires": expires}
+        if persistent_request:
+            del item["expires"]
+        meta["files"][name] = item
+        items.append(item)
+    if persistent_request:
+        sync_directory(d / "files")
+    (durable_write if persistent_request else atomic_write)(
+        d / "meta.json", json.dumps(meta, ensure_ascii=False, indent=2).encode("utf-8"))
+    return items
 
 
 def prepare_pull_attachments(ctx, a, env):
@@ -2382,15 +2401,67 @@ def cmd_fetch(ctx, a):
         sys.exit(2)
 
 
+def staged_result_referenced(ctx, request_id, token):
+    """Whether a durable response of this incoming request may refer to the staged outbox token. The ledger is
+    opened read-only and nothing is created. Only a readable ledger with the original request's row, whose
+    responses all parse and name other copies, proves the copy unused; anything else counts as referenced."""
+    path = Path(ctx.home) / "requests" / "ledger.sqlite3"
+    if not path.is_file():
+        return True
+    db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        row = db.execute("SELECT latest FROM requests WHERE direction='incoming' AND id=?", (request_id,)).fetchone()
+        if row is None:
+            return True
+        packed = ([row[0]] if row[0] else []) + [r[0] for r in db.execute(
+            "SELECT envelope FROM response_outbox WHERE request_id=?", (request_id,))]
+    finally:
+        db.close()
+    marker = "/f/%s/" % token
+    for value in packed:
+        try:
+            fetch = json.loads(value).get("fetch", [])
+            urls = [item["url"] for item in fetch]
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return True
+        if any(not isinstance(url, str) or marker in url for url in urls):
+            return True
+    return False
+
+
+def discard_unreferenced_staging(ctx, request_id, staged):
+    """Remove the copy this attempt staged, but only once the ledger proves that no durable response refers to
+    it. A missing, unreadable or malformed ledger keeps the copy: a response may already refer to it."""
+    if staged is None:
+        return
+    try:
+        if staged_result_referenced(ctx, request_id, staged.name):
+            return
+    except Exception as exc:
+        log("kept staged result files; could not check the request ledger:", type(exc).__name__)
+        return
+    shutil.rmtree(staged, ignore_errors=True)
+
+
 def respond_with_files(ctx, rec, a, state):
     original = rec["envelope"]
     snapshot = request_snapshot(ctx.home, original["id"])
     if not snapshot:
         raise ValueError("no tracked incoming request with this ID")
     envelope = {"id": original["id"], "from": snapshot["response"]["from"]}
-    prepare_attachments(ctx, a, envelope, rec["received"]["peer"]["node"],
-                        persistent_request=original["id"] if is_pull_request(original) else None)
-    return respond_request(ctx, original["id"], state, a.text, envelope.get("fetch"))
+    staged = prepare_attachments(ctx, a, envelope, rec["received"]["peer"]["node"],
+                                 persistent_request=original["id"] if is_pull_request(original) else None)
+    try:
+        result = respond_request(ctx, original["id"], state, a.text, envelope.get("fetch"))
+    except BaseException:
+        # A refused or failed response leaves this copy unreferenced, unless the failure came after the durable
+        # commit: the ledger decides, not the exception.
+        discard_unreferenced_staging(ctx, original["id"], staged)
+        raise
+    if result.get("fetch") != envelope.get("fetch"):
+        # An identical retry returned the stored response, which keeps its own copy and URLs.
+        discard_unreferenced_staging(ctx, original["id"], staged)
+    return result
 
 
 def cmd_reply(ctx, a):
