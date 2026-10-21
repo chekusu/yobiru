@@ -409,7 +409,7 @@ python3 tools/build_plugin.py release
 | 打包与 CLI | 自动检查覆盖解压后运行、含空格的路径、配置保留，以及使用隔离测试环境的消息／文件／回复／唤醒流程。 |
 | Tailscale 传输 | 历史 0.4.0 单机实网自测通过 59 项；0.5.0 的独立实机验收包含跨机器 Grok Bot 请求。具体时间与范围见验证记录。 |
 | Codex | 历史仓库安装与 skill 发现已验证。2026-10-13，实际运行的 0.5.0 Linux bridge 在原常驻 session 中完成自动请求回复；这不代表所有桌面环境或官方目录安装路径都已验证。 |
-| Claude Code | 自动化：插件和市场清单都通过了 `claude plugin validate --strict`；Claude Code 2.1.306 从本地市场安装了插件并连上其 MCP 服务器；回环测试在两个隔离的数据目录之间驱动该服务器（接收、阅读、下载附件、回复、可追踪请求、确认）。与 Grok Bot 的真实跨机器联调尚待完成。 |
+| Claude Code | 自动化：插件和市场清单都通过了 `claude plugin validate --strict`；Claude Code 2.1.306 从本地市场安装了插件并连上其 MCP 服务器；回环测试在两个隔离的数据目录之间驱动该服务器（接收、阅读、下载附件、回复、可追踪请求、确认）。2026-10-21 实机联调：一台 Mac Studio（Claude Code 2.1.306 加载了插件并列出 10 个工具）通过插件的 MCP 服务器与 Grok Bot 云电脑（0.6.0-beta.1）互发消息：可追踪请求约 26 秒完成，Grok Bot 发来的消息已阅读、回复并确认。工具调用是按清单的启动方式通过 stdio 直接发给服务器的，因为那台 Mac 的命令行 Claude Code 未登录，无法跑 headless。 |
 | Cursor / Grok Bot / DOTS | 手动部署的 Grok Bot 0.5.0 runtime 已完成真实跨机器可追踪请求和认证状态查询。原生 Grok／Cursor 市场安装及重建恢复仍需单独验收。未提供 DOTS 连接器。 |
 | 0.3.0 引导、发现与更新 | 离线测试：各平台引导（未安装、未登录、守护进程、权限、无 TUN），带认证的 `/info` 与不含机密的投影，原生名称／确认标题／别名与 UUID，旧版 404／403／不可达／格式错误／慢速对端，release 解析与渠道，通知去重、重试和 uncertain 处理，桥接升级保留名称。未连接真实 Tailscale、GitHub 或对端。 |
 | 公共市场上架 | 见[提交记录](docs/MARKETPLACE_SUBMISSION.md)。仓库安装、提交、审核与正式上架是不同阶段。 |

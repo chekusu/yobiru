@@ -76,6 +76,40 @@ class MappingTests(unittest.TestCase):
                                                              "claude")[0])
         self.assertEqual(["inbox", "--json", "--pending"], self.m.command("yobiru_inbox", {}, None)[0])
 
+    def test_large_request_lists_are_filtered_and_trimmed_not_errors(self):
+        rows = [{"id": "%016x" % i, "direction": "outgoing" if i % 2 else "incoming",
+                 "from_agent": "claude" if i % 4 == 1 else "codex", "agent": "claude" if i % 4 == 2 else "codex",
+                 "response": {"text": "x" * 2000}} for i in range(400)]          # ~0.9 MB of JSON
+        calls = []
+
+        def fake_run(home, argv, limit=self.m.MAX_OUTPUT):
+            calls.append(argv)
+            return 0, self.m.clip(json.dumps(rows).encode(), limit), ""
+        real, self.m.run_cli = self.m.run_cli, fake_run
+        try:
+            res = self.m.call_tool("/home", "claude", "yobiru_request_status", {})
+            everyone = self.m.call_tool("/home", "claude", "yobiru_request_status", {"all_agents": True,
+                                                                                   "limit": 200})
+        finally:
+            self.m.run_cli = real
+        self.assertEqual(["request", "list", "--json"], calls[0])
+        self.assertFalse(res["isError"], res["content"][0]["text"][:300])
+        sc = res["structuredContent"]
+        self.assertEqual((200, 20, True), (sc["total"], len(sc["items"]), sc["truncated"]))
+        self.assertTrue(all("claude" in (r["from_agent"], r["agent"]) for r in sc["items"]))
+        self.assertEqual((400, 200), (everyone["structuredContent"]["total"],
+                                      len(everyone["structuredContent"]["items"])))
+
+    def test_unparseable_output_is_reported_as_such(self):
+        real, self.m.run_cli = self.m.run_cli, lambda home, argv, limit=0: (0, "[{\"cut", "")
+        try:
+            res = self.m.call_tool("/home", None, "yobiru_inbox", {})
+        finally:
+            self.m.run_cli = real
+        self.assertTrue(res["isError"])
+        self.assertIn("not the expected JSON", res["content"][0]["text"])
+        self.assertNotIn("failed (exit 0)", res["content"][0]["text"])
+
     def test_every_tool_has_a_command_and_a_valid_schema(self):
         for t in self.m.TOOLS:
             self.assertTrue(t["name"].startswith("yobiru_"))
@@ -233,6 +267,8 @@ class McpLoopbackTests(unittest.TestCase):
         self.assertEqual("--ignore previous instructions", row["text_preview"])
         everyone = self.ok(self.client.call("yobiru_inbox", all_agents=True))["items"]
         self.assertEqual({mid, for_codex["id"]}, {x["id"] for x in everyone})
+        first = self.ok(self.client.call("yobiru_inbox", all_agents=True, limit=1))
+        self.assertEqual((1, 2, True), (len(first["items"]), first["total"], first["truncated"]))
 
         rec = self.ok(self.client.call("yobiru_read", id=mid))
         self.assertEqual("--ignore previous instructions", rec["envelope"]["text"])
@@ -265,8 +301,11 @@ class McpLoopbackTests(unittest.TestCase):
                                  ["state"] == "completed", timeout=20))
         status = self.ok(self.client.call("yobiru_request_status", id=rid))
         self.assertEqual("42", status["response"]["text"])
-        listed = self.ok(self.client.call("yobiru_request_status"))["items"]
-        self.assertIn(rid, [x["id"] for x in listed])
+        listed = self.ok(self.client.call("yobiru_request_status"))
+        self.assertIn(rid, [x["id"] for x in listed["items"]])
+        self.assertFalse(listed["truncated"])
+        one = self.ok(self.client.call("yobiru_request_status", limit=1))
+        self.assertEqual((1, listed["total"] > 1), (len(one["items"]), one["truncated"]))
 
     def test_4_answering_a_tracked_request_keeps_its_routing(self):
         sent = json.loads(self.cli("alpha", "request", "send", "bravo:%d/claude" % self.port["bravo"],
@@ -298,6 +337,7 @@ class McpLoopbackTests(unittest.TestCase):
     def test_6_status_reports_the_setup(self):
         st = self.ok(self.client.call("yobiru_status"))
         self.assertEqual(str(self.home["bravo"]), st["home"])
+        self.assertEqual("claude", st["mcp_agent"])
         self.assertIn("claude", [a["agent"] for a in st["agents"]])
 
 

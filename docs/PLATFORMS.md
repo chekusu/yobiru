@@ -78,6 +78,13 @@ machine's own Tailscale address, so hosts that can only run Tailscale in userspa
 - Checked on 2026-10-21 with Claude Code 2.1.306: `claude plugin validate --strict` passes for the plugin
   and the marketplace, `claude plugin marketplace add` + `claude plugin install yobiru@yobiru` from a local
   checkout work, and `claude mcp list` reports the plugin's server as connected.
+- Live on 2026-10-21, Mac Studio (receiver 0.6.0-dev.1, agent `claude` added) to a Grok Bot cloud computer
+  (receiver 0.6.0-beta.1): Claude Code 2.1.306 loaded the plugin from a checkout (`--plugin-dir`) and listed
+  the 10 tools; its headless run then stopped at sign-in, so the steps were driven over stdio against the
+  server launched as the manifest launches it. A tracked `yobiru_send` was received at once and completed
+  about 26 s later; Grok Bot's plain message to `claude` was read, replied to (routed to `grok`) and
+  acknowledged. The run also showed that a long `request list` overflowed the output cap; listings are now
+  filtered to the server's agent and trimmed (`limit`, `total`, `truncated`).
 
 ## Cursor
 
@@ -165,8 +172,8 @@ verifies official release checksums before using an archive in `/workspace`.
    marketplace, enable Yobiru, add it in Grok Bot, confirm the skills and run `paths` on the
    conversation's computer.
 4. Two real machines: setup on both, `send`, `fetch`, `reply`, and a `now` wake through each adapter.
-5. Claude Code: install from <https://github.com/chekusu/yobiru> on a machine with a receiver, then exchange
-   a message and a tracked request with another agent (Grok Bot) through the MCP tools.
+5. Claude Code: the same exchange driven by a signed-in Claude Code session itself (marketplace install,
+   then the model calling the tools), and Windows.
 6. Marketplaces: the repository <https://github.com/chekusu/yobiru> is packaged for Codex repository
    installation (`codex plugin marketplace add chekusu/yobiru`) and Cursor team import. Record
    actual host tests, submission receipts, review decisions and public listing links separately in

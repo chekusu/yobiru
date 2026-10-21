@@ -25,7 +25,9 @@ SERVER_NAME = "yobiru"
 SERVER_TITLE = "Yobiru"
 PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS = -32700, -32600, -32601, -32602
 MAX_LINE_BYTES = 1024 * 1024            # one stdio message
-MAX_OUTPUT = 256 * 1024                 # of one command's stdout or stderr
+MAX_OUTPUT = 256 * 1024                 # of one command's text output (stdout or stderr)
+MAX_JSON = 32 * 1024 * 1024             # of one command's JSON output, read whole before it is trimmed
+LIST_LIMIT = {"yobiru_inbox": 50, "yobiru_request_status": 20}   # default rows per list tool
 COMMAND_TIMEOUT = 180                   # seconds; a send waits up to 15 s per HTTP call
 HERE = Path(__file__).resolve().parent
 CLI = HERE / "yobiru.py"
@@ -90,7 +92,10 @@ TOOLS = [
      "inputSchema": obj({"pending": {"type": "boolean"},
                          "agent": dict(AGENT, description="Only messages for this agent (default: this server's "
                                                           "agent, if it has one; otherwise all)."),
-                         "all_agents": {"type": "boolean", "description": "List every agent's messages."}}),
+                         "all_agents": {"type": "boolean", "description": "List every agent's messages."},
+                         "limit": {"type": "integer", "minimum": 1, "maximum": 500,
+                                   "description": "At most this many rows (default 50): the oldest pending ones, "
+                                                  "or with pending=false the newest."}}),
      "annotations": ann(read_only=True, idempotent=True)},
     {"name": "yobiru_read", "title": "Read a message",
      "description": "One received message in full: envelope (from, from_agent, kind, text, reply_to, attachments, "
@@ -136,9 +141,12 @@ TOOLS = [
      "annotations": ann(open_world=True)},
     {"name": "yobiru_request_status", "title": "Status of a tracked request",
      "description": "A tracked request's receipt, state, deadline and final result. direction outgoing (default) is "
-                    "one you sent; refresh=true asks the receiver again. Without id: every tracked request.",
+                    "one you sent; refresh=true asks the receiver again. Without id: the most recent tracked "
+                    "requests sent by or addressed to this server's agent (all_agents=true for every agent).",
      "inputSchema": obj({"id": MSG_ID, "direction": {"type": "string", "enum": ["outgoing", "incoming"]},
-                         "refresh": {"type": "boolean"}}),
+                         "refresh": {"type": "boolean"}, "all_agents": {"type": "boolean"},
+                         "limit": {"type": "integer", "minimum": 1, "maximum": 200,
+                                   "description": "Without id: at most this many, newest first (default 20)."}}),
      "annotations": ann(read_only=True, idempotent=True, open_world=True)},
     {"name": "yobiru_fetch_files", "title": "Download a message's files",
      "description": "Download and verify (sha256) a received message's attachments into the inbox; returns their "
@@ -239,6 +247,8 @@ def command(name, args, agent):
             if "direction" in args or "refresh" in args:
                 raise ValueError("direction and refresh need an id")
             return ["request", "list", "--json"], "json"
+        if "limit" in args or "all_agents" in args:
+            raise ValueError("limit and all_agents are for listing requests (without id)")
         return (["request", "status", "--json", "--direction", args.get("direction", "outgoing")] +
                 (["--refresh"] if args.get("refresh") else []) + ["--", args["id"]]), "json"
     if name == "yobiru_fetch_files":
@@ -248,12 +258,12 @@ def command(name, args, agent):
     raise KeyError(name)
 
 
-def clip(data):
-    text = data[:MAX_OUTPUT].decode("utf-8", "replace")
-    return text + ("\n[... cut at %d bytes]" % MAX_OUTPUT if len(data) > MAX_OUTPUT else "")
+def clip(data, limit=MAX_OUTPUT):
+    text = data[:limit].decode("utf-8", "replace")
+    return text + ("\n[... cut at %d bytes]" % limit if len(data) > limit else "")
 
 
-def run_cli(home, argv):
+def run_cli(home, argv, limit=MAX_OUTPUT):
     """-> (exit code, stdout, stderr) of `yobiru --home HOME ARGV` with this interpreter; never raises."""
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     try:
@@ -263,7 +273,7 @@ def run_cli(home, argv):
         return None, "", "yobiru %s did not finish within %d s; its outcome is unknown" % (argv[0], COMMAND_TIMEOUT)
     except OSError as e:
         return None, "", "cannot run yobiru: %s" % e
-    return p.returncode, clip(p.stdout), clip(p.stderr)
+    return p.returncode, clip(p.stdout, limit), clip(p.stderr)
 
 
 def parse_output(mode, out):
@@ -287,19 +297,39 @@ def call_tool(home, agent, name, args):
         argv, mode = command(name, args, agent)
     except ValueError as e:
         return error_result(str(e))
-    code, out, err = run_cli(home, argv)
+    code, out, err = run_cli(home, argv, MAX_JSON if mode == "json" else MAX_OUTPUT)
     data = parse_output(mode, out) if code is not None else None
+    if code == 0 and mode != "text" and data is None:
+        return error_result("yobiru %s succeeded but its output was not the expected JSON (%d characters)"
+                            % (argv[0], len(out)))
+    if code == 0 and isinstance(data, list):
+        data = trim_list(name, args, agent, data)
+    if name == "yobiru_status" and isinstance(data, dict):
+        data["mcp_agent"] = agent               # the agent this server sends as and reads for (None: defaults)
     if code == 0 and (mode == "text" or data is not None):
         res = {"content": [{"type": "text", "text": out.strip() if data is None else
                             json.dumps(data, ensure_ascii=False, indent=1)}], "isError": False}
         if isinstance(data, dict):
             res["structuredContent"] = data
-        elif isinstance(data, list):
-            res["structuredContent"] = {"items": data}
         return res
     detail = "\n".join(x for x in (out.strip(), err.strip()) if x) or "no output"
     return error_result("yobiru %s failed (exit %s): %s" % (" ".join(argv[:2]) if argv[0] == "request" else argv[0],
                                                             code, detail))
+
+
+def trim_list(name, args, agent, rows):
+    """A list result as {items, total, truncated}: the server's agent's rows only (unless all_agents or the
+    command filtered already), and at most `limit` of them."""
+    if name == "yobiru_request_status" and agent and not args.get("all_agents"):
+        rows = [r for r in rows if isinstance(r, dict) and
+                (r.get("from_agent") if r.get("direction") == "outgoing" else r.get("agent")) == agent]
+    limit = args.get("limit", LIST_LIMIT.get(name, len(rows)))
+    total = len(rows)
+    if name == "yobiru_inbox" and not args.get("pending", True):
+        rows = rows[-limit:] if limit else []          # oldest first: keep the newest
+    else:
+        rows = rows[:limit]                            # pending oldest first; requests newest first
+    return {"items": rows, "total": total, "truncated": total > len(rows)}
 
 
 def error_result(text):
