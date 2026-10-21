@@ -151,5 +151,40 @@ class WebhookDiagnosticsTests(unittest.TestCase):
         self.assertIn("HTTP 400", log.getvalue())
 
 
+    def test_short_secrets_and_message_values_are_redacted_too(self):
+        import contextlib
+        import io
+        from pathlib import Path
+        # (field, value, echoed code): a one-character value hides inside an otherwise valid code.
+        for field, value, code in (("secret", "Q7", "Q7"), ("secret", "Ab3", "Ab3"), ("secret", "x", "bad_x"),
+                                   ("text", "Q7", "Q7"), ("text", "x", "bad_x"), ("from_agent", "Z9", "Z9")):
+            with self.subTest(field=field, value=value):
+                adapter = self.serve(400, lambda *a: {"code": code})
+                if field == "secret":
+                    os.environ["YOBIRU_T_SECRET"] = value
+                record = self.record()
+                if field != "secret":
+                    record["envelope"][field] = value
+                with self.assertRaises(core.AdapterError) as caught:
+                    core.call_webhook(adapter, record, 5)
+                self.assertEqual("HTTP 400", str(caught.exception))
+                with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(io.StringIO()) as log:
+                    ctx = core.Ctx(Path(d))
+                    ctx.cfg.update(wake_attempts=1, wake_backoff_s=0, wake_adapter=adapter)
+                    path = ctx.inbox / (ENV["id"] + ".json")
+                    path.write_text(json.dumps(record), encoding="utf-8")
+                    self.assertFalse(core.deliver_wake(ctx, path))
+                    stored = json.loads(path.read_text(encoding="utf-8"))["wake_delivery"]["error"]
+                self.assertEqual("HTTP 400", stored)
+                self.assertIn("HTTP 400", log.getvalue())
+                self.assertNotIn("code " + code, log.getvalue())
+        adapter = self.serve(None, None, raw=lambda path: b"BOGUS Q7 Q7\r\n\r\n")    # a broken answer echoes it
+        os.environ["YOBIRU_T_SECRET"] = "Q7"
+        message = self.error(adapter)
+        self.assertTrue(message.startswith("BadStatusLine"), message)
+        self.assertNotIn("Q7", message)
+        self.assertIn("<redacted>", message)
+
+
 if __name__ == "__main__":
     unittest.main()

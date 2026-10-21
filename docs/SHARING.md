@@ -102,8 +102,9 @@ response. Use `request respond ... --state running` for progress or `failed`, `r
 for the appropriate final outcome. The result is saved on the shared receiver for the original
 authenticated requester. Pull responses create no reverse push connection and do not wake a
 requester-side agent. Repeating the identical final reply (same state, text and files) returns the
-stored result and its original download links; a different final result is refused, and a refused or
-failed attempt leaves no extra copy of its files.
+stored result and its original download links; a different final result is refused. A refused or
+failed attempt removes its own copy of the files, unless a response committed meanwhile may have
+published that copy's links.
 
 Back on the visitor's machine:
 

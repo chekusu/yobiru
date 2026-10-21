@@ -206,6 +206,44 @@ class RequestTests(unittest.TestCase):
         self.assertEqual(latest, self.reply_with([result]))
         self.assertEqual(copies, self.staged())
 
+    def test_a_published_pull_result_is_kept_when_a_later_response_replaced_it(self):
+        # A running reply with a file commits and the requester polls its URLs; then another process completes the
+        # request, or maintenance times it out, before the first reply fails after its commit. Pull responses have
+        # no outbox, so only the advanced sequence number shows that the copy may have been published.
+        for advance in ("completed elsewhere", "timed out by maintenance"):
+            with self.subTest(advance):
+                home = Path(self.temp.name) / advance.replace(" ", "-")
+                self.a, self.b = core.Ctx(home / "a"), core.Ctx(home / "b")
+                self.env["request"]["transport"] = "pull"
+                core.accept_request(self.b, self.rec)
+                result, real, published = self.artifact(name="partial.txt"), core.respond_request, []
+                with mock.patch.object(core, "respond_request", side_effect=OSError("before the commit")):
+                    with self.assertRaises(OSError):
+                        self.reply_with([result], text="Partial result", state="running")
+                self.assertEqual([], self.staged(), "nothing was committed: the copy goes")
+
+                def commit_then_fail(*args, **kwargs):
+                    published.append(real(*args, **kwargs))
+                    other = core.Ctx(self.b.home)                      # as another process would
+                    if advance.startswith("completed"):
+                        real(other, MID, "completed", "Done without files")
+                    else:
+                        with core.request_db(other) as db:
+                            db.execute("UPDATE requests SET deadline=? WHERE direction='incoming' AND id=?",
+                                       (core.iso(core.now_utc() - dt.timedelta(seconds=1)), MID))
+                        core.expire_requests(other)
+                    raise OSError("after the durable commit")
+                with mock.patch.object(core, "respond_request", side_effect=commit_then_fail):
+                    with self.assertRaises(OSError):
+                        self.reply_with([result], text="Partial result", state="running")
+                copies = self.staged()
+                self.assertEqual(1, len(copies), "a copy whose URLs were published must stay")
+                self.assertIn("/f/%s/" % copies[0], published[0]["fetch"][0]["url"])
+                self.assertNotIn("fetch", self.state(self.b)["response"], "latest no longer names it")
+                meta = json.loads((self.b.outbox / copies[0] / "meta.json").read_text())
+                self.assertEqual((MID, A), (meta["persistent_request"], meta["to"]))
+                self.assertEqual(result.read_bytes(), (self.b.outbox / copies[0] / "files" / result.name).read_bytes())
+
     def test_a_copy_is_kept_when_the_ledger_cannot_be_read(self):
         self.send()
         with mock.patch.object(core, "respond_request", side_effect=OSError("failed")), \

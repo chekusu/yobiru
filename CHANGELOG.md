@@ -22,7 +22,8 @@ prerelease, and the version stays 0.5.3 until a release is chosen.
   `request-pull-v1`; `doctor --peer` checks the route. The destination's stable identity is checked again
   before every connection, and request inputs and results are created readable only by their owner.
   Repeating an identical final `reply` or `request respond` with the same files returns the stored result,
-  push or pull, and a refused or failed attempt leaves no extra copy of its files.
+  push or pull. A refused or failed attempt removes its own copy of the files, unless a response committed
+  meanwhile may have published that copy's links.
 - **Waypost bridge** (#14): an optional text bridge between Yobiru and a Waypost service
   (`tools/waypost_bridge.py` in a source checkout, POSIX, not part of the plugin) with a durable journal.
   Unknown outcomes are never resent automatically, and refused messages are quarantined without stopping it,

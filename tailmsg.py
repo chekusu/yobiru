@@ -1664,19 +1664,21 @@ WEBHOOK_RETRY_AFTER_RE = re.compile(r"[0-9]{1,5}\Z")
 
 def webhook_sensitive(url, secret, payload):
     """What a webhook must never get back into logs or inbox records: the secret, the URL and each of its parts
-    (an echoed relative path or query carries the same token) and the message values sent in the payload."""
+    (an echoed relative path or query carries the same token) and the message values sent in the payload. Every
+    non-empty value counts, however short: a short secret or message is just as private."""
     u = urllib.parse.urlsplit(url)
     values = [url, secret, u.netloc, u.path, u.query, u.fragment, u.username, u.password]
     values += re.split(r"[/;,&=?#]+", "%s?%s#%s" % (u.path, u.query, u.fragment))
     values += [payload.get(k) for k in ("id", "from", "agent", "from_agent", "text_preview")]
     values += [urllib.parse.unquote(v) for v in list(values) if isinstance(v, str)]
-    return sorted({v for v in values if isinstance(v, str) and len(v) >= 4}, key=len, reverse=True)
+    return sorted({v for v in values if isinstance(v, str) and v}, key=len, reverse=True)
 
 
 def scrub(text, sensitive, limit=200):
-    """Remove every sensitive value, then control, format and bidi characters; one bounded line."""
-    for value in sensitive:
-        text = text.replace(value, "<redacted>")
+    """Remove every sensitive value in one pass, longest first, so a short value never rewrites an earlier
+    replacement; then control, format and bidi characters; one bounded line."""
+    if sensitive:
+        text = re.sub("|".join(re.escape(value) for value in sensitive), "<redacted>", text)
     return clean_text(" ".join(text.split()), limit) or ""
 
 
@@ -2401,17 +2403,20 @@ def cmd_fetch(ctx, a):
         sys.exit(2)
 
 
-def staged_result_referenced(ctx, request_id, token):
+def staged_result_referenced(ctx, request_id, token, since_seq=None):
     """Whether a durable response of this incoming request may refer to the staged outbox token. The ledger is
     opened read-only and nothing is created. Only a readable ledger with the original request's row, whose
-    responses all parse and name other copies, proves the copy unused; anything else counts as referenced."""
+    responses all parse and name other copies, proves the copy unused; anything else counts as referenced.
+    since_seq is the response sequence seen before staging: any response committed since then may have been
+    this attempt's, published and already replaced as latest (pull responses keep no other record)."""
     path = Path(ctx.home) / "requests" / "ledger.sqlite3"
     if not path.is_file():
         return True
     db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
     try:
-        row = db.execute("SELECT latest FROM requests WHERE direction='incoming' AND id=?", (request_id,)).fetchone()
-        if row is None:
+        row = db.execute("SELECT latest,seq FROM requests WHERE direction='incoming' AND id=?",
+                         (request_id,)).fetchone()
+        if row is None or (since_seq is not None and row[1] != since_seq):
             return True
         packed = ([row[0]] if row[0] else []) + [r[0] for r in db.execute(
             "SELECT envelope FROM response_outbox WHERE request_id=?", (request_id,))]
@@ -2429,13 +2434,13 @@ def staged_result_referenced(ctx, request_id, token):
     return False
 
 
-def discard_unreferenced_staging(ctx, request_id, staged):
+def discard_unreferenced_staging(ctx, request_id, staged, since_seq=None):
     """Remove the copy this attempt staged, but only once the ledger proves that no durable response refers to
     it. A missing, unreadable or malformed ledger keeps the copy: a response may already refer to it."""
     if staged is None:
         return
     try:
-        if staged_result_referenced(ctx, request_id, staged.name):
+        if staged_result_referenced(ctx, request_id, staged.name, since_seq):
             return
     except Exception as exc:
         log("kept staged result files; could not check the request ledger:", type(exc).__name__)
@@ -2455,8 +2460,9 @@ def respond_with_files(ctx, rec, a, state):
         result = respond_request(ctx, original["id"], state, a.text, envelope.get("fetch"))
     except BaseException:
         # A refused or failed response leaves this copy unreferenced, unless the failure came after the durable
-        # commit: the ledger decides, not the exception.
-        discard_unreferenced_staging(ctx, original["id"], staged)
+        # commit: the ledger decides, not the exception. Once any response was committed after the snapshot, a
+        # requester may already have this copy's URLs although a later response replaced them as latest.
+        discard_unreferenced_staging(ctx, original["id"], staged, since_seq=snapshot["seq"])
         raise
     if result.get("fetch") != envelope.get("fetch"):
         # An identical retry returned the stored response, which keeps its own copy and URLs.
