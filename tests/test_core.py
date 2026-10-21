@@ -123,12 +123,14 @@ class WebhookDiagnosticsTests(unittest.TestCase):
         adapter = self.serve(502, lambda *a: {"code": "bad_gateway"}, headers={"Retry-After": "soon"})
         self.assertEqual("HTTP 502 (code bad_gateway)", self.error(adapter))
 
-    def test_a_broken_answer_that_echoes_the_path_is_scrubbed(self):
-        adapter = self.serve(None, None, raw=lambda path: ("BOGUS %s %s\r\n\r\n" % (path, self.TEXT)).encode())
-        message = self.error(adapter)
-        self.assertTrue(message.startswith("BadStatusLine"), message)
-        self.assert_no_leak(message)
-        self.assertIn("<redacted>", message)
+    def test_a_broken_answer_records_only_the_exception_type(self):
+        # Exception text can echo what was sent in any case or encoding, so none of it is kept.
+        for echo in ("{path} {text}", "{lower}", "{escaped}"):
+            with self.subTest(echo=echo):
+                adapter = self.serve(None, None, raw=lambda path: ("BOGUS %s\r\n\r\n" % echo.format(
+                    path=path, text=self.TEXT, lower=self.SECRET.lower(), escaped=json.dumps(self.TEXT + "\n"))).encode())
+                message = self.error(adapter)
+                self.assertEqual("BadStatusLine", message)
 
     def test_deliver_wake_records_and_logs_only_the_safe_detail(self):
         import contextlib
@@ -180,10 +182,41 @@ class WebhookDiagnosticsTests(unittest.TestCase):
                 self.assertNotIn("code " + code, log.getvalue())
         adapter = self.serve(None, None, raw=lambda path: b"BOGUS Q7 Q7\r\n\r\n")    # a broken answer echoes it
         os.environ["YOBIRU_T_SECRET"] = "Q7"
-        message = self.error(adapter)
-        self.assertTrue(message.startswith("BadStatusLine"), message)
-        self.assertNotIn("Q7", message)
-        self.assertIn("<redacted>", message)
+        self.assertEqual("BadStatusLine", self.error(adapter))
+
+
+    def test_a_retry_after_that_repeats_what_was_sent_is_dropped(self):
+        import contextlib
+        import io
+        from pathlib import Path
+        # (what carries the value, its value, the Retry-After answered), compared as written and without zeros.
+        cases = (("secret", "57391", "57391"), ("secret", "37", "37"), ("secret", "7", "7"), ("text", "57391", "57391"),
+                 ("path", "57391", "57391"), ("query", "57391", "57391"), ("query", "%35%37%33%39%31", "57391"),
+                 ("secret", "00573", "00573"), ("secret", "573", "00573"))
+        for field, value, retry in cases:
+            with self.subTest(field=field, value=value, retry=retry):
+                adapter = self.serve(429, lambda *a: {"code": "rate_limited"}, headers={"Retry-After": retry})
+                if field == "secret":
+                    os.environ["YOBIRU_T_SECRET"] = value
+                elif field in ("path", "query"):
+                    os.environ["YOBIRU_T_URL"] = os.environ["YOBIRU_T_URL"].replace(
+                        self.TOKEN if field == "path" else self.QUERY, value)
+                record = self.record()
+                if field == "text":
+                    record["envelope"]["text"] = value
+                with self.assertRaises(core.AdapterError) as caught:
+                    core.call_webhook(adapter, record, 5)
+                self.assertEqual("HTTP 429 (code rate_limited)", str(caught.exception))
+                with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(io.StringIO()) as log:
+                    ctx = core.Ctx(Path(d))
+                    ctx.cfg.update(wake_attempts=1, wake_backoff_s=0, wake_adapter=adapter)
+                    path = ctx.inbox / (ENV["id"] + ".json")
+                    path.write_text(json.dumps(record), encoding="utf-8")
+                    self.assertFalse(core.deliver_wake(ctx, path))
+                    stored = json.loads(path.read_text(encoding="utf-8"))["wake_delivery"]["error"]
+                self.assertEqual("HTTP 429 (code rate_limited)", stored)
+                self.assertIn(stored, log.getvalue())
+                self.assertNotIn("retry after", log.getvalue())
 
 
 if __name__ == "__main__":

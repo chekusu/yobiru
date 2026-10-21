@@ -143,6 +143,42 @@ if os.environ.get("TEST_UPLOAD_RECHECK_UNAVAILABLE"):
             raise core.TailscaleUnavailable("test: identity lookup unavailable after the upload")
         return real_fresh_whois(ctx, ip)
     core.fresh_whois = fresh_whois
+if os.environ.get("TEST_STAGE_FAULT"):
+    # One failure while a pull request is staged or saved; the other fault names need no patch.
+    fault = os.environ["TEST_STAGE_FAULT"]
+    if fault == "second_copy":
+        real_private_open, opened = core.private_open, []
+        def private_open(path, *args, **kwargs):
+            if "sending" in Path(path).parts:
+                opened.append(path)
+                if len(opened) == 2:
+                    raise OSError("test: the second snapshot cannot be written")
+            return real_private_open(path, *args, **kwargs)
+        core.private_open = private_open
+    elif fault == "fsync":
+        real_fsync = core.os.fsync
+        def fsync(fd):
+            if sys._getframe(1).f_code.co_name == "prepare_pull_attachments":
+                raise OSError("test: a snapshot fsync failed")
+            return real_fsync(fd)
+        core.os.fsync = fsync
+    elif fault == "validation":
+        real_validate_env = core.validate_env
+        core.validate_env = lambda env: "test: rejected after staging" if core.is_pull_request(env) else real_validate_env(env)
+    elif fault == "save_before":
+        def save_outgoing_request(*args, **kwargs):
+            raise OSError("test: failed before the request was saved")
+        core.save_outgoing_request = save_outgoing_request
+    elif fault.startswith("save_after"):
+        real_save = core.save_outgoing_request
+        def save_outgoing_request(*args, **kwargs):
+            real_save(*args, **kwargs)
+            if fault == "save_after_unreadable":
+                def unavailable(*args, **kwargs):
+                    raise core.sqlite3.OperationalError("test: ledger unavailable")
+                core.sqlite3.connect = unavailable
+            raise OSError("test: failed after the request was saved")
+        core.save_outgoing_request = save_outgoing_request
 sys.argv = sys.argv[1:]
 sys.exit(core.main())
 '''
@@ -574,6 +610,55 @@ class SharedRequestTests(unittest.TestCase):
                 self.set_identity(raw)
                 self.assertEqual(403, self.http("GET", "/info")[0])
         self.assertEqual([], list((self.homes["bravo"] / "inbox").glob("*.json")))
+
+    def test_a_pull_request_that_fails_before_it_is_saved_leaves_no_snapshot(self):
+        # Until the outgoing request is durably saved, no ledger row, printed ID or resume path refers to its
+        # snapshots: every earlier failure removes them. After the save they stay, even when the ledger then
+        # cannot be read, and resume sends the original bytes although the source changed.
+        config, ledger = self.homes["alpha"] / "config.json", self.homes["alpha"] / "requests" / "ledger.sqlite3"
+        sending, original = self.homes["alpha"] / "requests" / "sending", config.read_text()
+        one, two = self.root / "one.bin", self.root / "two.bin"
+
+        def outgoing():
+            return {row["id"] for row in self.rows("alpha", "SELECT id FROM requests WHERE direction='outgoing'")} \
+                if ledger.exists() else set()
+        for fault in ("oversize", "cumulative", "missing_later", "second_copy", "fsync", "validation",
+                      "policy_denied", "save_before", "save_after", "save_after_unreadable"):
+            with self.subTest(fault):
+                cfg, files = json.loads(original), [one]
+                one.write_bytes(b"SYNTHETIC private input\n")
+                if fault in ("oversize", "cumulative"):
+                    cfg["max_fetch_bytes"] = 1 << 20
+                    one.write_bytes(b"X" * ((1 << 20) + 1 if fault == "oversize" else 700000))
+                if fault in ("cumulative", "missing_later", "second_copy"):
+                    files.append(two)
+                    two.write_bytes(b"Y" * 700000 if fault == "cumulative" else b"SYNTHETIC second input\n")
+                    if fault == "missing_later":
+                        two.unlink()
+                if fault == "policy_denied":
+                    cfg.update(access_policy="allowlist", allow=[])
+                config.write_text(json.dumps(cfg))
+                staged_before = set(sending.iterdir()) if sending.exists() else set()
+                saved_before = outgoing()
+                args = ["request", "send", self.address(), "Inspect", "--transport", "pull", "--wake", "none"]
+                for path in files:
+                    args += ["--file", str(path)]
+                failed = self.tm("alpha", *args, extra={"TEST_STAGE_FAULT": fault})
+                config.write_text(original)
+                self.assertNotEqual(0, failed.returncode, failed.stdout)
+                staged = (set(sending.iterdir()) if sending.exists() else set()) - staged_before
+                saved = outgoing() - saved_before
+                if not fault.startswith("save_after"):
+                    self.assertEqual((set(), set()), (staged, saved), failed.stderr)
+                    continue
+                self.assertEqual([1], [len(staged)], failed.stderr)
+                [directory] = staged
+                self.assertEqual({directory.name}, saved)
+                one.write_bytes(b"changed after the snapshot\n")
+                resumed = self.tm_json("alpha", "request", "resume", directory.name)
+                self.assertEqual((directory.name, 202), (resumed["id"], resumed["status"]))
+                received = self.homes["bravo"] / "inbox" / directory.name / "files" / "one.bin"
+                self.assertEqual(b"SYNTHETIC private input\n", received.read_bytes())
 
     def test_poll_rejects_destination_replacement_with_same_dns_name(self):
         mid = self.request()

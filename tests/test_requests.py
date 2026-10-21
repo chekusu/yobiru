@@ -244,6 +244,22 @@ class RequestTests(unittest.TestCase):
                 self.assertEqual((MID, A), (meta["persistent_request"], meta["to"]))
                 self.assertEqual(result.read_bytes(), (self.b.outbox / copies[0] / "files" / result.name).read_bytes())
 
+    def test_pull_staging_claims_its_own_directory_and_never_removes_another(self):
+        args = argparse.Namespace(file=[str(self.artifact())], ttl_hours=None)
+        sending, real_mkdir = self.a.home / "requests" / "sending" / MID, core.private_mkdir
+        self.a.cfg["max_fetch_bytes"] = 1                # staging would fail: its cleanup must not touch theirs
+
+        def another_attempt_claims_it(path):
+            real_mkdir(path)
+            sending.mkdir(mode=0o700, exist_ok=True)     # appears between any check and this attempt's claim
+            (sending / "theirs").write_bytes(b"resumable snapshot")
+        with mock.patch.object(core, "private_mkdir", side_effect=another_attempt_claims_it):
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                core.prepare_pull_attachments(self.a, args, {"id": MID, "request": {}})
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            core.prepare_pull_attachments(self.a, args, {"id": MID, "request": {}})
+        self.assertEqual([("theirs", b"resumable snapshot")], [(p.name, p.read_bytes()) for p in sending.iterdir()])
+
     def test_a_copy_is_kept_when_the_ledger_cannot_be_read(self):
         self.send()
         with mock.patch.object(core, "respond_request", side_effect=OSError("failed")), \

@@ -1663,30 +1663,30 @@ WEBHOOK_RETRY_AFTER_RE = re.compile(r"[0-9]{1,5}\Z")
 
 
 def webhook_sensitive(url, secret, payload):
-    """What a webhook must never get back into logs or inbox records: the secret, the URL and each of its parts
-    (an echoed relative path or query carries the same token) and the message values sent in the payload. Every
-    non-empty value counts, however short: a short secret or message is just as private."""
+    """What a webhook must never get back into logs or inbox records: the secret, each part of the URL that can
+    carry a token (credentials, host, path, query, fragment and their segments, decoded too) and the message
+    values sent in the payload. Every non-empty value counts, however short. The port is no secret: a number
+    that only appears in it does not hide a Retry-After."""
     u = urllib.parse.urlsplit(url)
-    values = [url, secret, u.netloc, u.path, u.query, u.fragment, u.username, u.password]
+    values = [secret, u.hostname, u.path, u.query, u.fragment, u.username, u.password]
     values += re.split(r"[/;,&=?#]+", "%s?%s#%s" % (u.path, u.query, u.fragment))
     values += [payload.get(k) for k in ("id", "from", "agent", "from_agent", "text_preview")]
     values += [urllib.parse.unquote(v) for v in list(values) if isinstance(v, str)]
     return sorted({v for v in values if isinstance(v, str) and v}, key=len, reverse=True)
 
 
-def scrub(text, sensitive, limit=200):
-    """Remove every sensitive value in one pass, longest first, so a short value never rewrites an earlier
-    replacement; then control, format and bidi characters; one bounded line."""
-    if sensitive:
-        text = re.sub("|".join(re.escape(value) for value in sensitive), "<redacted>", text)
-    return clean_text(" ".join(text.split()), limit) or ""
+def repeats_sent(value, sensitive):
+    """Whether a value from a webhook answer overlaps anything that was sent to it, ignoring case."""
+    low = value.lower()
+    return any(v.lower() in low or low in v.lower() for v in sensitive)
 
 
 def webhook_error(status, retry_after, body, sensitive):
     """Bounded, non-secret diagnostics for a non-2xx webhook answer. A webhook can echo anything it received
     (its own path, headers, the message), so no free text from the body is ever kept: only the HTTP status, one
     standardized error code from a JSON body (`code`, `error_code`, `error` or `error.code`, an identifier
-    such as `invalid_hook`) that repeats nothing that was sent, and a numeric Retry-After."""
+    such as `invalid_hook`) and a numeric Retry-After, each kept only when it repeats nothing that was sent
+    (the Retry-After neither as written nor without its leading zeros)."""
     detail = []
     try:
         obj = json.loads(body.decode("utf-8"))
@@ -1696,11 +1696,12 @@ def webhook_error(status, retry_after, body, sensitive):
         nested = obj.get("error") if isinstance(obj.get("error"), dict) else {}
         for code in (obj.get("code"), obj.get("error_code"), obj.get("error"), nested.get("code")):
             low = code.lower() if isinstance(code, str) else ""
-            if WEBHOOK_ERROR_CODE_RE.match(low) and not any(v.lower() in low or low in v.lower() for v in sensitive):
+            if WEBHOOK_ERROR_CODE_RE.match(low) and not repeats_sent(low, sensitive):
                 detail.append("code " + code)
                 break
-    if isinstance(retry_after, str) and WEBHOOK_RETRY_AFTER_RE.match(retry_after.strip()):
-        detail.append("retry after %d s" % int(retry_after.strip()))
+    seconds = retry_after.strip() if isinstance(retry_after, str) else ""
+    if WEBHOOK_RETRY_AFTER_RE.match(seconds) and not any(repeats_sent(v, sensitive) for v in (seconds, str(int(seconds)))):
+        detail.append("retry after %d s" % int(seconds))
     return "HTTP %d" % status + (" (%s)" % ", ".join(detail) if detail else "")
 
 
@@ -1728,8 +1729,8 @@ def call_webhook(a, rec, timeout):
         c.request("POST", (u.path or "/") + ("?" + u.query if u.query else ""), body=body, headers=headers)
         r = c.getresponse()
         resp = r.read(4096)
-    except Exception as e:  # never let the url, secret or an echoed part of them reach the log via the exception
-        raise AdapterError(scrub("%s: %s" % (type(e).__name__, e), sensitive))
+    except Exception as e:  # only the type: its text can echo the URL, secret or message, in any case or encoding
+        raise AdapterError(type(e).__name__)
     finally:
         if c is not None:
             c.close()
@@ -2025,44 +2026,78 @@ def stage_attachment_files(ctx, a, d, me, msg_id, to_fqdn, token, expires, persi
 
 
 def prepare_pull_attachments(ctx, a, env):
+    """Snapshot the attachments in requests/sending/<id>, a new directory that is returned (None without files).
+    Any failure removes it again: no ledger row, printed ID or resume path refers to it yet."""
     if a.ttl_hours is not None:
         raise ValueError("pull requests use their request deadline for uploads; --ttl-hours is not supported")
     if len(a.file) > 100:
         raise ValueError("at most 100 request attachments are allowed")
     directory = ctx.home / "requests" / "sending" / env["id"]
     names, items, total = set(), [], 0
-    for filename in a.file:
-        source = Path(filename)
-        if not source.is_file():
-            raise ValueError("not a file: " + str(filename))
-        name = safe_name(source.name)
-        while name in names:
-            name = "_" + name
-            if len(name) > 200:
-                name = secrets.token_hex(4) + name[-192:]
-        names.add(name)
-        token = secrets.token_urlsafe(32)
-        private_mkdir(directory)
-        target = directory / token
-        digest, size = hashlib.sha256(), 0
-        with open(source, "rb") as reader, private_open(target) as writer:
-            while True:
-                chunk = reader.read(1 << 20)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if total + size > ctx.cfg["max_fetch_bytes"]:
-                    raise ValueError("request attachments exceed max_fetch_bytes")
-                digest.update(chunk)
-                writer.write(chunk)
-            writer.flush()
-            os.fsync(writer.fileno())
-        total += size
-        items.append({"token": token, "name": name, "sha256": digest.hexdigest(), "size": size,
-                      "mime": mimetypes.guess_type(name)[0] or "application/octet-stream"})
     env["request"]["uploads"] = items
-    if items:
+    if not a.file:
+        return None
+    private_mkdir(directory.parent)
+    try:
+        directory.mkdir(mode=0o700)          # an exclusive claim: never adopt (or later remove) another attempt's
+    except FileExistsError:
+        raise ValueError("request attachment directory already exists: " + env["id"])
+    try:
+        for filename in a.file:
+            source = Path(filename)
+            if not source.is_file():
+                raise ValueError("not a file: " + str(filename))
+            name = safe_name(source.name)
+            while name in names:
+                name = "_" + name
+                if len(name) > 200:
+                    name = secrets.token_hex(4) + name[-192:]
+            names.add(name)
+            token = secrets.token_urlsafe(32)
+            target = directory / token
+            digest, size = hashlib.sha256(), 0
+            with open(source, "rb") as reader, private_open(target) as writer:
+                while True:
+                    chunk = reader.read(1 << 20)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if total + size > ctx.cfg["max_fetch_bytes"]:
+                        raise ValueError("request attachments exceed max_fetch_bytes")
+                    digest.update(chunk)
+                    writer.write(chunk)
+                writer.flush()
+                os.fsync(writer.fileno())
+            total += size
+            items.append({"token": token, "name": name, "sha256": digest.hexdigest(), "size": size,
+                          "mime": mimetypes.guess_type(name)[0] or "application/octet-stream"})
         sync_directory(directory)
+    except BaseException:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+    return directory
+
+
+def discard_unsaved_pull_snapshots(ctx, mid, staged, saving):
+    """Remove the new attachment snapshots of a pull request that was not saved. Before the save is attempted
+    nothing durable can refer to them. After a failed save, only a readable ledger without the outgoing row
+    proves that; a saved request keeps them for resume, and a missing or unreadable ledger keeps them too."""
+    if staged is None:
+        return
+    if saving:
+        try:
+            path = Path(ctx.home) / "requests" / "ledger.sqlite3"
+            db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+            try:
+                saved = db.execute("SELECT 1 FROM requests WHERE direction='outgoing' AND id=?", (mid,)).fetchone()
+            finally:
+                db.close()
+        except Exception as exc:
+            log("kept request attachment snapshots; could not check the request ledger:", type(exc).__name__)
+            return
+        if saved:
+            return
+    shutil.rmtree(staged, ignore_errors=True)
 
 
 def upload_request_file(ctx, env, item, ip, port, peer):
@@ -2187,15 +2222,23 @@ def cmd_send(ctx, a, reply_to=None, peer=None, agent=None):
         env["agent"] = norm_agent(agent)
     if from_agent is not None:
         env["from_agent"] = norm_agent(from_agent)
+    staged, saving = None, False
     if pull:
-        prepare_pull_attachments(ctx, a, env)
+        staged = prepare_pull_attachments(ctx, a, env)
     else:
         prepare_attachments(ctx, a, env, to_fqdn)
-    error = validate_env(env)
-    if error:
-        die(error)
-    if tracked:
-        save_outgoing_request(ctx, env, to_fqdn, port)
+    try:
+        error = validate_env(env)
+        if error:
+            die(error)
+        if tracked:
+            if staged is not None:
+                request_db(ctx).close()      # exists before the save, so a failed save can be told from a commit
+            saving = True
+            save_outgoing_request(ctx, env, to_fqdn, port)
+    except BaseException:
+        discard_unsaved_pull_snapshots(ctx, msg_id, staged, saving)
+        raise
     try:
         status, resp = submit_pull_request(ctx, env, to_fqdn, to_ip, port) if pull else \
             http_json(to_ip, port, "POST", "/msg", env, host=to_fqdn)

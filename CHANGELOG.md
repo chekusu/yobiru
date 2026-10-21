@@ -15,15 +15,17 @@ prerelease, and the version stays 0.5.3 until a release is chosen.
   unknown or denied peers still get `403`. `update notify` keeps such a notice pending and later sends the
   identical envelope.
 - **Webhook wake errors** (#15): a failed webhook wake records its HTTP status, a standard error code that
-  repeats nothing that was sent, and `Retry-After`. It never records the response text, which can echo the
-  webhook's URL token or the message.
+  repeats nothing that was sent and a `Retry-After` that does not either, or only the exception type when the
+  call fails. It never records response or exception text, which can echo the webhook's URL token or the
+  message.
 - **One-way shares** (#19): with `request send --transport pull`, a visitor whose machine cannot accept
   connections uploads inputs, polls for the result and downloads result files from a receiver that advertises
   `request-pull-v1`; `doctor --peer` checks the route. The destination's stable identity is checked again
   before every connection, and request inputs and results are created readable only by their owner.
   Repeating an identical final `reply` or `request respond` with the same files returns the stored result,
   push or pull. A refused or failed attempt removes its own copy of the files, unless a response committed
-  meanwhile may have published that copy's links.
+  meanwhile may have published that copy's links. A pull request that fails before it is saved leaves no
+  snapshot of its inputs.
 - **Waypost bridge** (#14): an optional text bridge between Yobiru and a Waypost service
   (`tools/waypost_bridge.py` in a source checkout, POSIX, not part of the plugin) with a durable journal.
   Unknown outcomes are never resent automatically, and refused messages are quarantined without stopping it,
