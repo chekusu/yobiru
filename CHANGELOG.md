@@ -3,6 +3,31 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## Unreleased (default branch, after 0.5.3)
+
+Contributions from the open pull requests, integrated with review fixes. They are not part of the 0.6.0-beta.1
+prerelease, and the version stays 0.5.3 until a release is chosen.
+
+- **Wake delivery** (#12, for #11): an adapter that succeeded is never run again when the receiver cannot record
+  its outcome.
+- **Identity lookup outages** (#17, for #16): when the receiver's Tailscale identity lookup times out or cannot
+  reach the daemon, it answers `503` with `code: identity_unavailable` and `Retry-After` instead of `403`;
+  unknown or denied peers still get `403`. `update notify` keeps such a notice pending and later sends the
+  identical envelope.
+- **Webhook wake errors** (#15): a failed webhook wake records its HTTP status, a standard error code that
+  repeats nothing that was sent, and `Retry-After`. It never records the response text, which can echo the
+  webhook's URL token or the message.
+- **One-way shares** (#19): with `request send --transport pull`, a visitor whose machine cannot accept
+  connections uploads inputs, polls for the result and downloads result files from a receiver that advertises
+  `request-pull-v1`; `doctor --peer` checks the route. The destination's stable identity is checked again
+  before every connection, and request inputs and results are created readable only by their owner.
+- **Waypost bridge** (#14): an optional text bridge between Yobiru and a Waypost service
+  (`tools/waypost_bridge.py` in a source checkout, POSIX, not part of the plugin) with a durable journal.
+  Unknown outcomes are never resent automatically, and refused messages are quarantined without stopping it.
+- **Documentation** (#13): a community-reported Grok Bot run and an OpenClaw wake recipe.
+- **Tests** (#18 and follow-ups): portable `false`, path and connection-refusal checks for macOS, and a
+  process-group check that no longer mistakes an unreaped zombie for a surviving process.
+
 ## 0.6.0-beta.1 (2026-10-21): Beta
 
 The Beta of the next major revision, published as a GitHub prerelease. **The stable release stays 0.5.3**: the
