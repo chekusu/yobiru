@@ -1360,6 +1360,18 @@ def wake_payload(rec):
     return d
 
 
+_BODY_TOKEN_RE = re.compile(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}")
+_BODY_AUTH_RE = re.compile(r"(?i)(\"?(?:authorization|x-api-key|api[_-]?key|secret|token)\"?\s*[:=]\s*\"?)[^\s\",}]+")
+
+
+def _redact_body(text, limit=200):
+    """Short, single-line, credential-scrubbed snippet of a webhook error body for logs."""
+    text = _BODY_TOKEN_RE.sub(lambda m: m.group(1) + " <redacted>", text)
+    text = _BODY_AUTH_RE.sub(lambda m: m.group(1) + "<redacted>", text)
+    text = " ".join(text.split())
+    return text[:limit] + ("..." if len(text) > limit else "")
+
+
 def call_webhook(a, rec, timeout):
     url = read_secret_value(a, "url")
     secret = read_secret_value(a, "secret")
@@ -1381,12 +1393,13 @@ def call_webhook(a, rec, timeout):
             c = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
         c.request("POST", (u.path or "/") + ("?" + u.query if u.query else ""), body=body, headers=headers)
         r = c.getresponse()
-        r.read(4096)
+        resp = r.read(4096)
         c.close()
     except Exception as e:  # never let the url/secret reach the log via the exception text
         raise AdapterError(redact("%s: %s" % (type(e).__name__, e)))
     if not 200 <= r.status < 300:  # redirects are not followed (would forward the secret)
-        raise AdapterError("HTTP %d" % r.status)
+        snippet = _redact_body(redact(resp.decode("utf-8", "replace")))
+        raise AdapterError("HTTP %d: %s" % (r.status, snippet) if snippet else "HTTP %d" % r.status)
     return "HTTP %d" % r.status
 
 
