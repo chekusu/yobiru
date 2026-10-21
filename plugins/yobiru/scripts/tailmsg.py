@@ -1360,22 +1360,55 @@ def wake_payload(rec):
     return d
 
 
-_BODY_TOKEN_RE = re.compile(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}")
-_BODY_AUTH_RE = re.compile(r"(?i)(\"?(?:authorization|x-api-key|api[_-]?key|secret|token)\"?\s*[:=]\s*\"?)[^\s\",}]+")
+WEBHOOK_ERROR_CODE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.:-]{1,63}\Z")
+WEBHOOK_RETRY_AFTER_RE = re.compile(r"[0-9]{1,5}\Z")
 
 
-def _redact_body(text, limit=200):
-    """Short, single-line, credential-scrubbed snippet of a webhook error body for logs."""
-    text = _BODY_TOKEN_RE.sub(lambda m: m.group(1) + " <redacted>", text)
-    text = _BODY_AUTH_RE.sub(lambda m: m.group(1) + "<redacted>", text)
-    text = " ".join(text.split())
-    return text[:limit] + ("..." if len(text) > limit else "")
+def webhook_sensitive(url, secret, payload):
+    """What a webhook must never get back into logs or inbox records: the secret, the URL and each of its parts
+    (an echoed relative path or query carries the same token) and the message values sent in the payload."""
+    u = urllib.parse.urlsplit(url)
+    values = [url, secret, u.netloc, u.path, u.query, u.fragment, u.username, u.password]
+    values += re.split(r"[/;,&=?#]+", "%s?%s#%s" % (u.path, u.query, u.fragment))
+    values += [payload.get(k) for k in ("id", "from", "agent", "from_agent", "text_preview")]
+    values += [urllib.parse.unquote(v) for v in list(values) if isinstance(v, str)]
+    return sorted({v for v in values if isinstance(v, str) and len(v) >= 4}, key=len, reverse=True)
+
+
+def scrub(text, sensitive, limit=200):
+    """Remove every sensitive value, then control, format and bidi characters; one bounded line."""
+    for value in sensitive:
+        text = text.replace(value, "<redacted>")
+    return clean_text(" ".join(text.split()), limit) or ""
+
+
+def webhook_error(status, retry_after, body, sensitive):
+    """Bounded, non-secret diagnostics for a non-2xx webhook answer. A webhook can echo anything it received
+    (its own path, headers, the message), so no free text from the body is ever kept: only the HTTP status, one
+    standardized error code from a JSON body (`code`, `error_code`, `error` or `error.code`, an identifier
+    such as `invalid_hook`) that repeats nothing that was sent, and a numeric Retry-After."""
+    detail = []
+    try:
+        obj = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        obj = None
+    if isinstance(obj, dict):
+        nested = obj.get("error") if isinstance(obj.get("error"), dict) else {}
+        for code in (obj.get("code"), obj.get("error_code"), obj.get("error"), nested.get("code")):
+            low = code.lower() if isinstance(code, str) else ""
+            if WEBHOOK_ERROR_CODE_RE.match(low) and not any(v.lower() in low or low in v.lower() for v in sensitive):
+                detail.append("code " + code)
+                break
+    if isinstance(retry_after, str) and WEBHOOK_RETRY_AFTER_RE.match(retry_after.strip()):
+        detail.append("retry after %d s" % int(retry_after.strip()))
+    return "HTTP %d" % status + (" (%s)" % ", ".join(detail) if detail else "")
 
 
 def call_webhook(a, rec, timeout):
     url = read_secret_value(a, "url")
     secret = read_secret_value(a, "secret")
-    redact = lambda s: s.replace(url, "<url>").replace(secret, "<secret>") if secret else s.replace(url, "<url>")
+    payload = wake_payload(rec)
+    sensitive = webhook_sensitive(url, secret, payload)
     u = urllib.parse.urlparse(url)
     if u.scheme not in ("http", "https") or not u.hostname:
         raise AdapterError("webhook url must be http(s)://")
@@ -1385,7 +1418,8 @@ def call_webhook(a, rec, timeout):
             raise AdapterError("secret contains a newline")
         scheme = a.get("scheme", "Bearer")
         headers[a.get("header", "Authorization")] = (scheme + " " + secret) if scheme else secret
-    body = json.dumps(wake_payload(rec), ensure_ascii=False).encode("utf-8")
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    c = None
     try:
         if u.scheme == "https":
             c = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout, context=ssl.create_default_context())
@@ -1394,12 +1428,13 @@ def call_webhook(a, rec, timeout):
         c.request("POST", (u.path or "/") + ("?" + u.query if u.query else ""), body=body, headers=headers)
         r = c.getresponse()
         resp = r.read(4096)
-        c.close()
-    except Exception as e:  # never let the url/secret reach the log via the exception text
-        raise AdapterError(redact("%s: %s" % (type(e).__name__, e)))
+    except Exception as e:  # never let the url, secret or an echoed part of them reach the log via the exception
+        raise AdapterError(scrub("%s: %s" % (type(e).__name__, e), sensitive))
+    finally:
+        if c is not None:
+            c.close()
     if not 200 <= r.status < 300:  # redirects are not followed (would forward the secret)
-        snippet = _redact_body(redact(resp.decode("utf-8", "replace")))
-        raise AdapterError("HTTP %d: %s" % (r.status, snippet) if snippet else "HTTP %d" % r.status)
+        raise AdapterError(webhook_error(r.status, r.getheader("Retry-After"), resp, sensitive))
     return "HTTP %d" % r.status
 
 

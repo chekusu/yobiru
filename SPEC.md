@@ -146,7 +146,7 @@ agent 名字规则：1–64 个字符，可以用中文等任意 Unicode；不�
    | 要快 | 只负责“通知”，不在适配器里干活；单次超时 `hook_timeout_s`（缺省 120 秒） |
    | 成功 | `exec`：退出码 0；`webhook`：HTTP 2xx（3xx 不跟随，算失败，避免把密钥转发到别处） |
    | 失败 | 按 `wake_backoff_s × 2^(n-1)` 退避重试，总共最多 `wake_attempts` 次（缺省 3 次：立即、2 秒后、4 秒后），仍失败就放弃并写日志。信**仍在收件箱里**、未 ack，所以 `inbox --pending` 能看到（标记 `!`），agent 下次醒来照样会处理；也可以手动 `tailmsg wake <id>` 重试 |
-   | 记录 | 结果写进收件箱记录的顶层字段 `wake_delivery`：`{"adapter","ok","attempts","at","error"}`，不含任何密钥或 URL |
+   | 记录 | 结果写进收件箱记录的顶层字段 `wake_delivery`：`{"adapter","ok","attempts","at","error"}`，不含任何密钥或 URL。webhook 失败的 `error` 只有 HTTP 状态、一个不重复所发内容的标准错误码（如 `invalid_hook`）和数字 `Retry-After`，不含响应正文。适配器已成功时，即使这条记录写入失败也不会再次调用 |
    | 安全 | 适配器**只通知，不执行信里的内容**；正文不进入命令行、不经过 shell。信永远只是请求，不是批准 |
 
    **两种内置类型**：

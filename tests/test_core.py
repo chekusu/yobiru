@@ -1,5 +1,6 @@
 """Hardening in the canonical tailmsg.py that the plugin relies on."""
 import importlib.util
+import json
 import os
 import tempfile
 import unittest
@@ -45,40 +46,110 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(want, core.safe_name(raw))
 
 
-if __name__ == "__main__":
-    unittest.main()
+class WebhookDiagnosticsTests(unittest.TestCase):
+    """A webhook can echo anything it received. Only its HTTP status, one standardized error code that repeats
+    nothing that was sent to it, and a numeric Retry-After may reach the receiver log or the inbox record."""
+    TOKEN = "PRIVATE_PATH_TOKEN_12345678"
+    QUERY = "QUERY_TOKEN_87654321"
+    SECRET = "SYNTHETIC_SECRET_abcdefgh"
+    TEXT = "SYNTHETIC_PRIVATE_MESSAGE_12345678"
 
+    def serve(self, status, reply, headers=None, raw=None):
+        import http.server
+        import threading
 
-class WebhookErrorBodyTests(unittest.TestCase):
-    def _serve(self, status, body):
-        import http.server, threading
         class H(http.server.BaseHTTPRequestHandler):
             def do_POST(self):
-                self.rfile.read(int(self.headers.get("Content-Length", 0)))
-                self.send_response(status); self.end_headers(); self.wfile.write(body)
-            def log_message(self, *a): pass
+                payload = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                if raw is not None:                    # a broken status line that echoes the request path
+                    self.wfile.write(raw(self.path))
+                    return
+                body = json.dumps(reply(self.path, payload, dict(self.headers))).encode()
+                self.send_response(status)
+                for name, value in (headers or {}).items():
+                    self.send_header(name, value)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
         srv = http.server.HTTPServer(("127.0.0.1", 0), H)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
-        return "http://127.0.0.1:%d/hook" % srv.server_address[1]
+        os.environ["YOBIRU_T_URL"] = "http://127.0.0.1:%d/webhooks/%s?key=%s" % (srv.server_address[1], self.TOKEN,
+                                                                               self.QUERY)
+        os.environ["YOBIRU_T_SECRET"] = self.SECRET
+        self.addCleanup(os.environ.pop, "YOBIRU_T_URL", None)
+        self.addCleanup(os.environ.pop, "YOBIRU_T_SECRET", None)
+        return {"type": "webhook", "url_env": "YOBIRU_T_URL", "secret_env": "YOBIRU_T_SECRET"}
 
-    def test_4xx_includes_redacted_snippet(self):
-        url = self._serve(400, b'{"error":"bad agent","echo":"Bearer abcdefghijklmnop","token":"s3cr3tvalue","x":"' + b"y" * 400 + b'"}')
-        os.environ["YOBIRU_T_URL"], os.environ["YOBIRU_T_SECRET"] = url, "topsecret"
-        a = {"url_env": "YOBIRU_T_URL", "secret_env": "YOBIRU_T_SECRET"}
-        rec = {"envelope": dict(ENV, text="hi"), "received": {"peer": {"node": "a"}, "at": ENV["ts"]}}
-        with self.assertRaises(core.AdapterError) as cm:
-            core.call_webhook(a, rec, 5)
-        msg = str(cm.exception)
-        self.assertTrue(msg.startswith("HTTP 400: "), msg)
-        self.assertIn("bad agent", msg)
-        for leak in ("abcdefghijklmnop", "s3cr3tvalue", "topsecret", url):
-            self.assertNotIn(leak, msg)
-        self.assertLess(len(msg), 230)
+    def record(self):
+        return {"envelope": dict(ENV, text=self.TEXT), "received": {"peer": {"node": ENV["from"]}, "at": ENV["ts"]}}
 
-    def test_redact_body_scrubs_tokens_and_truncates(self):
-        out = core._redact_body('Authorization: Bearer abcdefghijkl\n"api_key": "zzzzzzzz" ' + "q" * 300)
-        self.assertNotIn("abcdefghijkl", out)
-        self.assertNotIn("zzzzzzzz", out)
-        self.assertNotIn("\n", out)
-        self.assertTrue(out.endswith("..."))
+    def error(self, adapter):
+        with self.assertRaises(core.AdapterError) as caught:
+            core.call_webhook(adapter, self.record(), 5)
+        return str(caught.exception)
+
+    def assert_no_leak(self, text):
+        for leak in (self.TOKEN, self.QUERY, self.SECRET, self.TEXT, "Bearer"):
+            self.assertNotIn(leak, text)
+
+    def test_echoed_path_message_and_credentials_never_reach_the_error(self):
+        adapter = self.serve(400, lambda path, payload, headers: {
+            "error": "invalid hook", "path": path, "received": payload["text_preview"],
+            "auth": headers.get("Authorization"), "detail": "token %s" % self.SECRET})
+        message = self.error(adapter)
+        self.assertEqual("HTTP 400", message)
+        self.assert_no_leak(message)
+
+    def test_a_standard_code_and_retry_after_are_kept(self):
+        adapter = self.serve(400, lambda path, payload, headers: {"code": "invalid_hook", "path": path})
+        self.assertEqual("HTTP 400 (code invalid_hook)", self.error(adapter))
+        adapter = self.serve(429, lambda *a: {"error": {"code": "rate_limited", "message": self.TEXT}},
+                             headers={"Retry-After": "30"})
+        self.assertEqual("HTTP 429 (code rate_limited, retry after 30 s)", self.error(adapter))
+
+    def test_a_code_that_repeats_what_was_sent_or_free_text_is_dropped(self):
+        for code in (self.TOKEN, self.QUERY.lower(), self.TEXT, self.SECRET, "webhooks", "not an identifier",
+                     "x" * 80):
+            with self.subTest(code=code):
+                adapter = self.serve(403, lambda *a: {"code": code})
+                message = self.error(adapter)
+                self.assertEqual("HTTP 403", message)
+                self.assert_no_leak(message)
+        adapter = self.serve(502, lambda *a: {"code": "bad_gateway"}, headers={"Retry-After": "soon"})
+        self.assertEqual("HTTP 502 (code bad_gateway)", self.error(adapter))
+
+    def test_a_broken_answer_that_echoes_the_path_is_scrubbed(self):
+        adapter = self.serve(None, None, raw=lambda path: ("BOGUS %s %s\r\n\r\n" % (path, self.TEXT)).encode())
+        message = self.error(adapter)
+        self.assertTrue(message.startswith("BadStatusLine"), message)
+        self.assert_no_leak(message)
+        self.assertIn("<redacted>", message)
+
+    def test_deliver_wake_records_and_logs_only_the_safe_detail(self):
+        import contextlib
+        import io
+        from pathlib import Path
+        adapter = self.serve(400, lambda path, payload, headers: {
+            "error": "invalid hook", "path": path, "received": payload["text_preview"],
+            "auth": headers.get("Authorization")})
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(io.StringIO()) as log:
+            ctx = core.Ctx(Path(d))
+            ctx.cfg.update(wake_attempts=2, wake_backoff_s=0, wake_adapter=adapter)
+            path = ctx.inbox / (ENV["id"] + ".json")
+            path.write_text(json.dumps(self.record()), encoding="utf-8")
+            self.assertFalse(core.deliver_wake(ctx, path))
+            stored = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual((False, 2, "HTTP 400"), (stored["wake_delivery"]["ok"], stored["wake_delivery"]["attempts"],
+                                                  stored["wake_delivery"]["error"]))
+        self.assert_no_leak(json.dumps(stored["wake_delivery"]))
+        self.assert_no_leak(log.getvalue())
+        self.assertIn("HTTP 400", log.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main()
