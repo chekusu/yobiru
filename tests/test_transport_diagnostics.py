@@ -145,14 +145,17 @@ class TransportTests(unittest.TestCase):
             entry = {"name": "report.txt", "url": "http://%s/f/private-grant/report.txt" % PEER,
                      "sha256": "0" * 64, "size": 1}
             record = {"envelope": {"id": MID, "fetch": [entry]}, "received": {"peer": {"node": PEER}}}
-            for kind in ("network", "disk"):
+            for kind in ("network", "disk", "unwritable"):
                 with self.subTest(kind=kind):
+                    if kind == "unwritable":        # a real local failure: the partial download path is a folder
+                        (ctx.inbox / MID / "files" / "report.txt.part").mkdir(parents=True)
                     conn = mock.Mock()
                     conn.getresponse.return_value.status = 200
                     conn.getresponse.return_value.read.return_value = b"x"
                     if kind == "network":
                         conn.getresponse.side_effect = socket.timeout("timed out")
-                    disk = mock.patch("builtins.open", side_effect=PermissionError("disk read-only")) \
+                    # The download file is created 0600 through private_open; a read-only disk fails there.
+                    disk = mock.patch.object(core, "private_open", side_effect=PermissionError("disk read-only")) \
                         if kind == "disk" else contextlib.nullcontext()
                     output = io.StringIO()
                     with mock.patch.object(core, "load_msg", return_value=(None, record)), \
@@ -169,7 +172,7 @@ class TransportTests(unittest.TestCase):
                         self.assertIn("file fetch to " + PEER, detail)
                         self.assertIn("127.0.0.1:80", detail)
                     else:
-                        self.assertIn("disk read-only", detail)
+                        self.assertIn("disk read-only" if kind == "disk" else "Is a directory", detail)
                         self.assertNotIn("Tailscale", detail)
                     conn.close.assert_called_once()
 
