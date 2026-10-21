@@ -41,6 +41,48 @@ class IdentityLookupTests(unittest.TestCase):
     def cli_result(self, stdout="", stderr="", returncode=0):
         return subprocess.CompletedProcess(["tailscale"], returncode, stdout, stderr)
 
+    def test_a_fresh_lookup_never_takes_an_identity_that_a_slower_lookup_stores_meanwhile(self):
+        # The address belonged to A when an ordinary lookup started and belongs to B when a pull grant is checked.
+        # The older lookup stores A exactly when the fresh one would evict or read the cache; the fresh one must
+        # still ask LocalAPI, which now answers B.
+        def whois(name, stable_id):
+            return json.dumps({"Node": {"Name": name + ".", "StableID": stable_id, "ID": 7, "User": 9,
+                                        "Addresses": [IP + "/32"], "Hostinfo": {}, "Tags": []},
+                               "UserProfile": {"ID": 9, "LoginName": ""}})
+        started, finish, results, older = threading.Event(), threading.Event(), [], []
+
+        def ts(*args, timeout=None):
+            if threading.current_thread() in older:
+                started.set()
+                finish.wait(5)                                   # LocalAPI still answers for A, slowly
+                return whois(PEER, "alpha-stable")
+            return whois("charlie.example.ts.net", "charlie-stable")
+
+        def older_lookup_completes():
+            if older and threading.current_thread() not in older and older[0].is_alive():
+                finish.set()
+                older[0].join(5)
+
+        class Cache(dict):                                       # any eviction or read by another thread sees A
+            def pop(self, *args):
+                older_lookup_completes()
+                return dict.pop(self, *args)
+
+            def get(self, *args):
+                older_lookup_completes()
+                return dict.get(self, *args)
+        self.ctx.ts, self.ctx._whois_cache = ts, Cache()
+        older.append(threading.Thread(target=lambda: results.append(self.ctx.whois(IP))))
+        older[0].start()
+        self.assertTrue(started.wait(5))
+        fresh = core.fresh_whois(self.ctx, IP)
+        finish.set()
+        older[0].join(5)
+        self.assertEqual("charlie.example.ts.net", fresh["node"])
+        self.assertEqual([PEER], [ident["node"] for ident in results])
+        self.assertEqual(PEER, self.ctx.whois(IP)["node"], "ordinary traffic keeps its 60-second cache")
+        self.assertEqual("charlie.example.ts.net", core.fresh_whois(self.ctx, IP)["node"], "even with A cached")
+
     def request(self, path="/info", body=None, ip=IP):
         """Run the actual HTTP handler with a synthetic peer address and a five-second client."""
         server, client = socket.socketpair()

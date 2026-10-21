@@ -65,12 +65,9 @@ def peer_identity(ident):
 
 
 def fresh_whois(ctx, ip):
-    # Pull grants and stored ownership must not follow an IP reassigned during the normal
-    # discovery cache's 60-second lifetime. Preserve the legacy cache for ordinary traffic.
-    cache = getattr(ctx, "_whois_cache", None)
-    if isinstance(cache, dict):
-        cache.pop(ip, None)
-    return ctx.whois(ip)
+    # Pull grants and stored ownership must come from LocalAPI now. The 60-second cache of ordinary traffic is
+    # never read here: a lookup that started before the address was reassigned can refill it at any moment.
+    return ctx.whois_uncached(ip)
 
 
 def is_pull_request(env):
@@ -414,9 +411,16 @@ class Ctx:
         return json.loads(self.ts("status", "--json"))
 
     def whois(self, ip):
+        """Ordinary traffic may reuse a lookup of this address for 60 seconds; pull grants use whois_uncached."""
         hit = self._whois_cache.get(ip)
         if hit and hit[0] > time.time():
             return hit[1]
+        ident = self.whois_uncached(ip)
+        if ident is not None:
+            self._whois_cache[ip] = (time.time() + 60, ident)
+        return ident
+
+    def whois_uncached(self, ip):
         try:
             # Keep a stalled identity lookup below the sender's five-second /info timeout.
             d = json.loads(self.ts("whois", "--json", ip, timeout=3))
@@ -453,7 +457,6 @@ class Ctx:
         }
         if stable_valid:
             ident.update(stable_id=stable_id, dns_name=dns_name)
-        self._whois_cache[ip] = (time.time() + 60, ident)
         return ident
 
     def self_node(self):
