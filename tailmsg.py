@@ -1102,9 +1102,9 @@ def request_backlog(home, now=None):
                 "SELECT MIN(received_at) FROM requests WHERE direction='incoming' AND state='received' "
                 "AND deadline>? AND received_at GLOB ?", stamp, STAMP_GLOB), now)
             incoming["oldest_progress_age_seconds"] = _age(one(
-                "SELECT MIN(CASE WHEN progress_at GLOB ?1 THEN progress_at WHEN started_at GLOB ?1 THEN started_at "
-                "END) FROM requests WHERE direction='incoming' AND state='running' AND deadline>?2",
-                STAMP_GLOB, stamp), now)
+                "SELECT MIN(CASE WHEN progress_at GLOB ? THEN progress_at WHEN started_at GLOB ? THEN started_at "
+                "END) FROM requests WHERE direction='incoming' AND state='running' AND deadline>?",
+                STAMP_GLOB, STAMP_GLOB, stamp), now)
             # The exact final response of the same request: an earlier receipt never counts, nor another
             # request's row. A final result without its outbox row is unknown, never delivered.
             incoming["final_response_pending"] = one(
