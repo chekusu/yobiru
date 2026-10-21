@@ -4,7 +4,9 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import socket
+import sys
 import tempfile
 import threading
 import unittest
@@ -143,14 +145,17 @@ class TransportTests(unittest.TestCase):
             entry = {"name": "report.txt", "url": "http://%s/f/private-grant/report.txt" % PEER,
                      "sha256": "0" * 64, "size": 1}
             record = {"envelope": {"id": MID, "fetch": [entry]}, "received": {"peer": {"node": PEER}}}
-            for kind in ("network", "disk"):
+            for kind in ("network", "disk", "unwritable"):
                 with self.subTest(kind=kind):
+                    if kind == "unwritable":        # a real local failure: the partial download path is a folder
+                        (ctx.inbox / MID / "files" / "report.txt.part").mkdir(parents=True)
                     conn = mock.Mock()
                     conn.getresponse.return_value.status = 200
                     conn.getresponse.return_value.read.return_value = b"x"
                     if kind == "network":
                         conn.getresponse.side_effect = socket.timeout("timed out")
-                    disk = mock.patch("builtins.open", side_effect=PermissionError("disk read-only")) \
+                    # The download file is created 0600 through private_open; a read-only disk fails there.
+                    disk = mock.patch.object(core, "private_open", side_effect=PermissionError("disk read-only")) \
                         if kind == "disk" else contextlib.nullcontext()
                     output = io.StringIO()
                     with mock.patch.object(core, "load_msg", return_value=(None, record)), \
@@ -167,7 +172,7 @@ class TransportTests(unittest.TestCase):
                         self.assertIn("file fetch to " + PEER, detail)
                         self.assertIn("127.0.0.1:80", detail)
                     else:
-                        self.assertIn("disk read-only", detail)
+                        self.assertIn("disk read-only" if kind == "disk" else "Is a directory", detail)
                         self.assertNotIn("Tailscale", detail)
                     conn.close.assert_called_once()
 
@@ -202,7 +207,13 @@ class PackagedDiagnosticsTests(unittest.TestCase):
             self.assertEqual("", result.stdout)
             self.assertIn("POST /msg to " + PEER, result.stderr)
             self.assertIn("127.0.0.1:%d" % port, result.stderr)
-            self.assertIn("ConnectionRefusedError", result.stderr)
+            # Linux refuses a connection to a bound but non-listening port; a host whose firewall silently drops
+            # it (some macOS setups) times out instead. Either way the message was not delivered.
+            refused = "ConnectionRefusedError" in result.stderr
+            if sys.platform.startswith("linux"):
+                self.assertTrue(refused, result.stderr)
+            else:
+                self.assertTrue(refused or re.search(r"\b(?:TimeoutError|timeout)\b", result.stderr), result.stderr)
             self.assertIn("Delivery is unknown for message", result.stderr)
             self.assertNotIn("Traceback", result.stderr)
             _, data = pkg.run_json(["doctor", "--json"], user, **opts)

@@ -59,6 +59,16 @@ Yobiru 为这些 agents 提供了一套轻量、共通的通信方式：
 
 这是说明性的工作流。Yobiru 不提供 X 访问权限，不改变平台收费规则，也不补齐平台缺失的能力。**DOTS 是有条件的示例：** 它需要能执行此 CLI 并访问 tailnet 的环境；本仓库不包含已经验证的 DOTS 连接器。手动部署的 Grok Bot 0.5.0 runtime 已完成真实的可追踪请求；原生插件市场安装和云电脑重建后的恢复仍需分别验证。
 
+## 换个助手，进度也能接上
+
+几个助手一起做事，结果却散在不同的对话里。[Waypost](https://waypost.hika.fyi) 是一个独立的开源项目，可以把报告和需要保留的上下文留在你自己的空间，换助手时可以继续用。
+
+比如，Grok Bot 完成调研后，通过 **Yobiru → Waypost** 交回摘要和来源链接。你的**主助手**，也就是你平时主要对话的助手，收取这些结果，与其他报告一起汇总，帮你决定下一步。以后换了助手，也可以授权它读取已保存的报告和上下文。
+
+Waypost [开源](https://github.com/mainline-org/waypost)，可以自己部署；其官网也介绍了邀请制的托管试用。它不属于 Yobiru：转发的文字由你选择的 Waypost 服务按其自身条款保存和处理。
+
+可选的 [Waypost 桥接](docs/WAYPOST_INTEROP.zh-CN.md)（源码中的 `tools/waypost_bridge.py`，插件不包含）支持 macOS/Linux 上的**双向文字转发**。无法路由的消息会被隔离，绝不转发。文件和记忆需要在 Waypost 单独管理。
+
 ## 工作原理
 
 ```text
@@ -156,6 +166,8 @@ sh "$Y" onboard
 用户要求配置后，agent 可以在宿主的正常权限内执行这些步骤，无需再次询问；只有用户自己决定 Tailscale 账户（自己打开登录链接，认证密钥绝不放进聊天）、访问策略、agent 名称，以及哪个已有会话属于哪个 agent。Yobiru 从不修改 ACL 或 shields-up。详见[配置指南](docs/SETUP.zh-CN.md)。
 
 ## 快速开始：连接两个 agents
+
+如果使用 **Tailscale 单向共享**，请用 `request send ... --transport pull`：来访端上传请求附件、轮询回复并下载结果附件，无需运行接收进程。两端都需要支持 `request-pull-v1`，可用 `doctor --peer HOST[:PORT]` 检查。普通消息和 push 请求仍按原方式工作，其回信和附件可能需要反向连接。详见[单向共享与往返验证](docs/SHARING.md)。
 
 示例使用虚构的 Tailscale 主机名 `agent-laptop` 和 `research-node`，请替换为**你自己选定的对端**。在每台机器上按前文设置 `Y`。安装插件本身不会配置对端、启动服务或发送消息。
 

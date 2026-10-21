@@ -67,7 +67,8 @@ Start here (read-only; works before anything is set up):
 
 Check and set up (read-only unless --apply):
   paths                      where the plugin, bundled CLI, Python and data home are (JSON)
-  doctor [--json]            check Python, Tailscale, config, receiver, sessions and wake adapters
+  doctor [--peer HOST[:PORT]] [--json]
+                             check local setup; optionally probe peer health, identity access and pull support
   status [--json]            summarize config, agents, sessions, versions, wake settings and inbox counts
   session {{list,bind,unbind}} explicit agent -> existing session binding (exact id; bind/unbind need --apply)
   policy {{show,set}}         show or deliberately change incoming access policy (tailnet / allowlist + deny)
@@ -86,8 +87,9 @@ Check and set up (read-only unless --apply):
   version
 
 Messaging (passed unchanged to the bundled tailmsg.py):
-  request send PEER[/AGENT] TEXT [--timeout-seconds 900] [--wake now|batch|none]
+  request send PEER[/AGENT] TEXT [--transport push|pull] [--file F] [--timeout-seconds 900]
   request status ID [--refresh] [--json]     request list [--json]
+  request resume ID                     retry the same pull request upload and submission
   request respond ID TEXT --state running|completed|failed|rejected|blocked
   send PEER[/AGENT] TEXT [--file F]... [--wake now|batch|none] [--agent A] [--kind K]
   reply ID TEXT [--file F]...      inbox [--pending] [--agent A]      show ID      fetch ID
@@ -570,12 +572,25 @@ def doctor_checks(f):
 
 def cmd_doctor(home, home_source, argv):
     ap = argparse.ArgumentParser(allow_abbrev=False, prog=PRODUCT + " doctor",
-                                 description="read-only checks of Python, Tailscale, config, receiver and wake adapters")
+                                 description="read-only checks of local setup and optional peer transport, identity and pull support")
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--no-probe", action="store_true", help="skip Tailscale queries and the receiver health probe")
+    ap.add_argument("--no-probe", action="store_true", help="skip Tailscale queries and local/peer HTTP probes")
+    ap.add_argument("--peer", metavar="HOST[:PORT]", help="also check this peer; sends no messages and changes no policy")
+    ap.add_argument("--timeout", type=float, default=3.0, help="seconds per peer HTTP probe (0.2 to 30; default 3)")
     a = ap.parse_args(argv)
+    peer = parse_peer_spec(a.peer, 7766) if a.peer else None
+    if peer and peer[2] is not None:
+        ap.error("--peer checks a machine, not an agent; omit /AGENT")
     try:
-        checks = doctor_checks(gather(home, home_source, probe=not a.no_probe))
+        facts = gather(home, home_source, probe=not a.no_probe)
+        checks = doctor_checks(facts)
+        if peer:
+            if a.no_probe:
+                checks.append({"status": "info", "check": "peer", "detail": "not checked: --no-probe", "fix": None})
+            else:
+                # Match discovery's default port while preserving an explicit --peer port.
+                peer = parse_peer_spec(a.peer, facts.get("port") or 7766)
+                checks.extend(peer_doctor_checks(facts, peer[0], peer[1], max(0.2, min(a.timeout, 30.0))))
     except Exception as e:  # a diagnostic must report, not crash
         checks = [{"status": "error", "check": "doctor", "detail": "unexpected %s: %s" % (type(e).__name__, e),
                    "fix": "please report this; nothing was changed"}]
@@ -1856,6 +1871,9 @@ def validate_info(body, expect_node=None):
                        "session": validate_session_view(item.get("session"))})
     node = clean(obj.get("node"), 253)
     info = {"version": fmt_semver(version) if version else None, "node": node, "agents": agents, "warnings": []}
+    caps = obj.get("capabilities")
+    info["capabilities"] = [c for c in caps[:32] if isinstance(c, str) and
+                            re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", c)] if isinstance(caps, list) else []
     total = obj.get("agents_total")
     if obj.get("agents_truncated") is True or len(raw_agents) > 32 or \
             isinstance(total, int) and not isinstance(total, bool) and total > len(agents):
@@ -1864,6 +1882,15 @@ def validate_info(body, expect_node=None):
     if expect_node and (node or "").lower().rstrip(".") != expect_node:
         info["warnings"].append("the receiver calls itself %s" % (node or "?"))
     return info, None
+
+
+def identity_unavailable(body):
+    """A receiver's documented 503 answer: its Tailscale identity lookup is temporarily unavailable."""
+    try:
+        obj = json.loads(body.decode("utf-8")) if len(body) <= MAX_REPLY_BYTES else None
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return isinstance(obj, dict) and obj.get("ok") is False and obj.get("code") == "identity_unavailable"
 
 
 def probe_info(ip, port, timeout=3.0, expect_node=None, host=None):
@@ -1887,6 +1914,9 @@ def probe_info(ip, port, timeout=3.0, expect_node=None, host=None):
         res.update(kind="info", info=info) if info else res.update(kind="malformed", error=problem)
     elif status == 403:
         res["kind"] = "blocked"
+    elif status == 503 and identity_unavailable(body):
+        res.update(kind="error", error="HTTP 503: the receiver could not verify this machine's identity yet; "
+                                        "try again shortly")
     elif status == 404:
         try:
             left = deadline - time.monotonic()
@@ -1903,6 +1933,86 @@ def probe_info(ip, port, timeout=3.0, expect_node=None, host=None):
     else:
         res.update(kind="error", error="HTTP %d" % status)
     return res
+
+
+def peer_doctor_checks(facts, peer, port, timeout=3.0):
+    """Read-only peer checks. HTTP reachability does not reveal the tailnet's policy configuration."""
+    checks = []
+
+    def add(status, name, detail, fix=None):
+        checks.append({"status": status, "check": name, "detail": detail, "fix": fix})
+
+    ip, expect_node = None, None
+    if valid_ip(peer):
+        import ipaddress
+        address = ipaddress.ip_address(peer)
+        if not any(address in net for net in core().TAILNET_NETS):
+            add("error", "peer-target", "use a Tailscale IP, hostname or full MagicDNS name")
+            return checks
+        # Shared peers may have no DNSName in status. Their explicit Tailscale address is still useful.
+        ip = peer
+    else:
+        cmd = (facts.get("cfg") or {}).get("tailscale_cmd") or ["tailscale"]
+        nodes, error = tailnet_nodes(cmd)
+        if error:
+            add("error", "peer-target", "cannot resolve peer: %s" % clean(error, 300),
+                "check Tailscale status, or use the intended machine's exact Tailscale IP")
+            return checks
+        try:
+            node = core().select_peer(nodes, peer)
+        except ValueError as e:
+            add("error", "peer-target", str(e), "use the intended exact MagicDNS name or Tailscale IP")
+            return checks
+        if node is None:
+            add("error", "peer-target", "peer is not in this Tailscale snapshot: %s" % peer,
+                "check that the share was accepted; use its full MagicDNS name or exact Tailscale IP")
+            return checks
+        ip, expect_node = node["ip"], node["node"]
+    add("ok", "peer-target", "%s resolves to %s:%d" % (peer, ip, port))
+    grant = {"src": ["<CALLER_TAILSCALE_IP>"], "dst": ["<RECEIVER_TAILSCALE_IP>"], "ip": ["tcp:%d" % port]}
+    add("info", "peer-network-policy", "tailnet policy was not read; a timeout alone cannot identify an ACL/grant failure",
+        "only with owner authorization, review this grant template alongside existing rules: %s; "
+        "replace placeholders; this command applies nothing" % json.dumps(grant, separators=(",", ":")))
+    try:
+        status, body = http_request(ip, port, "GET", "/health", timeout=timeout, host=expect_node)
+    except (OSError, http.client.HTTPException, ValueError) as e:
+        reason = "timeout" if isinstance(e, socket.timeout) else type(e).__name__
+        add("error", "peer-transport", "GET /health at %s:%d did not complete (%s)" % (ip, port, reason),
+            "check the receiver/listen address, Tailscale path, firewall, grants and shields-up; "
+            "ping success does not prove TCP access")
+        return checks
+    add("ok", "peer-transport", "HTTP answered at %s:%d" % (ip, port))
+    try:
+        health = json.loads(body.decode("utf-8")) if len(body) <= MAX_REPLY_BYTES else None
+    except (UnicodeDecodeError, ValueError):
+        health = None
+    if status == 200 and isinstance(health, dict) and health.get("ok") is True and health.get("v") == 1:
+        add("ok", "peer-health", "GET /health returned HTTP 200 with tailmsg v1 health")
+    else:
+        add("warn", "peer-health", "GET /health returned HTTP %d without valid tailmsg v1 health" % status,
+            "check that the intended Yobiru receiver owns this port")
+    result = probe_info(ip, port, timeout=timeout, expect_node=expect_node, host=expect_node)
+    if result["kind"] == "blocked":
+        add("error", "peer-identity", "GET /info returned HTTP 403: the receiver rejected identity or access policy",
+            "inspect its authenticated Tailscale identity and Yobiru allow/deny policy; old receivers may reject "
+            "shared peers with an empty name; do not widen policy automatically")
+    elif result["kind"] == "info":
+        add("ok", "peer-identity", "GET /info accepted this machine (Yobiru %s)" % (result["info"]["version"] or "unknown"))
+        pull = "request-pull-v1" in result["info"]["capabilities"]
+        add("ok" if pull else "warn", "peer-pull", "request-pull-v1 %s" % ("supported" if pull else "not advertised"),
+            None if pull else "upgrade the target receiver before using request send --transport pull; "
+            "legacy push replies and request attachments need a reverse connection")
+        if pull:
+            add("info", "peer-verification", "capability checks do not prove a message or attachment round trip",
+                "with authorization, send a pull request with a harmless file, refresh its final response, "
+                "fetch the response attachment and compare its SHA-256")
+    elif result["kind"] == "legacy":
+        add("warn", "peer-identity", "GET /info is unavailable on this legacy receiver; identity access is unverified")
+        add("warn", "peer-pull", "request-pull-v1 not advertised", "upgrade the target receiver before using pull requests")
+    else:
+        add("error", "peer-identity", "GET /info could not verify identity access (%s: %s)" %
+            (result["kind"], result.get("error") or "unknown"), "check the target receiver and retry; no message was sent")
+    return checks
 
 
 def tailnet_nodes(cmd, timeout=10):
@@ -2736,7 +2846,9 @@ def notice_text(me, version, release=None):
 
 def post_notice(ip, port, node, env, timeout=10.0):
     """POST one stored envelope. -> (outcome, detail, http status). outcome: notified | blocked | rejected |
-    uncertain | not_sent. Only a connection that was never established proves the notice was not sent."""
+    uncertain | not_sent. Only a connection that was never established, or the receiver's documented refusal to
+    authenticate this machine yet (503 identity_unavailable, sent before it reads a message), proves that the notice
+    was not stored."""
     data = json.dumps(env, ensure_ascii=False).encode("utf-8")
     c = http.client.HTTPConnection(ip, int(port), timeout=timeout)
     with Deadline(c, timeout) as d:
@@ -2763,6 +2875,12 @@ def post_notice(ip, port, node, env, timeout=10.0):
         return "uncertain", "HTTP %d without a valid receipt for this message id" % r.status, r.status
     if r.status == 403:
         return "blocked", "HTTP 403: the receiver's access policy refuses this machine", r.status
+    if r.status == 503 and isinstance(receipt, dict) and receipt.get("ok") is False and \
+            receipt.get("code") == "identity_unavailable":
+        # The receiver could not look up this machine's Tailscale identity yet and stored nothing: the same stored
+        # envelope is sent again on a later run. Any other 503 stays uncertain.
+        return "not_sent", "HTTP 503: the receiver could not verify this machine's identity yet (retried later)", \
+            r.status
     if r.status in (400, 404, 411, 413, 415):
         err = clean((receipt or {}).get("error") if isinstance(receipt, dict) else None, 120)
         return "rejected", "HTTP %d%s" % (r.status, ": " + err if err else ""), r.status

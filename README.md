@@ -59,6 +59,16 @@ Imagine asking: **“What are people discussing, what matters to my project, and
 
 This is an illustrative workflow. Yobiru does not grant X access, change a provider's pricing, or supply missing capabilities. **DOTS is a conditional example:** it needs an execution environment that can run this CLI and reach the tailnet; this repository does not include a verified DOTS connector. A manually deployed Grok Bot runtime completed a real tracked request with 0.5.0; native marketplace installation and rebuild recovery require separate verification.
 
+## Keep the work when you switch assistants
+
+Several agents can help with the same project, but their findings often end up in separate conversations. [Waypost](https://waypost.hika.fyi), a separate open-source project, provides a place to collect their reports and keep context for the next assistant.
+
+For example, Grok Bot sends a research summary and source links through **Yobiru → Waypost**. Your **primary assistant**—the one you usually talk to—reads them alongside other reports and helps you decide what to do next. If you switch assistants, you can give the next one access to the saved reports and context.
+
+Waypost is [open source](https://github.com/mainline-org/waypost) and can be self-hosted; its website also describes an invite-only hosted trial. It is not part of Yobiru: text you forward is stored and processed by the Waypost service you choose, under that service's own terms.
+
+The optional [Waypost bridge](docs/WAYPOST_INTEROP.md) (`tools/waypost_bridge.py` in a source checkout; the plugin does not include it) forwards **text messages** in both directions on macOS/Linux. Messages it cannot route are quarantined and never forwarded. Files and memory are managed separately in Waypost.
+
 ## How it works
 
 ```text
@@ -156,6 +166,11 @@ sh "$Y" onboard
 Once the user has asked for setup, the agent may run these steps with the host's normal permissions without asking again; the user alone chooses the Tailscale account (they open the login URL; auth keys never go into chat), the access policy, the agent names and which existing session belongs to which agent. Yobiru never changes ACLs or shields-up. Details: [setup guide](docs/SETUP.md).
 
 ## Quick start: connect two agents
+
+For a **one-way Tailscale share**, use `request send ... --transport pull`: the visitor uploads input
+files, polls for the reply, and downloads result files without running an inbound receiver. Both ends
+need `request-pull-v1`; run `doctor --peer HOST[:PORT]` to check. Ordinary sends and push requests keep
+their existing reverse-connection requirements. See [one-way sharing and verification](docs/SHARING.md).
 
 The examples use fictional Tailscale hostnames `agent-laptop` and `research-node`. Replace them with **your own chosen peers**. Resolve `Y` on each machine as shown above. Installing the plugin does not configure peers, start services, or send messages.
 

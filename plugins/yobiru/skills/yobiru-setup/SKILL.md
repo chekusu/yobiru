@@ -5,9 +5,10 @@ description: Set up, check or repair Yobiru (agent-to-agent messaging over the u
 
 # Yobiru: onboarding and setup
 
-Yobiru lets agents on different machines of one Tailscale network message each other directly
-(tailmsg protocol v1): no central server, identity from Tailscale, files pulled straight from the
-sender. Installing the plugin ran nothing (there is no install hook); this skill makes it work.
+Yobiru lets agents on Tailscale-connected machines message each other directly (tailmsg protocol v1):
+no central server and identity from Tailscale. It also supports requests and replies across a one-way
+shared-machine connection. Installing the plugin ran nothing (there is no install hook); this skill
+makes it work.
 
 ## Run the Yobiru command
 
@@ -112,6 +113,28 @@ not survive between commands in many hosts). On Windows use `py -3 "<plugin>\scr
    `request send PEER TEXT --timeout-seconds 900` and `request status ID --refresh --json` to verify
    receipt and final outcome separately; never claim that a transport receipt proves task completion.
    A notification (`send --kind notice`) requires no reply.
+
+## One-way Tailscale sharing
+
+For a visitor who can connect to this shared receiver but cannot accept a connection back, use
+`request send RECEIVER/AGENT TEXT --transport pull [--file PATH]`. The visitor uploads request files,
+polls with `request status ID --refresh --json`, then uses `fetch RESPONSE_ID` to download result files.
+The visitor needs configuration and an updated CLI, but no running Yobiru receiver for this workflow.
+The shared target must run a receiver advertising `request-pull-v1`. Responses are stored for polling;
+they do not create a reverse connection or automatically wake the visitor's agent.
+
+Run `sh Y doctor --peer RECEIVER[:PORT] --json` from the visitor before sending. It separately checks
+HTTP reachability, `/health`, authenticated `/info` and pull capability. It does not inspect tailnet
+policy: a timeout alone cannot establish an ACL failure. A 403 is an identity/access refusal; inspect
+that layer, including older receivers rejecting shared devices with empty display names. The command
+only prints a grant template with placeholders; it does not change Tailscale. Changing network access
+still requires the owner's explicit task authorization. Use the exact Tailscale IP or full MagicDNS
+name when a shared device lacks a discoverable short name.
+
+Verify a final response and both attachment hashes with the intended peer; health/202 alone is not
+end-to-end acceptance. Ordinary messages, legacy push replies and sender-hosted attachments still
+need reverse connectivity. In the source repository, `docs/SHARING.md` contains the full workflow and
+minimal grant template. Do not configure reciprocal sharing just to make a pull request work.
 
 ## Linux cloud computers: preserve identity across rebuilds
 

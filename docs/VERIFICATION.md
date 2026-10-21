@@ -2,6 +2,7 @@
 
 Yobiru release verification. This page separates what has actually been run from what has not. It is not a
 security guarantee: the tests show the behaviors listed below, nothing more.
+Dated release results refer to the named release trees, not a later development branch or an installed host.
 
 ## Cloud-computer setup guidance (0.5.3)
 

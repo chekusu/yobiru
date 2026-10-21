@@ -15,6 +15,7 @@ from pathlib import Path
 from support.pkg import REPO, Package, free_port, snapshot
 
 PKG = None
+FALSE = shutil.which("false") or "/bin/false"  # wake-config checks the path; macOS only has /usr/bin/false
 
 
 def setUpModule():
@@ -48,10 +49,11 @@ class LocateTests(Base):
     def test_paths_resolve_inside_the_unpacked_archive(self):
         r, d = PKG.run_json(["paths"], self.user)
         self.assertEqual(0, r.returncode)
-        self.assertEqual(str(PKG.plugin), d["plugin_root"])
+        # The launcher reports its own resolved location: on macOS the temporary /var/... is /private/var/...
+        self.assertEqual(os.path.realpath(str(PKG.plugin)), d["plugin_root"])
         self.assertTrue(" " in d["plugin_root"])
         self.assertFalse(d["plugin_root"].startswith(str(REPO)))
-        self.assertEqual(str(PKG.core), d["core"])
+        self.assertEqual(os.path.realpath(str(PKG.core)), d["core"])
         self.assertEqual(str(self.home), d["home"])
         self.assertEqual("default", d["home_source"])
         self.assertFalse(d["config_exists"])
@@ -63,7 +65,7 @@ class LocateTests(Base):
         if not link.exists():
             os.symlink(str(PKG.launcher), str(link))
         r, d = PKG.run_json(["paths"], self.user, launcher=link, cwd=PKG.root / "Plugin Cache")
-        self.assertEqual(str(PKG.plugin), d["plugin_root"])
+        self.assertEqual(os.path.realpath(str(PKG.plugin)), d["plugin_root"])
 
     def test_python_entry_point_and_home_selection(self):
         import subprocess
@@ -274,14 +276,14 @@ class WakeConfigTests(Base):
     def test_inherited_top_level_adapter_is_not_replaced_silently(self):
         path = self.write_config({"allow": ["peer"], "default_agent": "codex", "on_message": ["/bin/true"]})
         before = path.read_bytes()
-        r = self.yobiru("wake-config", "--agent", "codex", "--exec", "/bin/false", "--apply")
+        r = self.yobiru("wake-config", "--agent", "codex", "--exec", FALSE, "--apply")
         self.assertEqual(1, r.returncode)
         self.assertIn("inherited top-level", r.stdout)
         self.assertEqual(before, path.read_bytes())
-        r = self.yobiru("wake-config", "--agent", "codex", "--exec", "/bin/false", "--replace", "--apply")
+        r = self.yobiru("wake-config", "--agent", "codex", "--exec", FALSE, "--replace", "--apply")
         self.assertEqual(0, r.returncode, r.stdout)
         cfg = self.config()
-        self.assertEqual({"type": "exec", "argv": ["/bin/false"]}, cfg["agents"]["codex"]["wake_adapter"])
+        self.assertEqual({"type": "exec", "argv": [FALSE]}, cfg["agents"]["codex"]["wake_adapter"])
         self.assertEqual(["/bin/true"], cfg["on_message"])
 
     def test_own_adapter_and_cap_on_an_nfc_equivalent_key_need_replace(self):
@@ -289,15 +291,15 @@ class WakeConfigTests(Base):
         path = self.write_config({"allow": ["peer"], "agents": {decomposed: {
             "wake_adapter": {"type": "exec", "argv": ["/bin/true"]}, "wake_max": "batch"}}})
         before = path.read_bytes()
-        r = self.yobiru("wake-config", "--agent", "café", "--exec", "/bin/false", "--wake-max", "now", "--apply")
+        r = self.yobiru("wake-config", "--agent", "café", "--exec", FALSE, "--wake-max", "now", "--apply")
         self.assertEqual(1, r.returncode)
         self.assertEqual(before, path.read_bytes())
-        r = self.yobiru("wake-config", "--agent", "café", "--exec", "/bin/false", "--wake-max", "now",
+        r = self.yobiru("wake-config", "--agent", "café", "--exec", FALSE, "--wake-max", "now",
                         "--replace", "--apply")
         self.assertEqual(0, r.returncode, r.stdout)
         agents = self.config()["agents"]
         self.assertEqual([decomposed], list(agents))
-        self.assertEqual({"wake_adapter": {"type": "exec", "argv": ["/bin/false"]}, "wake_max": "now"}, agents[decomposed])
+        self.assertEqual({"wake_adapter": {"type": "exec", "argv": [FALSE]}, "wake_max": "now"}, agents[decomposed])
 
     def test_remove_adapter_reports_the_real_fallback(self):
         self.write_config({"allow": ["peer"], "default_agent": "codex",

@@ -56,6 +56,14 @@ before retrying. A timeout does not prove cancellation or failure. Do not restar
 requests, and do not rerun business work because a stored response is still waiting for delivery.
 Preserve explicit data-home selection, existing reply permissions and owner-only inbox access.
 
+The same lifecycle ownership applies to both request transports. Push responses retry from the
+durable outbox; pull responses remain on the receiver for the original requester to poll and fetch.
+For a pull request, hand off its `request.uploads` manifest and verified local input paths as well
+as the request ID. An empty `fetch` field does not mean there are no inputs. The owner uses
+`fetch ID` with the notification's explicit home to recheck local input files, without contacting
+the sender, and records its result through the original request. Neither storage nor handoff proves
+delivery, and a new outbound message must not replace that route. See the [one-way sharing guide](SHARING.md).
+
 ## What the bridge does
 
 The executable bridge maintains its notification queue and uses the configured Codex entry session.
