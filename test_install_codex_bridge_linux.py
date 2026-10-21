@@ -362,6 +362,25 @@ class LinuxInstallerTests(unittest.TestCase):
         with contextlib.closing(sqlite3.connect(str(queue))) as db:
             self.assertEqual([("uncertain",)], db.execute("SELECT state FROM messages").fetchall())
 
+    def test_upgrade_installs_new_code_and_never_touches_queue_rows(self):
+        self.ok(self.install("--no-start"))
+        queue = self.home / "codex-bridge" / "bridge.sqlite3"
+        with contextlib.closing(sqlite3.connect(str(queue))) as db:
+            db.execute("""CREATE TABLE messages (id TEXT PRIMARY KEY, path TEXT NOT NULL, wake TEXT NOT NULL,
+                state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL,
+                received_at REAL, created_at REAL NOT NULL, updated_at REAL NOT NULL, error TEXT,
+                thread_id TEXT NOT NULL, host_id TEXT NOT NULL)""")
+            for index, state in enumerate(("enqueued", "delivered", "uncertain", "sending", "skipped")):
+                db.execute("INSERT INTO messages VALUES (?,?,'now',?,1,0,0,0,0,NULL,?,'local')",
+                           ("message_%04d" % index, "/x/%d.json" % index, state, self.thread))
+            db.commit()
+        before = queue.read_bytes()
+        self.ok(self.install("--no-start"))
+        self.assertEqual(before, queue.read_bytes())       # the installer reads the queue, never migrates it
+        for name in ("codex_bridge.py", "codex_queue_client.py", "codex_resident.py"):
+            self.assertEqual((INSTALLER.parent / name).read_bytes(), (self.home / "codex-local" / name).read_bytes())
+        self.assertEqual([], self.calls())                 # files only: active after the service restarts
+
     def test_rollback_keeps_files_when_the_bridge_cannot_be_stopped(self):
         receipt = self.ok(self.install())
         before = snapshot(self.user)

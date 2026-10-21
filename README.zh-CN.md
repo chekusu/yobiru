@@ -238,7 +238,7 @@ sh "$Y" request list --json
 
 跟踪响应保存在经过认证的请求账本中，不进入普通收件箱，也不会唤醒 agent。要阅读结果或下载结果附件，从 `request status REQUEST_ID --json` 获取 `response.id`，再运行 `show RESPONSE_ID` 或 `fetch RESPONSE_ID`。文件通过大小与 SHA-256 校验后，保存在 `<home>/inbox/RESPONSE_ID/files/`。不要把协议响应当新任务回复或 ack。
 
-回执和结果进入持久队列，由运行中的接收服务使用固定响应 ID 重试；`request maintain` 可手动运行一次维护。自动核对要求两端保留数据并运行接收服务。离线机器或从未运行的 agent 无法被强制完成工作。这里跟踪的是 agent 报告的状态，重要结果仍需检查证据。
+回执和结果进入持久队列，由运行中的接收服务使用固定响应 ID 重试；`request maintain` 可手动运行一次维护，分别尝试 inbox 恢复、到期处理和投递，接收服务正在投递时报告 `busy`。接收服务监督这些维护线程：停止的线程会被替换，慢的线程绝不会被复制，离线的对端也不会拖住到期处理或其他对端的响应。维护受损时，`/health` 仍会应答，但报告 `ok: false` 和 `status: degraded`；`doctor` 把维护状态与可达性分开显示。自动核对要求两端保留数据并运行接收服务。离线机器或从未运行的 agent 无法被强制完成工作。这里跟踪的是 agent 报告的状态，重要结果仍需检查证据。
 
 Codex 业务回复仍需本地授权。`allow_replies=false` 时，桥接只记录最小 `blocked` 结果，不运行模型，也不会偷偷开启回复。明确启用 `--allow-replies` 只允许在主人既有范围内回复，不会授权执行对端发来的任意指令。升级时，自定义入口指令需要纳入“最终响应先于 ack”的新流程。
 
@@ -258,7 +258,7 @@ sh "$Y" codex-bridge install --thread-id SESSION_UUID --codex-remote "unix:///ab
 sh "$Y" codex-bridge status
 ```
 
-`--dry-run` 不写文件、不调用服务管理器；`--no-start` 只写文件。只使用同一用户的本机 socket（不支持网络端点，不创建会话，不使用 `--last`）。桥接会固定记录 `codex_home`（`--codex-home`，否则已安装的值，首次安装时用 `$CODEX_HOME`，最后是 `~/.codex`），使核对读取与 app-server 相同的账户。新安装默认关闭自动回复，需经授权后传入 `--allow-replies`；升级会保留已授权的设置（`--no-allow-replies` 可关闭）。`enqueued` 表示 CLI 接收了通知，不代表任务已完成。`uncertain` 表示一次入队尝试可能已到达 Codex：它绝不会被自动重发，`status` 会说明如何核对。详情、权限和回滚见 [Codex 桥接配置](CODEX_LOCAL.md)。
+`--dry-run` 不写文件、不调用服务管理器；`--no-start` 只写文件。只使用同一用户的本机 socket（不支持网络端点，不创建会话，不使用 `--last`）。桥接会固定记录 `codex_home`（`--codex-home`，否则已安装的值，首次安装时用 `$CODEX_HOME`，最后是 `~/.codex`），使核对读取与 app-server 相同的账户。新安装默认关闭自动回复，需经授权后传入 `--allow-replies`；升级会保留已授权的设置（`--no-allow-replies` 可关闭）。`enqueued` 表示 CLI 接收了通知（会保存其 queue ID），不代表任务已开始或完成；`delivered` 只表示会话中出现了通知标记。`uncertain` 表示一次入队尝试可能已到达 Codex：它绝不会被自动重发，`status` 会说明如何核对。`status` 还提供只读的 `diagnostics`：有哪些证据（入队回执、通知已到达、owner 报告的开始、最终结果及其送达），`execution_unknown` 的原因（例如已入队却没有开始证据、超过截止时间仍无最终结果），以及该传输方式观察不到的内容。桌面传输没有常驻连接，会话关闭、被限流或被卸载时，可能表现为已入队却没有开始证据；仅凭这一现象无法确定是哪种原因。升级运行时不会更新已安装的桥接：需用同一 UUID 重新安装。详情、权限和回滚见 [Codex 桥接配置](CODEX_LOCAL.md)。
 
 已有部署可以让指定的消息类型不进入入口会话：在 `codex-bridge.json` 中设置 `excluded_kinds` 和 `excluded_kind_adapter`（可信本机程序的绝对路径 argv）。这些消息从不进入 Codex 队列。只有接收端对一封已校验、未 ack、实际级别为 `now` 的消息直接唤醒时，才运行该程序，并只追加 inbox JSON 路径这一个参数（不经 shell，不含正文），超过 `excluded_kind_timeout_seconds`（默认 60 秒）即终止。扫描、重试和 `status` 都不会运行它。实际时限还会在接收端 `hook_timeout_s` 到期前 10 秒结束，先终止处理程序及其进程组。程序一旦启动，即使失败或超时，桥接也以 0 退出（结果会输出并记入日志），因此不会被自动重放；消息留在 inbox，重试和按消息 ID 去重由程序自己负责。升级时原样保留本地已有的入口指令，模板更新需自行合并。安装器在 `--dry-run` 中校验这些字段，并在升级时连同调整过的时间参数、自定义入口指令、已记录的 Codex CLI 和已授权的回复设置一并保留。
 
@@ -269,7 +269,7 @@ sh "$Y" codex-bridge status
 | 信号 | 能说明什么 |
 |---|---|
 | `send` 返回 HTTP `202` | 接收端接受并保存了消息。 |
-| 唤醒适配器成功 | 通知或 webhook 已被接受；agent 可能仍在工作。 |
+| 唤醒适配器成功 | 通知或 webhook 已被接受；agent 可能尚未开始，也可能仍在工作。 |
 | `ack` | 收件方在本地标记为已处理，不会通知发送方。 |
 | 描述结果的回复 | Agent 报告了工作结果。需要确认完成情况时，应检查附带的证据。 |
 

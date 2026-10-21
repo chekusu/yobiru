@@ -3,6 +3,38 @@
 Yobiru release verification. This page separates what has actually been run from what has not. It is not a
 security guarantee: the tests show the behaviors listed below, nothing more.
 
+## Delivery and maintenance reliability (unreleased development branch)
+
+On 2026-10-21, on a development branch based on the Friends branch (version unchanged; nothing released,
+deployed, installed or restarted), on Python 3.12, with temporary homes, fake clocks, mocked transports and
+loopback sockets only:
+
+- `python3 -m unittest discover -s tests -p 'test_*.py'` passed **394 tests**. The first full run had one error:
+  a new supervisor test let its worker threads keep writing while its temporary home was removed. The test now
+  stops and joins its workers; the rerun passed all 394.
+- `python3 -m unittest test_codex_bridge test_codex_queue_client test_codex_resident test_install_codex_bridge
+  test_install_codex_bridge_linux` passed **194 tests**.
+- `python3 tools/build_plugin.py sync` and `check` passed; `git diff --check` was clean.
+
+What the new offline tests cover (`tests/test_maintenance.py`, `tests/test_doctor_maintenance.py` and new cases
+in `test_codex_bridge.py` and `test_install_codex_bridge_linux.py`):
+
+| Area | Behavior shown |
+| --- | --- |
+| Supervision | A worker that exits (including `SystemExit`) gets exactly one replacement and stays reported until a full cycle succeeds; a worker alive in a simulated 660+ second cycle is reported stalled, never restarted or cloned; a thread that cannot start leaves the listener running, degraded, and is retried. |
+| Phase isolation | A failing inbox recovery does not stop expiry (persisted `timed_out`) or response delivery; the cycle is not a full success. `request maintain` attempts every phase and reports `busy` or the failed phase. |
+| Delivery | One flush per data home across processes (`busy`, nothing sent); lock errors other than contention are failures; an offline backlog does not starve a healthy peer; passes are bounded; a ledger failure after a possible POST keeps the same response ID pending and the peer records one event. |
+| HTTP bounds | A valid prefix followed by a stall, a trickling peer, an oversized body and a body shorter than its Content-Length all fail closed. |
+| Attachments | Expired grants are deleted, active and in-preparation ones kept, failed deletions and unreadable metadata counted as failures; a missing outbox fails the cycle without ending the worker. |
+| Heartbeat | 0600, atomic, metadata only; a write or directory-sync I/O error degrades health while the previous record stays; recovery writes a genuinely completed cycle; a new process never inherits an earlier heartbeat. |
+| Ledger evidence | Start, progress and final times are written with their responses and survive restart; migration backfills in response order even after a clock step back; the projection joins the exact final response of the same request; older writers and invalid times never become evidence; committed WAL writes are seen without changing rows; unreadable ledgers are unknown, never an empty backlog. |
+| Bridge | The queue receipt and acceptance time are kept and nothing is resent across a day and a restart; expiry after official acceptance is flagged `deadline_passed_without_final` without a resend, ack or invented result; a running request is never queued again; a history marker means seen, not started, with one history read per pass; durable lifecycle evidence outranks an old transport state; rows close only on positive evidence and never borrow evidence across homes or threads; `status` and `diagnose` create and migrate nothing; daemon phases are isolated; 429-like failures stay `uncertain`; an unavailable desktop is known-unsent and its capability gaps are reported; two dispatchers send once; old rows keep their states after migration and installer upgrades. |
+| Doctor | Transport reachability and maintenance readiness are separate; degraded, stalled, starting, older-runtime, malformed and foreign heartbeat cases are reported distinctly; the never-attempted warning uses valid timestamps of due responses only. |
+
+Not tested here: a real Codex desktop or app-server recovering, a real rate limit or unsubscribed thread, a real
+network outage, real Tailscale, or a production receiver. `selftest.sh` was not run. These tests establish local
+lifecycle and diagnostic behavior, not that any of those real conditions recover automatically.
+
 ## Public bots and Friends (unreleased development branch)
 
 On 2026-10-20, on a development branch based on 0.5.3 (version unchanged; nothing released, deployed to

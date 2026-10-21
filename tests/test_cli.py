@@ -471,6 +471,10 @@ class LinuxCodexBridgeTests(Base):
         r, res = PKG.run_json(["--home", str(self.home), "codex-bridge", "status"], self.user, extra=self.extra)
         self.assertEqual(("unix_socket", "listening", True, False),
                          (res["transport"], res["socket"], res["codex_path_ok"], res["allow_replies"]))
+        # A files-only install is not an active bridge: no daemon heartbeat, so nothing is reported healthy.
+        self.assertEqual("unix_socket", res["diagnostics"]["capabilities"]["transport"])
+        self.assertIn("daemon_not_confirmed", res["diagnostics"]["reasons"])
+        self.assertTrue(any("daemon" in hint for hint in res["hints"]))
         self.listener.close()
         r, res = PKG.run_json(["--home", str(self.home), "codex-bridge", "status"], self.user, extra=self.extra)
         self.assertEqual("socket_stale", res["socket"])

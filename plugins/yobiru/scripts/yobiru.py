@@ -243,13 +243,18 @@ def run_tailscale(cmd, args, timeout=10):
     return p.stdout, None
 
 
+HEALTH_KEYS = ("ok", "v", "node", "receiver_alive", "status", "maintenance")
+
+
 def probe_health(host, port, timeout=2.0, peer=None):
+    """GET /health: transport reachability, plus the receiver's own maintenance summary when it reports one
+    (kept as given, so doctor can tell a reachable but degraded receiver from a healthy one)."""
     c = None
     try:
         c = http.client.HTTPConnection(host, int(port), timeout=timeout)
         c.request("GET", "/health")
         r = c.getresponse()
-        body = r.read(4096)
+        body = r.read(16384)
     except (OSError, http.client.HTTPException, ValueError) as e:
         return {"url": "http://%s:%s/health" % (host, port), "reachable": False, "error": type(e).__name__,
                 "detail": core().transport_diagnostic(peer or host, host, port, "GET /health", e)}
@@ -260,10 +265,69 @@ def probe_health(host, port, timeout=2.0, peer=None):
     try:
         j = json.loads(body.decode("utf-8"))
         if isinstance(j, dict):
-            out.update({k: j[k] for k in ("ok", "v", "node") if k in j})
+            out.update({k: j[k] for k in HEALTH_KEYS if k in j})
+            if not isinstance(out.get("maintenance"), dict):
+                out.pop("maintenance", None)
     except ValueError:
         pass
     return out
+
+
+MAINTENANCE_FILE = "maintenance.json"
+MAINTENANCE_WORKER_KEYS = ("status", "alive", "restarts", "cycles", "phase", "in_cycle_seconds", "last_cycle_at",
+                           "last_outcomes", "last_counts", "last_full_success_at", "last_full_success_age_seconds",
+                           "failure", "consecutive_failures", "last_exit", "stale_after_seconds")
+
+
+def maintenance_record(home, live_instance=None):
+    """The receiver's metadata heartbeat (<home>/maintenance.json), read without changing anything.
+
+    The file only says what a receiver process reported when it wrote it. It describes the running receiver
+    only when its instance matches the one the live /health reports; otherwise it is history (an earlier or
+    stopped process), never evidence that workers are alive now."""
+    raw, err = core().read_small_json(home / MAINTENANCE_FILE)
+    if raw is None:
+        return {"present": False} if err is None else {"present": True, "error": err}
+    if not isinstance(raw, dict) or raw.get("schema") != 1 or not isinstance(raw.get("workers"), dict):
+        return {"present": True, "error": "malformed"}
+    try:
+        age = int((dt.datetime.now(dt.timezone.utc) - core().parse_iso(raw.get("written_at"))).total_seconds())
+    except (TypeError, ValueError):
+        age = None
+    workers = {}
+    for name, worker in list(raw["workers"].items())[:8]:
+        if isinstance(name, str) and isinstance(worker, dict):
+            workers[name[:32]] = {k: worker.get(k) for k in MAINTENANCE_WORKER_KEYS}
+    return {"present": True, "current": live_instance is not None and raw.get("instance") == live_instance,
+            "instance": raw.get("instance"), "written_at": raw.get("written_at"), "age_seconds": age,
+            "status": raw.get("status"), "reasons": raw.get("reasons"), "workers": workers,
+            "heartbeat": raw.get("heartbeat")}
+
+
+_bridge_module = None
+
+
+def bridge_module():
+    """The bundled codex_bridge.py, for its read-only status projection (POSIX only; no bytecode written)."""
+    global _bridge_module
+    if _bridge_module is None:
+        spec = importlib.util.spec_from_file_location("yobiru_bundled_codex_bridge", str(BRIDGE / "codex_bridge.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _bridge_module = mod
+    return _bridge_module
+
+
+def dispatcher_diagnostics(home, cfg=None):
+    """Read-only delivery/execution evidence of an installed Codex bridge (the projection `codex-bridge status`
+    shows), or {"state": "unknown", "error": ...} when it cannot be computed. Never creates or repairs state."""
+    try:
+        if cfg is None:
+            cfg = json.loads((home / "codex-bridge.json").read_text(encoding="utf-8"))
+        module = bridge_module()
+        return module.diagnostics(module.validate_config(dict(cfg)))
+    except Exception as e:      # a diagnostic reports, it does not crash
+        return {"state": "unknown", "error": type(e).__name__}
 
 
 def agent_names(cfg, agents):
@@ -410,6 +474,12 @@ def gather(home, home_source, probe=True):
     if runtime.is_file() and CORE.is_file():
         f["runtime"]["same_as_bundled"] = sha256_file(runtime) == sha256_file(CORE)
     f["codex_bridge_installed"] = (home / "codex-bridge.json").is_file()
+    if cfg is not None:
+        live = ((f.get("receiver") or {}).get("maintenance") or {}).get("instance")
+        f["maintenance_record"] = maintenance_record(home, live)
+        f["request_backlog"] = core().request_backlog(home)
+    if f["codex_bridge_installed"]:
+        f["dispatcher"] = dispatcher_diagnostics(home)
     f["runtime_version"] = runtime_version(home)[0]
     f["update"] = recorded_update(home) if home.is_dir() else None
     if cfg is not None:
@@ -527,7 +597,8 @@ def doctor_checks(f):
             add("info", "shields-up", "could not read Tailscale prefs; check `tailscale debug prefs` yourself")
     if "receiver" in f:
         r = f["receiver"]
-        if r.get("reachable") and r.get("ok"):
+        if r.get("reachable") and r.get("http_status") == 200 and r.get("v") == 1 and r.get("node"):
+            # Transport only: a reachable receiver can still have impaired maintenance (next check).
             add("ok", "receiver", "serving tailmsg v%s as %s at %s" % (r.get("v"), r.get("node"), r["url"]))
         elif r.get("reachable"):
             add("warn", "receiver", "something answered %s with HTTP %s" % (r["url"], r.get("http_status")))
@@ -536,6 +607,9 @@ def doctor_checks(f):
                 (r.get("url", "-"), r.get("error")),
                 "to receive messages run the receiver as a service: `%s install-runtime`, then install "
                 "the definition printed by `%s service-template ...`" % (PRODUCT, PRODUCT))
+    maintenance_check(f, add)
+    backlog_check(f, add)
+    dispatcher_check(f, add)
     rt = f["runtime"]
     if rt["present"] and rt.get("same_as_bundled") is False:
         add("info", "runtime", "%s differs from the bundled tailmsg.py" % rt["path"],
@@ -581,6 +655,127 @@ def doctor_checks(f):
     return checks
 
 
+MAINTENANCE_FIXES = {
+    "worker_dead": "a maintenance worker stopped; the receiver starts one replacement automatically (with "
+                   "backoff). If it keeps stopping, read the receiver log",
+    "worker_restarted": "a maintenance worker stopped and was replaced; it stays reported until a full cycle "
+                        "succeeds",
+    "cycle_failed": "a maintenance phase keeps failing (`doctor --json` names the phase and error type): check "
+                    "disk space and permissions of the data home",
+    "no_completed_cycle": "a worker is alive but has not finished a cycle (a slow peer or a stuck operation); live "
+                          "workers are never restarted or duplicated automatically",
+    "heartbeat_write_failed": "the maintenance heartbeat cannot be written (disk full or permissions); messages "
+                              "are still accepted",
+}
+MAINTENANCE_FIXES["no_recent_full_cycle"] = MAINTENANCE_FIXES["no_completed_cycle"]
+SEVERE_MAINTENANCE = ("worker_dead", "worker_restarted", "cycle_failed", "heartbeat_write_failed")
+
+
+def maintenance_check(f, add):
+    """Maintenance readiness, separate from transport reachability: from the live /health summary, with the
+    metadata heartbeat file used for detail only when it belongs to the same running receiver."""
+    r, record = f.get("receiver"), f.get("maintenance_record") or {}
+    if r is None or not r.get("reachable"):
+        if record.get("error"):
+            add("warn", "maintenance", "maintenance.json is unreadable (%s); maintenance state unknown"
+                % record["error"])
+        elif record.get("present"):
+            add("info", "maintenance", "last maintenance record written %s by a receiver process that was not "
+                "checked live; it is history, not proof that maintenance runs now" % record.get("written_at"))
+        return
+    m = r.get("maintenance")
+    if not isinstance(m, dict) or m.get("supported") is not True:
+        add("warn", "maintenance", "this receiver does not report maintenance health (an older runtime), so "
+            "response delivery, expiry and attachment cleanup cannot be checked",
+            "`%s install-runtime --upgrade --apply`, then restart the receiver" % PRODUCT)
+        return
+    components = m.get("components") if isinstance(m.get("components"), dict) else {}
+    reasons = [x for x in m.get("reasons") or [] if isinstance(x, str)]
+    detail = "%s (%s)" % (m.get("status"), ", ".join("%s %s" % kv for kv in sorted(components.items())))
+    if reasons:
+        detail += "; reasons: " + ", ".join(reasons)
+    if record.get("current"):
+        ages = ["%s %ss ago" % (name, w.get("last_full_success_age_seconds")) for name, w in
+                sorted((record.get("workers") or {}).items()) if w.get("last_full_success_age_seconds") is not None]
+        if ages:
+            detail += "; last full cycle as of the heartbeat (%ss old): %s" % (record.get("age_seconds"),
+                                                                            ", ".join(ages))
+    elif record.get("error"):
+        detail += "; maintenance.json is unreadable (%s), so no timing detail is known" % record["error"]
+    elif record.get("present"):
+        detail += "; maintenance.json was written by another receiver process (history only)"
+    if m.get("status") == "healthy":
+        status = "ok"
+    elif m.get("status") == "starting":
+        status = "info"
+    else:
+        status = "error" if any(x in SEVERE_MAINTENANCE for x in reasons) or not reasons else "warn"
+    add(status, "maintenance", detail, "; ".join(MAINTENANCE_FIXES[x] for x in reasons if x in MAINTENANCE_FIXES)
+        or None)
+
+
+def backlog_check(f, add):
+    """Request ledger counts and ages (read-only). A ledger that cannot be read is never an empty backlog."""
+    b = f.get("request_backlog")
+    if not b:
+        return
+    if not b.get("available"):
+        if b.get("reason") != "ledger_absent":
+            add("warn", "requests", "the request ledger cannot be read (%s); backlog unknown" % b.get("reason"),
+                "no application data was changed; check permissions of %s" % (Path(f["home"]) / "requests"))
+        return
+    inc, resp, out = b["incoming"], b["responses"], b["outgoing"]
+    parts, status, fixes = [], "ok", []
+    if inc["unstarted"] or inc["running"] or inc["timed_out"]:
+        parts.append("incoming: %d without a start report, %d running, %d timed out (outcome unknown)"
+                     % (inc["unstarted"], inc["running"], inc["timed_out"]))
+        status = "info"
+    if inc["overdue_not_persisted"]:
+        parts.append("%d past the deadline without a recorded timeout" % inc["overdue_not_persisted"])
+        status = "warn"
+        fixes.append("a running receiver records timeouts within seconds; see the maintenance check")
+    if inc.get("final_response_pending") or inc.get("final_response_unknown"):
+        parts.append("%d final result(s) saved but not yet delivered to the sender" %
+                     (inc.get("final_response_pending", 0) + inc.get("final_response_unknown", 0)))
+        status = "info" if status == "ok" else status
+    if resp["pending"]:
+        parts.append("responses: %d waiting for delivery (%d due, %d never attempted, oldest %ss, up to %d attempts)"
+                     % (resp["pending"], resp["due"], resp["never_attempted"], resp.get("oldest_pending_age_seconds"),
+                        resp["max_attempts"]))
+        status = "info" if status == "ok" else status
+        if resp.get("unreadable_timestamps"):
+            parts.append("%d with an unreadable timestamp (age unknown)" % resp["unreadable_timestamps"])
+        if resp.get("age_scan_truncated"):
+            parts.append("ages from the first %d pending responses only (partial)" % core().AGE_SCAN_LIMIT)
+        if (resp.get("oldest_unattempted_due_age_seconds") or 0) > 300:
+            status = "warn"
+            fixes.append("responses are waiting without any delivery attempt: the receiver's delivery worker may not "
+                         "run (see the maintenance check); retries reuse the same response IDs")
+    if out["awaiting_result"]:
+        parts.append("outgoing: %d awaiting a result (%d with an unknown submission, %d past the deadline)"
+                     % (out["awaiting_result"], out["submission_unknown"], out["overdue"]))
+        status = "info" if status == "ok" else status
+    add(status, "requests", "; ".join(parts) or "no pending request work", "; ".join(fixes) or None)
+
+
+def dispatcher_check(f, add):
+    """The Codex bridge's own delivery/execution evidence and capabilities (read-only)."""
+    d = f.get("dispatcher")
+    if d is None:
+        return
+    caps = d.get("capabilities") or {}
+    detail = "%s via %s (resident connection: %s)" % (d.get("state"), caps.get("transport", "?"),
+                                                     caps.get("resident", "?"))
+    if d.get("reasons"):
+        detail += "; " + ", ".join(d["reasons"])
+    oldest = (d.get("execution") or {}).get("oldest_without_start")
+    if oldest:
+        detail += "; oldest without start evidence: %ss (%s)" % (oldest.get("age_seconds"), oldest.get("phase"))
+    add({"ok": "ok", "degraded": "warn"}.get(d.get("state"), "info"), "dispatcher", detail,
+        "`%s codex-bridge status` lists the evidence and hints; never resend or delete the queue" % PRODUCT
+        if d.get("reasons") else None)
+
+
 def cmd_doctor(home, home_source, argv):
     ap = argparse.ArgumentParser(allow_abbrev=False, prog=PRODUCT + " doctor",
                                  description="read-only checks of Python, Tailscale, config, receiver and wake adapters")
@@ -599,7 +794,7 @@ def cmd_doctor(home, home_source, argv):
         print(json.dumps({"ok": errors == 0, "errors": errors, "warnings": warns, "home": f["home"],
                           "checks": checks, "changed": False}, indent=2, ensure_ascii=True))
     else:
-        print("%s doctor (read-only, nothing is changed)" % DISPLAY)
+        print("%s doctor (read-only: no application data, config, schema or queue is changed)" % DISPLAY)
         for c in checks:
             print("  %-6s %-14s %s" % (c["status"], c["check"], c["detail"]))
             if c["fix"]:
@@ -618,7 +813,8 @@ def cmd_status(home, home_source, argv):
                                  "config_error", "port", "access_policy", "allow", "deny", "legacy_allowlist",
                                  "self_agent", "default_agent", "wake_policy",
                                  "quiet_hours", "wake_rate", "receiver", "runtime", "inbox",
-                                 "codex_bridge_installed") if k in f}
+                                 "codex_bridge_installed", "maintenance_record", "request_backlog", "dispatcher")
+           if k in f}
     ts = f["tailscale"]
     out["tailscale"] = {k: ts.get(k) for k in ("backend", "node", "ips", "shields_up", "error") if k in ts}
     out["agents"] = [{"agent": x["agent"], "default": x["default"], "wake_max": x["wake_max"],
@@ -648,7 +844,16 @@ def cmd_status(home, home_source, argv):
                 x["wake_adapter"], " max %s" % x["wake_max"] if x["wake_max"] else "",
                 x["session_id"] or "not bound"))
         r = f.get("receiver") or {}
-        print("  receiver  %s" % ("serving v%s" % r.get("v") if r.get("ok") else "not reachable"))
+        m = r.get("maintenance") if isinstance(r.get("maintenance"), dict) else {}
+        print("  receiver  %s" % ("serving v%s, maintenance %s" % (r.get("v"), m.get("status") or "not reported")
+                                  if r.get("reachable") and r.get("v") == 1 else "not reachable"))
+        b = f.get("request_backlog") or {}
+        if b.get("available"):
+            print("  requests  %d incoming without a start report, %d running, %d responses waiting for delivery" % (
+                b["incoming"]["unstarted"], b["incoming"]["running"], b["responses"]["pending"]))
+        if f.get("dispatcher"):
+            print("  bridge    %s (%s)" % (f["dispatcher"].get("state"),
+                                         ", ".join(f["dispatcher"].get("reasons") or []) or "no findings"))
         i = f["inbox"]
         print("  inbox     %d messages, %d pending %s" % (i["messages"], i["pending"],
                                                          json.dumps(i["by_agent"], ensure_ascii=False)))
@@ -1526,6 +1731,26 @@ BRIDGE_HINTS = {
 }
 
 
+DIAGNOSTIC_HINTS = {
+    "daemon_not_confirmed": "the bridge daemon has not reported recently (or never): check its service; without it "
+                            "nothing is dispatched or observed. A stale heartbeat means busy or stopped, not running",
+    "daemon_cycle_failed": "the bridge daemon's last cycle had a failing phase (diagnostics.daemon names it and the "
+                           "error type)",
+    "dispatch_blocked": "some notifications were not sent and wait for an automatic retry (known not sent)",
+    "dispatch_stalled": "notifications are due but were not dispatched for minutes: check that the bridge daemon runs",
+    "accepted_without_start": "accepted notifications show no start evidence past the threshold: the dispatcher "
+                              "session may be closed, waiting for an approval, rate-limited or unloaded, and this "
+                              "transport cannot tell which. Check the session; never resend or delete the queue",
+    "deadline_passed_without_final": "a request passed its deadline without a final result: its outcome is unknown, "
+                                     "not failed, and it must not be repeated automatically. After checking the actual "
+                                     "effect, its owner may still record the real outcome with `request respond`",
+    "running_without_recent_progress": "a request reported running without progress for longer than the threshold; "
+                                       "that alone does not mean it failed or stopped",
+}
+DESKTOP_GAP = ("the desktop transport has no resident connection: the bridge cannot keep the session loaded, see rate "
+               "limits or restart its consumer. Open the Codex desktop app and the dispatcher session yourself")
+
+
 def bridge_status(home):
     cfg_path = home / "codex-bridge.json"
     out = {"installed": cfg_path.is_file(), "config": str(cfg_path)}
@@ -1574,18 +1799,18 @@ def bridge_status(home):
                 hints.append("the fixed dispatcher is not confirmed resident; start/restart "
                              "tailmsg-codex-bridge.service and inspect its journal. A listening socket or "
                              "an enqueued receipt alone does not mean a turn can run")
-        if db is not None and db.is_file():
-            try:
-                con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=2)
-                try:
-                    out["queue"] = dict(con.execute("SELECT state, COUNT(*) FROM messages GROUP BY state").fetchall())
-                    out["reasons"] = {"%s:%s" % row[:2]: row[2] for row in con.execute(
-                        "SELECT state, error, COUNT(*) FROM messages WHERE state IN ('retry','uncertain') "
-                        "GROUP BY state, error").fetchall()}
-                finally:
-                    con.close()
-            except sqlite3.Error as e:
-                out["queue_error"] = str(e)
+        # The same read-only projection as the bridge's own `diagnose`: queue counts, execution evidence from the
+        # request ledger, the daemon heartbeat and what this transport cannot observe.
+        diag = dispatcher_diagnostics(home, cfg) if isinstance(cfg, dict) and cfg and db is not None else \
+            {"state": "unknown", "error": "config_unreadable"}
+        out["diagnostics"] = diag
+        queue = diag.get("queue") or {}
+        if queue.get("available"):
+            out["queue"] = queue.get("states") or {}
+            out["reasons"] = dict([("retry:%s" % k, n) for k, n in (queue.get("retry_reasons") or {}).items()] +
+                                  [("uncertain:%s" % k, n) for k, n in (queue.get("uncertain_reasons") or {}).items()])
+        elif queue.get("reason") not in (None, "queue_absent"):
+            out["queue_error"] = queue["reason"]
         for reason in out.get("reasons", {}):
             state, error = reason.split(":", 1)
             if state == "retry" and error in BRIDGE_HINTS and BRIDGE_HINTS[error] not in hints:
@@ -1595,6 +1820,12 @@ def bridge_status(home):
                          "The bridge keeps checking the dispatcher session (in its configured Codex home) for the "
                          "[TAILMSG:<id>] marker. If it never appears, handle that message by hand "
                          "(`inbox --pending`); do not delete the queue to force a resend")
+        for reason in diag.get("reasons") or []:
+            hint = DIAGNOSTIC_HINTS.get(reason)
+            if hint and hint not in hints:
+                hints.append(hint)
+        if "accepted_without_start" in (diag.get("reasons") or []) and not remote:
+            hints.append(DESKTOP_GAP)
         out["hints"] = hints
     print(json.dumps(out, indent=2, ensure_ascii=True))
     return 0

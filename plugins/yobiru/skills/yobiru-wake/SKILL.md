@@ -107,9 +107,17 @@ writable state directories; do not grant write access to the whole data home. Th
 
 Review the plan, then run it without `--dry-run` when the user asked for the bridge (`--no-start`
 writes files only). Use `--allow-replies` only with the user's explicit authorization. Check with
-`sh Y codex-bridge status`: `enqueued` means queued into the session, not done; `retry` will be
-retried automatically (for example `socket_stale`: the app-server is not running); `uncertain` is
-never resent: follow the `hints`, and never delete the queue to force a resend. Undo with
+`sh Y codex-bridge status`: `enqueued` means queued into the session, not started or done;
+`delivered` only means the notification marker appeared in the session; `retry` will be retried
+automatically (for example `socket_stale`: the app-server is not running); `uncertain` is never
+resent: follow the `hints`, and never delete the queue to force a resend. Its read-only `diagnostics`
+separate the evidence (queue receipt, notification seen, an owner-reported `running`, the final result
+and its delivery) and flag `execution_unknown` for accepted work without start evidence, stale
+progress or a deadline passed without a final result. These are diagnostics only: nothing is resent,
+cancelled or marked failed. The desktop transport has no resident connection, so a closed,
+rate-limited or unloaded session cannot be observed or repaired by the bridge; say so instead of
+guessing a cause, and ask the user to open the dispatcher session. After a timeout, only the request's
+owner may record the real outcome once the effect is verified; never rerun the task to clear it. Undo with
 `sh Y codex-bridge rollback BACKUP` (the backup path is in the install output).
 
 An existing installation may route some message kinds to another trusted local program instead of

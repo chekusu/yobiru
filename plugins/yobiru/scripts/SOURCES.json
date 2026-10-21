@@ -4,15 +4,15 @@
   "files": {
     "scripts/tailmsg.py": {
       "source": "tailmsg.py",
-      "sha256": "c21b8aeca0df0b33b02f3738227c96a3bdfed07fb14999f927cd131bae2ee196"
+      "sha256": "aa60234c59e8716a8c5ea752eba3c23e0e700dff831e311cd3736c68c1acb409"
     },
     "scripts/codex_bridge/CODEX_DISPATCHER.md": {
       "source": "CODEX_DISPATCHER.md",
-      "sha256": "42e6a4a03648f4dfe7eb9923c14b44e8398e67612c82991ddabecf8a6cd34727"
+      "sha256": "0c7cb50d9e4e514af97746a10dff6f4b8d0a73a70d785424e625a27ecd7f8d18"
     },
     "scripts/codex_bridge/codex_bridge.py": {
       "source": "codex_bridge.py",
-      "sha256": "769e8aef5e567f09be509b14d17ad468cc012765c6d739c5074031cc81922a9d"
+      "sha256": "71ea3e25e8af2d635905d2492be677a5d214dcfd432f2c5361a3fccdabc05e88"
     },
     "scripts/codex_bridge/codex_queue_client.py": {
       "source": "codex_queue_client.py",

@@ -70,8 +70,14 @@ or bridge with older files, and report software versions and policy adoption ind
 4. If the Codex bridge is installed, re-run its installer with the same session UUID:
    `sh Y codex-bridge install --thread-id <same UUID> [--codex-remote ...] --dry-run`, then without
    `--dry-run`. It keeps the session, aliases, replies setting and custom dispatcher instructions.
+   Upgrading the runtime alone never updates the bridge; `--no-start` only writes files, so new bridge
+   code is active only after its service restarts.
 5. `sh Y doctor` and `sh Y update status`: plugin, durable runtime and running receiver must show the
    new version. Data, sessions, permissions and custom instructions are untouched by these steps.
+   `doctor` reports receiver reachability and maintenance readiness separately: after the restart the
+   `maintenance` check should be `ok` (or `info` while starting). An older running runtime reports no
+   maintenance health. For the bridge, `sh Y codex-bridge status` must show `diagnostics.daemon.state`
+   `reporting`; old queue rows keep their states and are never resent by the upgrade.
 
 ## Resident session rules migration for 0.5.2
 

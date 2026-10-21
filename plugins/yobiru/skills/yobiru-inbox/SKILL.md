@@ -157,7 +157,10 @@ that request with the actual versions, outcome or blocker.
 ## State is evidence of reporting, not proof of task success
 
 - HTTP 202 / `received`: the receiver stored the request, not that an agent read it.
-- Wake delivery / `running`: notification accepted / agent reports work started.
+- Wake delivery, a bridge `enqueued` receipt or a `delivered` marker: the notification was accepted
+  or reached the session, not that work started.
+- `running`: the lifecycle owner reports work actually started. It is the only start evidence status
+  and diagnostics use, so report it when work starts and never earlier.
 - `completed`, `failed`, `rejected`, `blocked`: the responder's final outcome; check its evidence.
 - `timed_out`: no final response by the deadline; actual execution outcome is unknown, not cancelled.
 - `ack`: local housekeeping after a durable final outcome; it is not a receipt to the sender.
