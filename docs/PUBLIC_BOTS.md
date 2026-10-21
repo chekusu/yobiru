@@ -1,13 +1,11 @@
 # Public bots and Friends
 
-**Status: unreleased, on a development branch.** It has been tested with synthetic data, local processes and
-loopback HTTP; one maintainer test also had a real local Codex agent answer two chat turns through an earlier
-snapshot of it (see
-[what has been verified](#what-has-and-has-not-been-verified)). It has not been deployed to production, packaged
-in a release or tested inside a native Grok Bot. To try it, use a checkout of this development branch or a plugin archive
-built from it: the published 0.5.3 release does not include it, although this branch keeps the version number
-0.5.3. Private Tailscale messaging (tailmsg protocol v1, receiver port 7766) is unchanged and does not depend on
-anything described here.
+**Status: Beta, new in 0.6.0-beta.1 (a prerelease; the stable 0.5.3 release does not include it).** It has been
+tested with synthetic data, local processes and loopback HTTP; one maintainer test also had a real local Codex agent
+answer two chat turns through an earlier snapshot of it (see
+[what has been verified](#what-has-and-has-not-been-verified)). It has not been deployed to production or tested
+inside a native Grok Bot. Install the Beta from its tag (`docs/UPGRADING-0.6-BETA.md` in the release). Private
+Tailscale messaging (tailmsg protocol v1, receiver port 7766) does not depend on anything described here.
 
 You publish one of your bots and share its link, for example `https://bots.example.com/@alice`. Someone else gives
 that link to their own agent (Codex, Grok, any agent that can run this CLI, or an MCP client: see [MCP](#mcp)), and

@@ -3,7 +3,7 @@
 Yobiru release verification. This page separates what has actually been run from what has not. It is not a
 security guarantee: the tests show the behaviors listed below, nothing more.
 
-## Friends schema 3: routing, delivery evidence, decisions, loop budgets, attachments and MCP (unreleased)
+## Friends schema 3: routing, delivery evidence, decisions, loop budgets, attachments and MCP (in 0.6.0-beta.1)
 
 On 2026-10-21, on a development branch based on the delivery reliability branch (version unchanged; nothing
 released, deployed, installed or restarted), on Python 3.12, with synthetic homes and data, loopback HTTP and
@@ -39,7 +39,7 @@ independent identity, delivery and attachment reviews. Not tested: a hosted MCP 
 OAuth-only host, a real native agent answering through MCP, file attachments on Windows (they need POSIX
 `dir_fd`), execution on Python 3.8, a production gateway or real Tailscale. `selftest.sh` was not run.
 
-## Delivery and maintenance reliability (unreleased development branch)
+## Delivery and maintenance reliability (in 0.6.0-beta.1)
 
 On 2026-10-21, on a development branch based on the Friends branch (version unchanged; nothing released,
 deployed, installed or restarted), on Python 3.12, with temporary homes, fake clocks, mocked transports and
@@ -71,7 +71,7 @@ Not tested here: a real Codex desktop or app-server recovering, a real rate limi
 network outage, real Tailscale, or a production receiver. `selftest.sh` was not run. These tests establish local
 lifecycle and diagnostic behavior, not that any of those real conditions recover automatically.
 
-## Public bots and Friends (unreleased development branch)
+## Public bots and Friends (in 0.6.0-beta.1)
 
 On 2026-10-20, on a development branch based on 0.5.3 (version unchanged; nothing released, deployed to
 production or installed), on Python 3.12:
@@ -126,7 +126,7 @@ has completed: the selected bot waited for its owner's approval in the Grok main
 candidate CLI. None of this establishes host isolation, production deployment, real calendar exports, macOS or
 Windows runs, or use from an installed plugin in a native host.
 
-## Public bot contacts, first version (unreleased development branch)
+## Public bot contacts, first version (in 0.6.0-beta.1)
 
 On 2026-10-19, on a development branch based on 0.5.3 (version unchanged; nothing released or deployed),
 `python3 -m unittest discover -s tests` passed **294 tests** (the 228 existing plugin tests plus 66 new

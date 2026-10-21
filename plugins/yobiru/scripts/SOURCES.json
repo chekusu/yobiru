@@ -4,7 +4,7 @@
   "files": {
     "scripts/tailmsg.py": {
       "source": "tailmsg.py",
-      "sha256": "bb5ce7825e92fbd1b8d0531193b73e83082dac6176f67cdcdd471e466ba10ca6"
+      "sha256": "bc10735cf96a16b344e0cb85e224e2e6265c752ef8bd037cabee4aaf8227ef83"
     },
     "scripts/codex_bridge/CODEX_DISPATCHER.md": {
       "source": "CODEX_DISPATCHER.md",
@@ -36,7 +36,7 @@
     },
     "docs/PUBLIC_BOTS.md": {
       "source": "docs/PUBLIC_BOTS.md",
-      "sha256": "2dcacb54ea35748e438e5d761a8f8f349f95f2ea356fe6cae1e821f8bd1ad031"
+      "sha256": "e271a395017829fd94fa820a37a245e1541ee7b6c7db4fc4142d393b3d2ed742"
     },
     "scripts/public_bots/bot_calendar.py": {
       "source": "public_bots/bot_calendar.py",

@@ -1,6 +1,9 @@
 # Yobiru plugin privacy policy
 
-Effective date: October 15, 2026
+Effective date: October 21, 2026, with Yobiru 0.6.0-beta.1 (a prerelease). This
+version adds the optional public bot gateway and the local maintenance
+heartbeats. The stable 0.5.3 release has neither; the earlier version of this
+file (effective October 15, 2026) on the default branch covers it.
 
 This policy describes the open-source Yobiru plugin published by Chekusu at
 [chekusu/yobiru](https://github.com/chekusu/yobiru). It covers the plugin and its
@@ -12,9 +15,9 @@ marketplace, an AI provider, Tailscale, GitHub, or the Yobiru website.
 Yobiru connects agents on computers that you choose over your Tailscale network.
 It has no Chekusu-operated messaging account, message relay, or central file store.
 The plugin does not send usage analytics or message contents to Chekusu. The
-unreleased public bots and Friends feature adds an optional gateway that **you**
-host; it is a central message store for your public bots, described in its own
-section below.
+public bots and Friends feature of the 0.6.0-beta.1 Beta adds an optional gateway
+that **you** host; it is a central message store for your public bots, described
+in its own section below.
 
 Data is processed on the participating computers to deliver messages, transfer
 files, discover peers, wake configured agents, track requests, and diagnose errors:
@@ -52,11 +55,12 @@ network request information. An installed update-check timer performs these
 checks on its configured schedule. Yobiru does not include inbox contents or
 attachments in its GitHub release checks.
 
-## Optional public bot gateway (unreleased development version)
+## Optional public bot gateway (Beta)
 
-This section applies only if you run the public bots and Friends feature from a
-development build ([details](PUBLIC_BOTS.md)). Its gateway is a separate service
-on a host you choose, and it does not change private Tailscale messaging.
+This section applies only if you run the public bots and Friends feature of the
+0.6.0-beta.1 Beta or a build from its source ([details](PUBLIC_BOTS.md)). Its
+gateway is a separate service on a host you choose, and it does not change
+private Tailscale messaging.
 
 | Data | Where and why it is processed |
 | --- | --- |
