@@ -42,7 +42,7 @@ Yobiru gives those agents a small, shared way to communicate:
 - **Track requests:** get a receipt, progress and a final outcome, with a queryable deadline and timeout state. Notifications need no reply.
 - **Share useful context:** send text, JSON, reports, logs, and other files.
 - **Wake on your terms:** the receiver decides which senders may wake which agent, with quiet hours and rate limits.
-- **Keep your own tools:** one plugin package includes seven skills and a Python CLI, with Codex and Cursor manifests and dedicated Grok Bot setup and recovery guidance.
+- **Keep your own tools:** one plugin package includes seven skills and a Python CLI, with Codex, Cursor and Claude Code manifests, a local MCP server for Claude Code, and dedicated Grok Bot setup and recovery guidance.
 - **Keep storage on your machines:** Yobiru operates no messaging or attachment storage service. Files are fetched from the sender over Tailscale.
 
 This is a communication layer, not a new chat app or an autonomous task manager. Agents can coordinate toward a shared goal through messages and replies, but Yobiru does not provide a shared group-room UI, a scheduler, or proof that another agent completed its work.
@@ -87,7 +87,7 @@ Files: recipient fetches from the sender, then checks size + SHA-256.
 
 A receiver listens on its own Tailscale address, normally on `tcp:7766`. It verifies the connecting machine through `tailscale whois`, checks its local access policy, and stores accepted messages. Attachments are staged on the sender behind an expiring link, restricted to the recipient machine. The default link lifetime is 24 hours.
 
-Yobiru uses the existing **tailmsg protocol v1**. It ships no MCP server and needs no Yobiru account. Tailscale supplies the network and machine identity; it can carry encrypted traffic directly or through its relays. See [Tailscale connection types](https://tailscale.com/docs/reference/connection-types).
+Yobiru uses the existing **tailmsg protocol v1** and needs no Yobiru account. The Claude Code plugin adds a local stdio MCP server (`yobiru mcp`) that runs the same CLI; it opens no network port. Tailscale supplies the network and machine identity; it can carry encrypted traffic directly or through its relays. See [Tailscale connection types](https://tailscale.com/docs/reference/connection-types).
 
 ## Requirements
 
@@ -114,6 +114,19 @@ codex plugin add yobiru@yobiru
 Start a new conversation, then say: **“Set up Yobiru on this machine.”** Installing the plugin runs nothing (there is no install hook); the `yobiru-setup` skill guides the rest. The seven skills are `yobiru-setup`, `yobiru-grok-bot`, `yobiru-sessions`, `yobiru-send`, `yobiru-inbox`, `yobiru-wake`, and `yobiru-upgrade`.
 
 This installs through the repository marketplace. It does not imply a listing in the public Codex plugin directory.
+
+### Claude Code
+
+Register this repository marketplace and install the plugin (or use `/plugin marketplace add chekusu/yobiru` and `/plugin install yobiru@yobiru` inside Claude Code):
+
+```sh
+claude plugin marketplace add chekusu/yobiru
+claude plugin install yobiru@yobiru
+```
+
+Start a new session, then say: **“Set up Yobiru on this machine.”** Claude Code gets the same seven skills plus a local MCP server, `yobiru`, whose tools read the inbox, read, fetch and acknowledge messages, send messages and tracked requests, reply or report a request's state, and show setup, machines and request status. The server is the bundled CLI on stdio (`sh scripts/yobiru mcp`): it uses the same data home (`$TAILMSG_HOME` or `~/.tailmsg`), opens no port and stores nothing of its own. Received text reaches the model as data from another agent, never as an instruction.
+
+Give Claude Code its own agent name so that replies come back to it and not to another agent on the same machine: `sh "$Y" setup --agent claude` (review, then `--apply`; see [Name your agents](#1-name-your-agents)). When the config has an agent named `claude`, the MCP server sends as `claude` and lists `claude`'s inbox; otherwise it uses the machine's `self_agent` and lists every agent. The plugin does not wake an idle Claude Code session: messages wait in the inbox until a session checks it (“check my Yobiru inbox”), unless you configure a local program as `claude`'s wake adapter ([wake-ups](#wake-ups-and-delivery-status)). On Windows the server needs `sh` on `PATH` (for example from Git for Windows); otherwise register it by hand with `claude mcp add yobiru -- py -3 "<plugin>\scripts\yobiru.py" mcp`.
 
 ### ChatGPT desktop
 
@@ -345,6 +358,8 @@ codex plugin marketplace upgrade yobiru
 codex plugin add yobiru@yobiru
 ```
 
+For Claude Code: `claude plugin marketplace update yobiru`, then `claude plugin update yobiru@yobiru`.
+
 Start a new conversation after an update. In Cursor, update from **Customize** or replace the local plugin copy; in Grok Bot, manage it through **Connect apps**.
 
 A plugin update does **not** update the durable receiver: run `install-runtime --upgrade` (then `--apply`) and restart the receiver service; re-run `codex-bridge install` with the same session UUID if the bridge is installed (names, replies setting and custom dispatcher instructions are kept). Then coordinate your other machines:
@@ -374,6 +389,8 @@ codex plugin remove yobiru@yobiru
 codex plugin marketplace remove yobiru
 ```
 
+For Claude Code: `claude plugin uninstall yobiru@yobiru` and `claude plugin marketplace remove yobiru`.
+
 Removing the plugin leaves your data, receiver service, and any Codex bridge intact. For a complete removal, stop and remove the services first, then remove the data home only when you no longer need its messages and files.
 
 Existing tailmsg installations remain compatible: `tailmsg.py`, protocol v1, `~/.tailmsg`, `TAILMSG_*`, and the existing service names are retained.
@@ -395,6 +412,7 @@ python3 tools/build_plugin.py release
 | Packaging and CLI | Automated checks cover extracted archives, paths with spaces, configuration preservation, and message/file/reply/wake flows with isolated fixtures. |
 | Tailscale transport | Historical 0.4.0 single-host self-tests passed 59 checks on a real Tailscale interface. The separate 0.5.0 live acceptance includes a real cross-machine Grok Bot request; see the dated verification notes. |
 | Codex | Historical repository install and skill discovery passed. On 2026-10-13, a live 0.5.0 Linux bridge in its existing session completed an automatic tracked reply. This does not establish every desktop host or the public-directory install route. |
+| Claude Code | Automated: `claude plugin validate --strict` passes for the plugin and the marketplace; Claude Code 2.1.306 installed the plugin from the local marketplace and connected to its MCP server; loopback tests drive that server (receive, read, fetch, reply, tracked request, ack) between two isolated homes. A live cross-machine run with Grok Bot is pending. |
 | Cursor / Grok Bot / DOTS | A manually deployed Grok Bot 0.5.0 runtime completed a real cross-machine tracked request and authenticated status refresh. Native Grok/Cursor marketplace install and rebuild recovery remain separate acceptance steps. No DOTS connector is shipped. |
 | 0.3.0 onboarding, discovery, updates | Offline tests: onboarding per platform (missing, logged out, daemon, permission, no TUN), authenticated `/info` and secret-free projection, native/confirmed/alias names with UUID, legacy 404 / 403 / unreachable / malformed / slow peers, release parsing and channels, notice dedup, retries and uncertain handling, bridge upgrades keeping names. No real Tailscale, GitHub or peer was contacted. |
 | Public marketplace listings | See the [submission record](docs/MARKETPLACE_SUBMISSION.md). Repository installation, submission, review and publication are separate. |

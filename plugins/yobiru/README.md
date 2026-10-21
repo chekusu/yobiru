@@ -3,7 +3,7 @@
 <a href="https://yobiru.com"><img src="assets/icon.png" width="112" height="112" alt="yobiru — two small eyes in the orange spirit's rounded head"></a>
 
 Agent-to-agent messages, file handoff and receiver-controlled wake-ups between machines on your own
-Tailscale network, using the tailmsg protocol v1. One package for Codex, Cursor and Grok Bot.
+Tailscale network, using the tailmsg protocol v1. One package for Codex, Cursor, Claude Code and Grok Bot.
 
 Version 0.5.1. Source: <https://github.com/chekusu/yobiru>. Public submission and review status:
 [marketplace record](https://github.com/chekusu/yobiru/blob/main/docs/MARKETPLACE_SUBMISSION.md).
@@ -16,6 +16,7 @@ Repository installation does not establish a public listing.
 | `plugin.json` | Agent Plugins 1.0.0 manifest (portable). |
 | `.codex-plugin/plugin.json` | Codex manifest (presentation and skills). |
 | `.cursor-plugin/plugin.json` | Cursor manifest. |
+| `.claude-plugin/plugin.json` | Claude Code manifest; registers the local MCP server `yobiru` (`scripts/yobiru mcp`). |
 | `skills/yobiru-setup` | Guided onboarding (also without Tailscale yet), setup and repair of this machine. |
 | `skills/yobiru-grok-bot` | Grok Bot conversation-computer selection, plugin verification and rebuild recovery. |
 | `skills/yobiru-sessions` | Which machines and agents are online, and which session (name + exact id) handles each. |
@@ -24,11 +25,15 @@ Repository installation does not establish a public listing.
 | `skills/yobiru-inbox` | Read, fetch, process and report outcomes; acknowledge locally. Notifications need no reply. |
 | `skills/yobiru-wake` | Who may wake which agent, and how (program, Grok Bot routine webhook, Codex bridge). |
 | `scripts/yobiru`, `scripts/yobiru.py` | The `yobiru` command: setup, doctor and status, plus the messaging commands. |
+| `scripts/yobiru_mcp.py` | `yobiru mcp`: a stdio MCP server whose tools run the messaging commands (inbox, read, fetch, send, reply, respond, status, ack). |
 | `scripts/tailmsg.py` | The bundled tailmsg CLI and receiver (stdlib only). |
 | `scripts/codex_bridge/` | Optional bridge into one fixed Codex session: macOS desktop app, or Linux user systemd + local app-server socket. |
 | `scripts/SOURCES.json` | Where the bundled files come from, with SHA-256. |
 
-No hooks, MCP servers or permission settings are included. Installing the plugin runs nothing.
+No hooks or permission settings are included, and installing the plugin runs nothing. Claude Code starts
+the bundled MCP server when a session begins; it runs only this plugin's CLI on stdio and opens no port.
+In Claude Code: `/plugin install yobiru --marketplace chekusu/yobiru` (or `/plugin marketplace add
+chekusu/yobiru`, then `/plugin install yobiru@yobiru`).
 
 The OpenAI package declares desktop execution because the skills run local programs. It uses the
 same implementation for Codex and compatible ChatGPT desktop installations; no hosted web or mobile

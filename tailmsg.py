@@ -46,6 +46,7 @@ WAKE_DEFAULT = "batch"
 TAILNET_NETS = [ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48")]
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}\Z")      # \Z, not $: "$" would also accept a trailing newline
 MSG_REF_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")  # a message id or a unique prefix of one (CLI input)
+INBOX_PREVIEW = 500                                 # characters of text per `inbox --json` row
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,64}\Z")
 ENV_KEYS = {"v", "id", "from", "to", "ts", "kind", "text", "reply_to", "fetch", "wake", "agent", "from_agent", "request", "response"}
 AGENT_MAX = 64
@@ -2339,8 +2340,21 @@ def cmd_inbox(ctx, a):
         wd = r.get("wake_delivery") or {}
         mark = ("" if acked else "*") + ("!" if wd and not wd.get("ok") else "")
         frm = e["from"].split(".")[0] + ("/" + e["from_agent"] if e.get("from_agent") else "")
+        if getattr(a, "json", False):
+            # the same rows as the table, unabridged where it truncates; text stays the sender's data
+            rows.append((r["received"]["at"], e["id"], {
+                "id": e["id"], "received_at": r["received"]["at"], "from": e["from"],
+                "from_agent": e.get("from_agent"), "agent": rec_agent(r, dflt),
+                "agent_known": (r.get("received") or {}).get("agent_status") != "unknown",
+                "kind": e.get("kind"), "tracked_request": "request" in e, "wake": w, "acked": acked,
+                "wake_failed": bool(wd) and not wd.get("ok"), "files": nf, "files_fetched": got,
+                "reply_to": e.get("reply_to"), "text_preview": (e.get("text") or "")[:INBOX_PREVIEW]}))
+            continue
         rows.append((r["received"]["at"], e["id"], frm, "@" + ag if ag else "-", w + mark, nf, got,
                      e.get("reply_to") or "", (e.get("text") or "").replace("\n", " ")[:60]))
+    if getattr(a, "json", False):
+        print(json.dumps([row[2] for row in sorted(rows, key=lambda row: row[:2])], ensure_ascii=True, indent=2))
+        return
     for at, mid, frm, ag, w, nf, got, rt, txt in sorted(rows):
         files = "%d/%d files" % (got, nf) if nf else ""
         local = parse_iso(at).astimezone().strftime("%m-%d %H:%M %Z")
@@ -2712,6 +2726,8 @@ def main():
     pi = sp.add_parser("inbox", help="list received messages")
     pi.add_argument("--pending", action="store_true", help="only un-acked messages with effective wake now/batch")
     pi.add_argument("--agent", help="only messages for this agent (no `agent` in message = default_agent)")
+    pi.add_argument("--json", action="store_true", help="one JSON array, oldest first (text cut to %d characters)"
+                    % INBOX_PREVIEW)
     sp.add_parser("ack", help="mark message(s) as processed").add_argument("id", nargs="+")
     for name in ("show", "fetch"):
         sp.add_parser(name).add_argument("id")

@@ -8,6 +8,15 @@ opt-in: the stable update channel, plugin pages and the repository marketplace n
 Contributions from the open pull requests, integrated with review fixes. They are not part of the 0.6.0-beta.1
 prerelease, and the version stays 0.5.3 until a release is chosen.
 
+- **Claude Code plugin and MCP server**: `.claude-plugin/marketplace.json` and `plugins/yobiru/.claude-plugin/plugin.json`
+  install the same skills in Claude Code (`claude plugin marketplace add chekusu/yobiru`, then
+  `claude plugin install yobiru@yobiru`). The Claude Code manifest also registers `yobiru mcp`, a local stdio MCP
+  server whose tools (`yobiru_inbox`, `yobiru_read`, `yobiru_fetch_files`, `yobiru_send`, `yobiru_reply`,
+  `yobiru_request_respond`, `yobiru_request_status`, `yobiru_ack`, `yobiru_agents`, `yobiru_status`) each run one
+  command of the bundled CLI with the same data home. It opens no port; received text is passed to the model as
+  data. When the config has an agent named `claude`, the server sends as `claude` and lists its inbox. No other
+  host reads the Claude Code manifest, and no shared `mcp.json` is shipped.
+- **`inbox --json`**: the inbox as one JSON array, oldest first, with the first 500 characters of each text.
 - **Wake delivery** (#12, for #11): an adapter that succeeded is never run again when the receiver cannot record
   its outcome.
 - **Identity lookup outages** (#17, for #16): when the receiver's Tailscale identity lookup times out or cannot

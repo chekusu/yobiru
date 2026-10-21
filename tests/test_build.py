@@ -19,7 +19,7 @@ CODEX_VALIDATOR = Path("/opt/codex-skills/skills/.system/plugin-creator/scripts/
 
 def fixture_copy(dst):
     """A minimal repository copy: plugin, catalogs and packaging metadata."""
-    for rel in (P["pluginDir"], ".agents", ".cursor-plugin", "packaging"):
+    for rel in (P["pluginDir"], ".agents", ".cursor-plugin", ".claude-plugin", "packaging"):
         shutil.copytree(str(REPO / rel), str(dst / rel), symlinks=True,
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     shutil.copy2(str(REPO / "LICENSE"), str(dst / "LICENSE"))
@@ -40,7 +40,8 @@ class RepositoryTests(unittest.TestCase):
     def test_manifests_agree_on_identity(self):
         base = REPO / P["pluginDir"]
         manifests = [json.loads((base / rel).read_text()) for rel in
-                     ("plugin.json", ".codex-plugin/plugin.json", ".cursor-plugin/plugin.json")]
+                     ("plugin.json", ".codex-plugin/plugin.json", ".cursor-plugin/plugin.json",
+                      ".claude-plugin/plugin.json")]
         self.assertEqual({P["id"]}, {m["name"] for m in manifests})
         self.assertEqual({P["version"]}, {m["version"] for m in manifests})
         self.assertEqual({P["repository"]}, {m["repository"] for m in manifests})
@@ -56,6 +57,24 @@ class RepositoryTests(unittest.TestCase):
         cursor_market = json.loads((REPO / ".cursor-plugin/marketplace.json").read_text())
         self.assertEqual("./" + P["pluginDir"], codex_market["plugins"][0]["source"]["path"])
         self.assertEqual(P["pluginDir"], cursor_market["plugins"][0]["source"])
+        claude_market = json.loads((REPO / ".claude-plugin/marketplace.json").read_text())
+        self.assertEqual("./" + P["pluginDir"], claude_market["plugins"][0]["source"])
+        self.assertEqual(P["version"], claude_market["plugins"][0]["version"])
+
+    def test_claude_code_manifest_runs_the_bundled_mcp_server(self):
+        manifest = json.loads((REPO / P["pluginDir"] / ".claude-plugin" / "plugin.json").read_text())
+        self.assertEqual({"yobiru": {"command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/yobiru", "mcp"]}},
+                         manifest["mcpServers"])
+        self.assertNotIn("skills", manifest)                     # default discovery finds skills/
+        for shared in ("mcp.json", ".mcp.json"):                 # other hosts would read a shared file
+            self.assertFalse((REPO / P["pluginDir"] / shared).exists())
+
+    @unittest.skipUnless(shutil.which("claude"), "Claude Code CLI not installed")
+    def test_claude_code_validator_accepts_plugin_and_marketplace(self):
+        for target in (REPO, REPO / P["pluginDir"]):
+            r = subprocess.run(["claude", "plugin", "validate", "--strict", str(target)], capture_output=True,
+                               text=True, timeout=120)
+            self.assertEqual(0, r.returncode, r.stdout + r.stderr)
 
     @unittest.skipUnless(CODEX_VALIDATOR.is_file(), "Codex plugin-creator validator not installed")
     def test_official_codex_validator_accepts_plugin(self):
@@ -137,7 +156,8 @@ class ArchiveTests(unittest.TestCase):
     def test_marketplace_bundle_is_a_usable_repository_layout(self):
         names = self.names(self.market_zip)
         root = "%s-marketplace/" % P["id"]
-        for rel in (".agents/plugins/marketplace.json", ".cursor-plugin/marketplace.json", "LICENSE",
+        for rel in (".agents/plugins/marketplace.json", ".cursor-plugin/marketplace.json",
+                    ".claude-plugin/marketplace.json", "LICENSE", P["pluginDir"] + "/.claude-plugin/plugin.json",
                     P["pluginDir"] + "/.codex-plugin/plugin.json", P["pluginDir"] + "/skills/yobiru-setup/SKILL.md"):
             self.assertIn(root + rel, names)
 
@@ -244,6 +264,22 @@ class FixtureTests(unittest.TestCase):
             self.assertTrue(any("private marker" in e for e in B.validate(P, self.root)))
         finally:
             del os.environ["YOBIRU_PRIVATE_DENYLIST"]
+
+    def test_claude_mcp_server_must_be_the_bundled_launcher(self):
+        path = self.base / ".claude-plugin" / "plugin.json"
+        good = path.read_text()
+        for server in ({"command": "npx", "args": ["some-server"]},
+                       {"command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/yobiru", "mcp", "${HOME}"]},
+                       {"command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/yobiru", "serve"]},
+                       {"command": "sh", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/yobiru", "mcp"], "env": {"X": "1"}}):
+            with self.subTest(server=server):
+                manifest = json.loads(good)
+                manifest["mcpServers"]["yobiru"] = server
+                path.write_text(json.dumps(manifest))
+                self.assertTrue(any("mcpServers.yobiru must run" in e for e in B.validate(P, self.root)))
+        path.write_text(good)
+        (self.base / ".mcp.json").write_text("{}")
+        self.assertTrue(any("no shared MCP config" in e for e in B.validate(P, self.root)))
 
     def test_manifest_drift_and_bad_skill_names_are_reported(self):
         m = self.base / ".cursor-plugin" / "plugin.json"

@@ -68,6 +68,8 @@ OPENAI_KEYS = {"interface", "requires_local_executor", "onboardingSkill", "publi
 OPENAI_INTERFACE_KEYS = CODEX_INTERFACE_KEYS | {"supportURL"}
 CURSOR_KEYS = {"name", "description", "version", "author", "homepage", "repository", "license", "keywords", "logo",
                "rules", "agents", "skills", "commands", "hooks", "mcpServers", "variables"}
+CLAUDE_KEYS = {"name", "version", "description", "author", "homepage", "repository", "license", "keywords",
+               "mcpServers"}
 
 
 class BuildError(Exception):
@@ -125,7 +127,13 @@ def render(p):
     cursor = {"name": pid, "version": p["version"], "description": p["description"], "author": author,
               "repository": p["repository"], "license": p["license"], "keywords": p["keywords"],
               "logo": p["cursor"]["logo"]}
-    for manifest in (portable, codex, cursor):
+    # Claude Code: default discovery finds skills/; the MCP server is declared here only, because Claude Code
+    # expands ${CLAUDE_PLUGIN_ROOT} and no other host reads this file (a shared mcp.json would reach Cursor).
+    cl = p["claude"]["mcpServer"]
+    claude = {"name": pid, "version": p["version"], "description": p["description"], "author": author,
+              "repository": p["repository"], "license": p["license"], "keywords": p["keywords"],
+              "mcpServers": {cl["name"]: {"command": cl["command"], "args": cl["args"]}}}
+    for manifest in (portable, codex, cursor, claude):
         manifest["homepage"] = p["homepage"]
     m = p["marketplace"]
     codex_market = {"name": m["name"], "interface": {"displayName": m["displayName"]},
@@ -136,10 +144,17 @@ def render(p):
     cursor_market = {"name": m["name"], "owner": {"name": p["publisher"]},
                      "metadata": {"description": m["description"], "version": p["version"]},
                      "plugins": [{"name": pid, "source": p["pluginDir"], "description": p["description"]}]}
+    claude_market = {"name": m["name"], "owner": {"name": p["publisher"]},
+                     "metadata": {"description": m["description"], "version": p["version"]},
+                     "plugins": [{"name": pid, "source": "./" + p["pluginDir"], "description": p["description"],
+                                  "version": p["version"], "category": p["claude"]["marketplaceCategory"],
+                                  "homepage": p["homepage"]}]}
     d = p["pluginDir"]
     out = {d + "/plugin.json": jbytes(portable), d + "/.codex-plugin/plugin.json": jbytes(codex),
-           d + "/.cursor-plugin/plugin.json": jbytes(cursor), ".agents/plugins/marketplace.json": jbytes(codex_market),
-           ".cursor-plugin/marketplace.json": jbytes(cursor_market)}
+           d + "/.cursor-plugin/plugin.json": jbytes(cursor), d + "/.claude-plugin/plugin.json": jbytes(claude),
+           ".agents/plugins/marketplace.json": jbytes(codex_market),
+           ".cursor-plugin/marketplace.json": jbytes(cursor_market),
+           ".claude-plugin/marketplace.json": jbytes(claude_market)}
     sources = {}
     for group in ("core", "codexBridge", "license"):
         for src, dst in sorted(p["bundle"][group].items()):
@@ -159,7 +174,8 @@ def symlinks(p, root=ROOT):
     base = root / p["pluginDir"]
     found = [rel for rel in (p["pluginDir"], "plugins", ".agents", ".agents/plugins",
                              ".agents/plugins/marketplace.json", ".cursor-plugin",
-                             ".cursor-plugin/marketplace.json") if (root / rel).is_symlink()]
+                             ".cursor-plugin/marketplace.json", ".claude-plugin",
+                             ".claude-plugin/marketplace.json") if (root / rel).is_symlink()]
     if base.is_dir() and not base.is_symlink():
         for dirpath, dirnames, filenames in os.walk(str(base)):
             for name in dirnames + filenames:
@@ -374,8 +390,30 @@ def validate(p, root=ROOT):
         if k in cu:
             errs.append(".cursor-plugin: %s would replace default discovery; keep it out" % k)
     if (base / "mcp.json").exists() or (base / ".mcp.json").exists() or (base / "hooks").exists():
-        errs.append("plugin: no MCP config or hooks are shipped in this release")
-    for man, label in ((m, "plugin.json"), (cu, ".cursor-plugin")):
+        errs.append("plugin: no shared MCP config or hooks are shipped; Claude Code's server lives in .claude-plugin")
+    # Claude Code native manifest: skills by default discovery, one stdio MCP server running the bundled launcher
+    cc = load(p["pluginDir"] + "/.claude-plugin/plugin.json")
+    if set(cc) - CLAUDE_KEYS:
+        errs.append(".claude-plugin: unsupported fields %s" % sorted(set(cc) - CLAUDE_KEYS))
+    if cc.get("name") != pid:
+        errs.append(".claude-plugin: name must be %s" % pid)
+    if not isinstance(cc.get("author"), dict) or set(cc["author"]) - {"name", "email", "url"} or \
+            not cc["author"].get("name"):
+        errs.append(".claude-plugin: author must be {name[, email, url]}")
+    servers = cc.get("mcpServers")
+    if not isinstance(servers, dict) or len(servers) != 1:
+        errs.append(".claude-plugin: exactly one MCP server expected")
+    else:
+        (sname, server), = servers.items()
+        args = server.get("args") if isinstance(server, dict) else None
+        launcher = "${CLAUDE_PLUGIN_ROOT}/scripts/" + pid
+        if (set(server) != {"command", "args"} or server.get("command") != "sh" or not isinstance(args, list) or
+                args[:1] != [launcher] or args[1:2] != ["mcp"] or
+                any(not isinstance(x, str) or "$" in x for x in args[1:])):
+            errs.append(".claude-plugin: mcpServers.%s must run `sh %s mcp ...`" % (sname, launcher))
+        if not (base / "scripts" / pid).is_file() or not (base / "scripts" / (pid + "_mcp.py")).is_file():
+            errs.append(".claude-plugin: the MCP server's launcher or scripts/%s_mcp.py is missing" % pid)
+    for man, label in ((m, "plugin.json"), (cu, ".cursor-plugin"), (cc, ".claude-plugin")):
         for k in ("version", "description", "homepage", "repository", "license", "keywords"):
             if man.get(k) != c.get(k):
                 errs.append("%s: %s differs from .codex-plugin" % (label, k))
@@ -405,6 +443,15 @@ def validate(p, root=ROOT):
         errs.append(".cursor-plugin marketplace: one %s entry whose source holds .cursor-plugin/plugin.json" % pid)
     if len(jbytes(km)) > 10 * 1024 * 1024:
         errs.append(".cursor-plugin marketplace: larger than 10 MB")
+    clm = load(".claude-plugin/marketplace.json")
+    if not PLUGIN_NAME_RE.match(str(clm.get("name"))) or not (clm.get("owner") or {}).get("name"):
+        errs.append(".claude-plugin marketplace: name (kebab-case) and owner.name required")
+    centries = [e for e in clm.get("plugins", []) if isinstance(e, dict) and e.get("name") == pid]
+    if len(centries) != 1 or centries[0].get("source") != "./" + p["pluginDir"] or \
+            not (root / p["pluginDir"] / ".claude-plugin" / "plugin.json").is_file() or \
+            centries[0].get("version") != c.get("version"):
+        errs.append(".claude-plugin marketplace: one %s entry, source ./%s holding .claude-plugin/plugin.json, "
+                    "same version" % (pid, p["pluginDir"]))
     # skills
     skills = sorted(x for x in (base / "skills").iterdir() if x.is_dir()) if (base / "skills").is_dir() else []
     if not skills:
@@ -506,7 +553,8 @@ def archives(p, root=ROOT):
     plugin_zip = zip_bytes([("%s/%s" % (pid, rel), data, exe) for rel, data, exe in files])
     mroot = "%s-marketplace" % pid
     market = [("%s/%s/%s" % (mroot, p["pluginDir"], rel), data, exe) for rel, data, exe in files]
-    for rel in (".agents/plugins/marketplace.json", ".cursor-plugin/marketplace.json", "LICENSE"):
+    for rel in (".agents/plugins/marketplace.json", ".cursor-plugin/marketplace.json", ".claude-plugin/marketplace.json",
+                "LICENSE"):
         market.append(("%s/%s" % (mroot, rel), (root / rel).read_bytes(), False))
     market_zip = zip_bytes(sorted(market))
     return {"%s-%s-plugin.zip" % (pid, ver): plugin_zip, "%s-%s-marketplace.zip" % (pid, ver): market_zip}

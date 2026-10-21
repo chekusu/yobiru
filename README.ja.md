@@ -42,7 +42,7 @@ Yobiru は、エージェントが共有できる軽量な通信手段を提供�
 - **依頼の状態を追跡：** 受領通知、進捗、最終結果を確認し、期限とタイムアウト状態を照会できます。通常の通知には返信不要です。
 - **必要な情報を共有：** テキスト、JSON、レポート、ログ、その他のファイルを送れます。
 - **起動は受信側のルールで：** 誰がどのエージェントを起動できるかを受信側で決め、通知を控える時間帯や頻度を設定できます。
-- **今のツールを使い続ける：** 一つのプラグインに七つのスキルと Python CLI を収録し、Codex と Cursor のマニフェスト、Grok Bot 専用の設定・復旧手順を用意しています。
+- **今のツールを使い続ける：** 一つのプラグインに七つのスキルと Python CLI を収録し、Codex、Cursor、Claude Code のマニフェスト、Claude Code 用のローカル MCP サーバー、Grok Bot 専用の設定・復旧手順を用意しています。
 - **データは自分のマシンに：** Yobiru はメッセージや添付ファイルの保管サービスを運営しません。ファイルは Tailscale 経由で送信元から取得します。
 
 これは通信レイヤーです。新しいチャットアプリや自律的なタスク管理ツールではありません。エージェントはメッセージと返信を通じて共通の目標に取り組めますが、Yobiru は共有グループルームの UI、スケジューラー、相手の作業完了を証明する仕組みを提供しません。
@@ -87,7 +87,7 @@ Files: recipient fetches from the sender, then checks size + SHA-256.
 
 受信プロセスは自分の Tailscale アドレスで待ち受けます。通常のポートは `tcp:7766` です。`tailscale whois` で接続元マシンの身元を確認し、ローカルのアクセスポリシーを照合してからメッセージを保存します。添付ファイルは送信元に一時保存され、宛先マシンだけが取得できる期限付きリンクで提供されます。リンクの標準有効期限は 24 時間です。
 
-Yobiru は既存の **tailmsg protocol v1** を使用します。MCP サーバーは同梱せず、Yobiru アカウントも不要です。ネットワークとマシンの身元確認は Tailscale が担い、暗号化された通信は直接、またはリレー経由で運ばれます。[Tailscale の接続方式](https://tailscale.com/docs/reference/connection-types)を参照してください。
+Yobiru は既存の **tailmsg protocol v1** を使用し、Yobiru アカウントは不要です。Claude Code プラグインには同じ CLI を動かすローカル stdio MCP サーバー（`yobiru mcp`）が含まれ、ネットワークポートは開きません。ネットワークとマシンの身元確認は Tailscale が担い、暗号化された通信は直接、またはリレー経由で運ばれます。[Tailscale の接続方式](https://tailscale.com/docs/reference/connection-types)を参照してください。
 
 ## 前提条件
 
@@ -114,6 +114,19 @@ codex plugin add yobiru@yobiru
 新しい会話を開き、**「このマシンに Yobiru をセットアップして」** と依頼してください。プラグインのインストール自体は何も実行しません（インストールフックはありません）。残りは `yobiru-setup` スキルが案内します。七つのスキルは `yobiru-setup`、`yobiru-grok-bot`、`yobiru-sessions`、`yobiru-send`、`yobiru-inbox`、`yobiru-wake`、`yobiru-upgrade` です。
 
 これはリポジトリのマーケットプレイスからのインストールです。Codex の公開プラグインディレクトリへの掲載を意味しません。
+
+### Claude Code
+
+リポジトリのマーケットプレイスを登録してプラグインをインストールします（Claude Code の中で `/plugin marketplace add chekusu/yobiru` と `/plugin install yobiru@yobiru` を使うこともできます）：
+
+```sh
+claude plugin marketplace add chekusu/yobiru
+claude plugin install yobiru@yobiru
+```
+
+新しいセッションを開き、**「このマシンに Yobiru をセットアップして」** と依頼してください。Claude Code には同じ七つのスキルに加えて、ローカル MCP サーバー `yobiru` が追加されます。そのツールで受信箱の確認、メッセージの閲覧・添付ファイルの取得・処理済みの記録、メッセージや追跡可能な依頼の送信、返信や依頼の状態報告、セットアップ・マシン・依頼の状態の確認ができます。サーバーは同梱 CLI を stdio で動かすもの（`sh scripts/yobiru mcp`）で、同じデータホーム（`$TAILMSG_HOME` または `~/.tailmsg`）を使い、ポートを開かず、独自には何も保存しません。受信したテキストは別のエージェントからのデータとしてモデルに渡り、指示としては扱われません。
+
+返信が同じマシンの別のエージェントではなく Claude Code に届くよう、専用のエージェント名を付けてください：`sh "$Y" setup --agent claude`（計画を確認してから `--apply`。[エージェントに名前を付ける](#1-エージェントに名前を付ける)を参照）。設定に `claude` というエージェントがあれば、MCP サーバーは `claude` として送信し、`claude` の受信箱だけを表示します。なければマシンの `self_agent` を使い、すべてのエージェントのメッセージを表示します。プラグインは待機中の Claude Code セッションを起動しません。メッセージはセッションが確認するまで受信箱に残ります（「Yobiru の受信箱を確認して」）。`claude` の起動アダプターにローカルプログラムを設定した場合は別です（[起動と配信状態](#起動と配信状態)）。Windows では `PATH` に `sh` が必要です（Git for Windows など）。ない場合は `claude mcp add yobiru -- py -3 "<plugin>\scripts\yobiru.py" mcp` で手動登録してください。
 
 ### ChatGPT デスクトップ
 
@@ -342,6 +355,8 @@ codex plugin marketplace upgrade yobiru
 codex plugin add yobiru@yobiru
 ```
 
+Claude Code：`claude plugin marketplace update yobiru` のあと `claude plugin update yobiru@yobiru`。
+
 更新後は新しい会話を開始します。Cursor では **Customize** から更新するかローカルコピーを置き換え、Grok Bot では **Connect apps** で管理します。
 
 プラグインの更新は常駐受信プロセスを**更新しません**。`install-runtime --upgrade`（続けて `--apply`）を実行して受信サービスを再起動し、ブリッジがある場合は同じセッション UUID で `codex-bridge install` を再実行します（名前、返信設定、独自の窓口指示は維持されます）。その後、他のマシンと調整します：
@@ -371,6 +386,8 @@ codex plugin remove yobiru@yobiru
 codex plugin marketplace remove yobiru
 ```
 
+Claude Code：`claude plugin uninstall yobiru@yobiru` と `claude plugin marketplace remove yobiru`。
+
 プラグインを削除しても、データ、受信サービス、Codex ブリッジは残ります。完全に削除する場合は、先にサービスを停止・削除し、メッセージやファイルが不要であることを確認してからデータディレクトリを削除してください。
 
 既存の tailmsg 環境との互換性は維持されます。`tailmsg.py`、protocol v1、`~/.tailmsg`、`TAILMSG_*`、既存のサービス名を引き続き使用します。
@@ -392,6 +409,7 @@ python3 tools/build_plugin.py release
 | パッケージと CLI | 展開後の実行、空白を含むパス、設定の保持、隔離したテスト環境でのメッセージ・ファイル・返信・起動処理を自動検証しています。 |
 | Tailscale 通信 | 0.4.0 の単一ホストでの実ネットワークテストは 59 項目に合格しました。別途行った 0.5.0 の実機検証には、他のマシンから Grok Bot への依頼が含まれます。日時と範囲は検証ノートを参照してください。 |
 | Codex | 過去のリポジトリ導入とスキル検出を確認済みです。2026-10-13、実際の 0.5.0 Linux ブリッジが既存セッションで依頼へ自動返信しました。全デスクトップ環境や公式ディレクトリからの導入を検証したわけではありません。 |
+| Claude Code | 自動テスト：プラグインとマーケットプレイスの両方が `claude plugin validate --strict` に合格。Claude Code 2.1.306 がローカルのマーケットプレイスからプラグインをインストールし、MCP サーバーに接続しました。ループバックのテストが二つの独立したデータホーム間でこのサーバーを動かします（受信、閲覧、添付取得、返信、追跡可能な依頼、処理済み記録）。Grok Bot との実機間の連携テストはこれからです。 |
 | Cursor / Grok Bot / DOTS | 手動導入した Grok Bot 0.5.0 で、実機間の追跡可能な依頼と認証付きの状態照会を検証済みです。Grok／Cursor のネイティブ市場導入と再構築後の復旧は別途確認が必要です。DOTS コネクターは同梱していません。 |
 | 0.3.0 オンボーディング・発見・更新 | オフラインテスト：プラットフォーム別の案内（未インストール、未ログイン、デーモン、権限、TUN なし）、認証付き `/info` と秘密を含まない投影、ネイティブ名／確認済みタイトル／別名と UUID、旧版 404／403／到達不能／不正／低速な相手、リリース解析とチャンネル、通知の重複排除・再試行・uncertain、ブリッジ更新での名前維持。実際の Tailscale、GitHub、相手には接続していません。 |
 | 公開マーケットプレイスへの掲載 | [申請記録](docs/MARKETPLACE_SUBMISSION.md)を参照してください。リポジトリ導入、申請、審査、公開は別の段階です。 |

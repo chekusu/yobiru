@@ -42,7 +42,7 @@ Yobiru 为这些 agents 提供了一套轻量、共通的通信方式：
 - **跟踪请求：** 接收回执、进度和最终结果，随时查询期限及超时状态；普通通知无需回复。
 - **交换有用的上下文：** 发送文字、JSON、报告、日志和其他文件。
 - **按你的规则唤醒：** 收件方决定哪些发送方可以唤醒哪个 agent，并设置静默时间和频率限制。
-- **继续使用自己的工具：** 同一个插件包包含七个 skills 和 Python CLI，提供 Codex、Cursor 插件清单，以及 Grok Bot 专用的配置与恢复指引。
+- **继续使用自己的工具：** 同一个插件包包含七个 skills 和 Python CLI，提供 Codex、Cursor 和 Claude Code 插件清单、供 Claude Code 使用的本地 MCP 服务器，以及 Grok Bot 专用的配置与恢复指引。
 - **数据保存在自己的机器上：** Yobiru 不运营消息或附件存储服务；文件通过 Tailscale 从发送方获取。
 
 这是通信层，不是新的聊天应用或自主任务管理器。Agents 可以通过消息与回复围绕共同目标协作，但 Yobiru 不提供共享群聊界面、调度器，也不能证明对方已经完成工作。
@@ -87,7 +87,7 @@ Files: recipient fetches from the sender, then checks size + SHA-256.
 
 接收进程监听本机的 Tailscale 地址，默认端口为 `tcp:7766`。它通过 `tailscale whois` 验证连接机器的身份，检查本地访问策略，然后保存接受的消息。附件暂存在发送方，通过有时效的链接提供给指定收件机器。链接默认有效期为 24 小时。
 
-Yobiru 使用现有的 **tailmsg protocol v1**，不附带 MCP 服务器，也不需要 Yobiru 账户。Tailscale 提供网络和机器身份，可能直接传输加密流量，也可能通过其中继传输。参见 [Tailscale 连接类型](https://tailscale.com/docs/reference/connection-types)。
+Yobiru 使用现有的 **tailmsg protocol v1**，不需要 Yobiru 账户。Claude Code 插件附带一个本地 stdio MCP 服务器（`yobiru mcp`），运行的就是同一个 CLI，不开放任何网络端口。Tailscale 提供网络和机器身份，可能直接传输加密流量，也可能通过其中继传输。参见 [Tailscale 连接类型](https://tailscale.com/docs/reference/connection-types)。
 
 ## 前置条件
 
@@ -114,6 +114,19 @@ codex plugin add yobiru@yobiru
 新开一个会话，然后说：**“在这台机器上配置 Yobiru。”** 安装插件本身不会运行任何东西（没有安装钩子），后续由 `yobiru-setup` skill 引导完成。七个 skills 分别是 `yobiru-setup`、`yobiru-grok-bot`、`yobiru-sessions`、`yobiru-send`、`yobiru-inbox`、`yobiru-wake` 和 `yobiru-upgrade`。
 
 这里使用的是仓库插件市场，并不意味着已经进入 Codex 的公共插件目录。
+
+### Claude Code
+
+注册仓库插件市场并安装插件（也可以在 Claude Code 里用 `/plugin marketplace add chekusu/yobiru` 和 `/plugin install yobiru@yobiru`）：
+
+```sh
+claude plugin marketplace add chekusu/yobiru
+claude plugin install yobiru@yobiru
+```
+
+新开一个会话，然后说：**“在这台机器上配置 Yobiru。”** Claude Code 会得到同样的七个 skills，外加一个本地 MCP 服务器 `yobiru`：它的工具可以查看收件箱，阅读、下载附件并确认消息，发送消息和可追踪请求，回复或报告请求状态，以及查看配置、机器和请求状态。这个服务器就是插件自带的 CLI，通过 stdio 运行（`sh scripts/yobiru mcp`）：使用同一个数据目录（`$TAILMSG_HOME` 或 `~/.tailmsg`），不监听任何端口，也不单独存储任何数据。收到的文字以“另一个 agent 发来的数据”交给模型，从不作为指令。
+
+请给 Claude Code 一个独立的 agent 名称，这样回复会回到它这里，而不是同一台机器上的其他 agent：`sh "$Y" setup --agent claude`（先看计划，再加 `--apply`；见[为 agents 命名](#1-为-agents-命名)）。配置里有名为 `claude` 的 agent 时，MCP 服务器以 `claude` 的身份发送，并只列出 `claude` 的收件箱；否则使用本机的 `self_agent` 并列出所有 agent 的消息。插件不会唤醒空闲的 Claude Code 会话：消息会留在收件箱里，直到某个会话去查看（“查看我的 Yobiru 收件箱”），除非你为 `claude` 配置了本地程序作为唤醒适配器（见[唤醒与投递状态](#唤醒与投递状态)）。在 Windows 上，服务器需要 `PATH` 中有 `sh`（例如 Git for Windows 自带的）；否则请手动注册：`claude mcp add yobiru -- py -3 "<plugin>\scripts\yobiru.py" mcp`。
 
 ### ChatGPT 桌面版
 
@@ -342,6 +355,8 @@ codex plugin marketplace upgrade yobiru
 codex plugin add yobiru@yobiru
 ```
 
+Claude Code：`claude plugin marketplace update yobiru`，然后 `claude plugin update yobiru@yobiru`。
+
 更新后新开一个会话。Cursor 通过 **Customize** 更新，或替换本地插件副本；Grok Bot 通过 **Connect apps** 管理。
 
 插件更新**不会**更新常驻接收端：运行 `install-runtime --upgrade`（再加 `--apply`）并重启接收服务；已安装桥接时用同一个会话 UUID 重新运行 `codex-bridge install`（名称、回复设置和自定义入口指令都会保留）。然后协调其他机器：
@@ -371,6 +386,8 @@ codex plugin remove yobiru@yobiru
 codex plugin marketplace remove yobiru
 ```
 
+Claude Code：`claude plugin uninstall yobiru@yobiru` 和 `claude plugin marketplace remove yobiru`。
+
 卸载插件不会删除你的数据、接收服务或 Codex 桥接。若需彻底移除，应先停止并移除相关服务，再在确认不需要消息和文件后删除数据目录。
 
 已有 tailmsg 安装保持兼容：继续沿用 `tailmsg.py`、protocol v1、`~/.tailmsg`、`TAILMSG_*` 和既有服务名称。
@@ -392,6 +409,7 @@ python3 tools/build_plugin.py release
 | 打包与 CLI | 自动检查覆盖解压后运行、含空格的路径、配置保留，以及使用隔离测试环境的消息／文件／回复／唤醒流程。 |
 | Tailscale 传输 | 历史 0.4.0 单机实网自测通过 59 项；0.5.0 的独立实机验收包含跨机器 Grok Bot 请求。具体时间与范围见验证记录。 |
 | Codex | 历史仓库安装与 skill 发现已验证。2026-10-13，实际运行的 0.5.0 Linux bridge 在原常驻 session 中完成自动请求回复；这不代表所有桌面环境或官方目录安装路径都已验证。 |
+| Claude Code | 自动化：插件和市场清单都通过了 `claude plugin validate --strict`；Claude Code 2.1.306 从本地市场安装了插件并连上其 MCP 服务器；回环测试在两个隔离的数据目录之间驱动该服务器（接收、阅读、下载附件、回复、可追踪请求、确认）。与 Grok Bot 的真实跨机器联调尚待完成。 |
 | Cursor / Grok Bot / DOTS | 手动部署的 Grok Bot 0.5.0 runtime 已完成真实跨机器可追踪请求和认证状态查询。原生 Grok／Cursor 市场安装及重建恢复仍需单独验收。未提供 DOTS 连接器。 |
 | 0.3.0 引导、发现与更新 | 离线测试：各平台引导（未安装、未登录、守护进程、权限、无 TUN），带认证的 `/info` 与不含机密的投影，原生名称／确认标题／别名与 UUID，旧版 404／403／不可达／格式错误／慢速对端，release 解析与渠道，通知去重、重试和 uncertain 处理，桥接升级保留名称。未连接真实 Tailscale、GitHub 或对端。 |
 | 公共市场上架 | 见[提交记录](docs/MARKETPLACE_SUBMISSION.md)。仓库安装、提交、审核与正式上架是不同阶段。 |
