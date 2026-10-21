@@ -120,6 +120,71 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("network_unavailable", Y.official_release("0.3.0", "preview", fetch=offline)[1])
 
 
+class PrereleaseTests(unittest.TestCase):
+    """A Beta next to the stable release (0.6.0-beta.1 and 0.5.3): stable checks never offer it, an explicit
+    preview check names its exact tag, archive and checksum file, and its notices carry the opt-in."""
+    RELEASES = [release("v0.5.3"), release("v0.6.0-beta.1", prerelease=True), release("v0.5.2")]
+
+    def test_the_stable_channel_never_offers_the_beta(self):
+        rels = Y.parse_releases(self.RELEASES)
+        res = Y.assess_update("0.5.3", rels, "stable")
+        self.assertEqual(("current", "0.5.3", "0.6.0-beta.1"),
+                         (res["status"], res["latest"]["version"], res["latest_preview"]["version"]))
+        self.assertEqual(("update_available", "0.5.3"),
+                         (Y.assess_update("0.5.2", rels, "stable")["status"],
+                          Y.assess_update("0.5.2", rels, "stable")["latest"]["version"]))
+        unflagged = Y.parse_releases([release("v0.5.3"), release("v0.6.0-beta.1", prerelease=False)])
+        self.assertEqual("0.5.3", Y.assess_update("0.5.3", unflagged, "stable")["latest"]["version"],
+                         "a SemVer prerelease stays a prerelease whatever the release flag says")
+
+    def test_preview_offers_the_exact_beta_and_a_beta_install_stays_on_its_line(self):
+        rels = Y.parse_releases(self.RELEASES)
+        res = Y.assess_update("0.5.3", rels, "preview")
+        self.assertEqual(("update_available", "0.6.0-beta.1", "v0.6.0-beta.1"),
+                         (res["status"], res["latest"]["version"], res["latest"]["tag"]))
+        self.assertEqual("ahead", Y.assess_update("0.6.0-beta.1", rels, "stable")["status"])
+        self.assertEqual("current", Y.assess_update("0.6.0-beta.1", rels, "preview")["status"])
+        final = Y.parse_releases(self.RELEASES + [release("v0.6.0")])
+        self.assertEqual("update_available", Y.assess_update("0.6.0-beta.1", final, "stable")["status"])
+        # SemVer compares identifiers as text, so a development build of the same version sorts above the beta:
+        # such an installation is told it is ahead and is never offered the beta as an update
+        self.assertEqual(1, Y.compare_versions("0.6.0-dev.1", "0.6.0-beta.1"))
+        self.assertEqual("ahead", Y.assess_update("0.6.0-dev.1", rels, "preview")["status"])
+
+    def test_upgrade_steps_pin_the_prerelease_tag_archive_and_checksum(self):
+        rel = Y.parse_releases(self.RELEASES)[1]
+        steps = Y.upgrade_steps({}, "0.6.0-beta.1", rel)
+        text = " ".join(steps)
+        for want in ("never install it", "https://github.com/chekusu/yobiru/releases/tag/v0.6.0-beta.1",
+                     "`yobiru-0.6.0-beta.1-plugin.zip` and `SHA256SUMS`",
+                     "scripts/yobiru version` prints 0.6.0-beta.1",
+                     "`codex plugin marketplace add chekusu/yobiru --ref v0.6.0-beta.1`",
+                     "update notify --channel preview"):
+            self.assertIn(want, text)
+        self.assertNotIn("marketplace upgrade yobiru` then", text, "a branch upgrade would install the stable release")
+        stable = " ".join(Y.upgrade_steps({}, "0.5.3"))
+        self.assertIn("`codex plugin marketplace upgrade yobiru`", stable)
+        self.assertNotIn("--channel preview", stable)
+        bridged = Y.upgrade_steps({"codex_bridge_installed": True}, "0.6.0-beta.1", rel)
+        self.assertEqual(len(steps) + 1, len(bridged))
+        self.assertIn("codex-bridge install", bridged[-3], "the bridge is reinstalled before the final checks")
+
+    def test_a_newer_runtime_is_never_advised_to_be_replaced(self):
+        self.assertIn("install-runtime --upgrade --apply", Y.runtime_step("0.6.0-beta.1", "0.5.3"))
+        for newer in ("0.6.0-dev.1", "0.6.0", "0.7.0-alpha.1"):
+            step = Y.runtime_step("0.6.0-beta.1", newer)
+            self.assertIn("keep the durable runtime", step, newer)
+            self.assertNotIn("--upgrade --apply", step, newer)
+
+    def test_prerelease_notices_carry_the_opt_in_and_stable_ones_do_not(self):
+        rels = Y.parse_releases(self.RELEASES)
+        beta = json.loads(Y.notice_text("alpha.example.ts.net", "0.6.0-beta.1", rels[1]))
+        self.assertEqual((True, "v0.6.0-beta.1"), (beta["prerelease"], beta["tag"]))
+        self.assertIn("an authorization for stable updates does not cover it", beta["opt_in"])
+        stable = json.loads(Y.notice_text("alpha.example.ts.net", "0.5.3", rels[0]))
+        self.assertFalse({"prerelease", "opt_in"} & set(stable))
+
+
 def free_shared_port(ips):
     for _ in range(50):
         with socket.socket() as s:
@@ -514,6 +579,30 @@ class MaintenanceTests(unittest.TestCase):
             code, res = self.maintain("--apply")
         self.assertEqual(0, code, res)
         self.assertEqual(old, json.loads(self.bravo.posts[0]["text"])["version"])
+
+    def test_a_stable_run_holds_a_queued_prerelease_notice_and_says_why(self):
+        beta = "9.1.0-beta.1"
+        self.me.version = beta
+        (self.home / "tailmsg.py").write_text('PRODUCT_VERSION = "%s"\n' % beta)
+        self.releases = [release("v9.0.0"), release("v" + beta, prerelease=True)]
+        with mock.patch.object(Y, "plugin_version", return_value=beta):
+            self.peers["bravo"]["online"] = False
+            self.write_status()
+            self.notify("--apply", "--no-discover", "--peer", "bravo/codex", "--version", beta)
+            self.assertEqual("pending", self.entry("bravo")["status"])
+            self.peers["bravo"]["online"] = True
+            self.write_status()
+            code, res = self.maintain("--apply", "--channel", "stable")      # e.g. a timer made for stable
+            self.assertEqual(1, code, res)
+            self.assertEqual([], self.bravo.posts)
+            self.assertEqual("pending", self.entry("bravo")["status"])
+            self.assertIn("update maintain --channel preview", res["plans"][0]["held"])
+            self.assertEqual(1, len([e for e in res["errors"] if "is a prerelease" in e]))
+            code, res = self.maintain("--apply")                              # --channel preview
+            self.assertEqual(0, code, res)
+            self.assertIsNone(res["plans"][0]["held"])
+        self.assertEqual("notified", self.entry("bravo")["status"])
+        self.assertTrue(json.loads(self.bravo.posts[0]["text"])["prerelease"])
 
     def test_no_saved_notices_does_not_announce_to_any_peer(self):
         code, res = self.maintain("--apply")

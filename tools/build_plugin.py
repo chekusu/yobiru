@@ -56,7 +56,11 @@ PLUGIN_NAME_RE = re.compile(r"^(?!.*(?:--|\.\.))[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?
 CODEX_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\Z")
 MARKETPLACE_RE = re.compile(r"^[A-Za-z0-9_-]+\Z")
 SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*\Z")
-SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\Z")
+# SemVer 2.0, the grammar the launcher uses to compare an installation with releases: a prerelease such as
+# 0.6.0-beta.1 is a list of dot-separated identifiers, none empty, numeric ones without leading zeros.
+PRE_ID = r"(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)"
+SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-" + PRE_ID + r"(?:\." + PRE_ID + r")*)?"
+                       r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z")
 CODEX_KEYS = {"id", "name", "version", "description", "skills", "apps", "mcpServers", "interface", "author",
               "homepage", "repository", "license", "keywords"}
 CODEX_INTERFACE_KEYS = {"displayName", "shortDescription", "longDescription", "developerName", "category",
@@ -338,6 +342,15 @@ def validate(p, root=ROOT):
         errs.append(".codex-plugin: name must be %s" % pid)
     if not SEMVER_RE.match(str(c.get("version"))):
         errs.append(".codex-plugin: version must be strict semver")
+    if not SEMVER_RE.match(str(p.get("version"))):
+        errs.append("packaging/product.json: version must be SemVer 2.0 (for example 0.6.0 or 0.6.0-beta.1)")
+    elif "-" in p["version"].split("+")[0]:
+        # A prerelease ships from its own tag while the default branch keeps the stable release, so its listing
+        # must link the privacy notice of what it ships, not of the stable branch.
+        pinned = "%s/blob/v%s/" % (p["repository"], p["version"])
+        if not str(p["codex"].get("privacyPolicyURL")).startswith(pinned):
+            errs.append("packaging/product.json: a prerelease's codex.privacyPolicyURL must point into its own tag "
+                        "(%s...)" % pinned)
     if c.get("skills") != "./skills/":
         errs.append(".codex-plugin: skills must be ./skills/")
     if not isinstance(c.get("author"), dict) or not c["author"].get("name"):

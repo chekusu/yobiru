@@ -77,8 +77,9 @@ Check and set up (read-only unless --apply):
                              installations (notify is a dry run unless --apply)
   setup ... [--apply]        create or extend config.json; new installs trust authenticated tailnet peers
   wake-config ... [--apply]  receiver-side wake policy and per-agent wake adapters
-  install-runtime [--upgrade] [--apply]
+  install-runtime [--upgrade [--allow-downgrade]] [--apply]
                              copy the bundled tailmsg.py into the data home for a durable `serve`
+                             (a newer runtime, such as a development build, is kept unless --allow-downgrade)
   service-template {{systemd,systemd-user,launchd,windows}}
                              print a reviewable service definition (never installs it)
   codex-bridge {{status,install,rollback}} ...
@@ -86,7 +87,7 @@ Check and set up (read-only unless --apply):
                              app-server socket (install/rollback support --dry-run and --no-start)
   version
 
-Public bots and Friends (unreleased; a separate self-hosted gateway, never the receiver on 7766;
+Public bots and Friends (Beta; a separate self-hosted gateway, never the receiver on 7766;
 see docs/PUBLIC_BOTS.md):
   gateway {{init,owner,migrate,serve,status}} [--gateway-home DIR]
                              the public mailbox: local-only owner bootstrap, loopback HTTP by default
@@ -645,7 +646,7 @@ def doctor_checks(f):
     rt_version = f.get("runtime_version")
     if rt_version and rt_version != f["plugin_version"]:
         add("info", "versions", "plugin %s, durable runtime %s" % (f["plugin_version"], rt_version),
-            "`%s install-runtime --upgrade --apply`, then restart the receiver" % PRODUCT)
+            runtime_step(f["plugin_version"], rt_version))
     up = f.get("update")
     if up and up["status"] == "update_available":
         add("info", "update", "Yobiru %s is available (checked %s, %s channel)" % (up["latest"], up["checked_at"],
@@ -1497,6 +1498,8 @@ def cmd_install_runtime(home, home_source, argv):
                     "path that plugin updates and uninstalls do not move. Dry run unless --apply. Never replaces "
                     "a different existing copy without --upgrade, and never restarts anything.")
     ap.add_argument("--upgrade", action="store_true", help="replace a different existing copy (kept as a backup)")
+    ap.add_argument("--allow-downgrade", action="store_true",
+                    help="with --upgrade: also replace a copy whose version is newer than the bundled one")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
@@ -1510,7 +1513,8 @@ def cmd_install_runtime(home, home_source, argv):
         die("request state path must be a real directory: %s" % request_dir, 2)
     new_hash = sha256_file(CORE)
     res = {"command": "install-runtime", "target": str(target), "bundled_sha256": new_hash, "dry_run": not a.apply,
-           "written": False, "backup": None, "request_state_dir": str(request_dir)}
+           "written": False, "backup": None, "request_state_dir": str(request_dir),
+           "bundled_version": file_product_version(CORE)[0], "existing_version": runtime_version(home)[0]}
     if target.is_file():
         old_hash = sha256_file(target)
         res["existing_sha256"] = old_hash
@@ -1520,6 +1524,13 @@ def cmd_install_runtime(home, home_source, argv):
             res["action"] = "refused"
             res["error"] = ("%s already exists and differs from the bundled copy; it may be a running receiver. "
                             "Re-run with --upgrade (and --apply) to replace it with a backup." % target)
+        elif compare_versions(res["existing_version"], res["bundled_version"]) == 1 and not a.allow_downgrade:
+            # SemVer order: a development build such as 0.6.0-dev.1 also sorts above 0.6.0-beta.1. Replacing a newer
+            # runtime can drop features and data handling it has, so it takes an explicit decision.
+            res["action"] = "refused"
+            res["error"] = ("%s is version %s, newer than the bundled %s; replacing it would downgrade the receiver "
+                            "runtime. Keep it, or re-run with --upgrade --allow-downgrade (and --apply) if you "
+                            "decided to go back." % (target, res["existing_version"], res["bundled_version"]))
         else:
             res["action"] = "upgrade"
     else:
@@ -1545,6 +1556,7 @@ def cmd_install_runtime(home, home_source, argv):
         print("%s install-runtime: %s %s%s" % (PRODUCT, verb[res["action"]], target,
                                                "" if res["written"] or res["action"] in ("none", "refused")
                                                else " (dry run; add --apply)"))
+        print("  versions: existing %s, bundled %s" % (res["existing_version"] or "-", res["bundled_version"] or "-"))
         for k in ("error", "backup", "next"):
             if res.get(k):
                 print("  %s: %s" % (k, res[k]))
@@ -1836,7 +1848,8 @@ def bridge_status(home):
 
 
 # ---------------------------------------------------------------- shared helpers for 0.3 commands
-OFFICIAL_REPO_URL = "https://github.com/chekusu/yobiru"
+OFFICIAL_REPO = "chekusu/yobiru"
+OFFICIAL_REPO_URL = "https://github.com/" + OFFICIAL_REPO
 RELEASES_HOST = "api.github.com"
 RELEASES_PATH = "/repos/chekusu/yobiru/releases?per_page=30"   # the list: works when every release is a prerelease
 RELEASE_URL_PREFIX = OFFICIAL_REPO_URL + "/releases/"
@@ -1963,7 +1976,11 @@ class StateLock(object):
 
 def runtime_version(home):
     """Version of the durable <home>/tailmsg.py, read as text (never executed). -> (version or None, how)."""
-    path = home / "tailmsg.py"
+    return file_product_version(home / "tailmsg.py")
+
+
+def file_product_version(path):
+    """PRODUCT_VERSION of a tailmsg.py, read as text (never executed). -> (version or None, how)."""
     if not path.is_file():
         return None, "absent"
     try:
@@ -2698,20 +2715,50 @@ def local_versions(home, f):
     return out
 
 
-def upgrade_steps(f, target=None):
-    steps = ["update the plugin from the official repository (Codex: `codex plugin marketplace upgrade yobiru` "
-             "then `codex plugin add yobiru@yobiru`; Cursor/Grok Bot: update it from the plugin page), then "
-             "start a new conversation",
-             "`%s install-runtime --upgrade` (review), then `--apply`: a plugin update never changes the durable "
-             "receiver runtime" % PRODUCT,
-             "restart the receiver service so the running receiver loads the new runtime",
-             "`%s doctor` and `%s update status`: plugin, runtime and running receiver should all show %s"
-             % (PRODUCT, PRODUCT, target or "the new version"),
-             "`%s update notify` (dry run), then `--apply`, to tell your other installations" % PRODUCT]
+def is_prerelease(version):
+    v = parse_semver(version)
+    return bool(v and v[3])
+
+
+def runtime_step(plugin, runtime):
+    """What to do when the durable runtime differs from this plugin; never advises a downgrade."""
+    if compare_versions(runtime, plugin) == 1:
+        return ("keep the durable runtime: it is newer than this plugin (a development build or a later release), "
+                "and `%s install-runtime` refuses to replace it with an older one unless --allow-downgrade" % PRODUCT)
+    return "`%s install-runtime --upgrade --apply`, then restart the receiver" % PRODUCT
+
+
+def upgrade_steps(f, target=None, release=None):
+    if is_prerelease(target):
+        # Plugin pages and the repository marketplace follow the stable default branch: a prerelease is installed
+        # only from its own tag, and only by an owner who chose it.
+        tag = (release or {}).get("tag") or "v" + target
+        steps = ["%s is a prerelease: plugin updates (Codex `codex plugin marketplace upgrade`, Cursor and Grok Bot "
+                 "plugin pages) follow the stable default branch and never install it. Install exactly %s only "
+                 "if the owner chose this prerelease" % (target, tag),
+                 "from %s download `%s-%s-plugin.zip` and `SHA256SUMS`, compare the archive's SHA-256 with its "
+                 "line in SHA256SUMS, extract it into a new folder (never the data home) and check that `sh "
+                 "<folder>/%s/scripts/%s version` prints %s. Codex: `codex plugin marketplace remove %s` if one "
+                 "is configured, then `codex plugin marketplace add %s --ref %s` and `codex plugin add %s@%s`. "
+                 "Then start a new conversation"
+                 % ((release or {}).get("url") or RELEASE_URL_PREFIX + "tag/" + urllib.parse.quote(tag, safe=""),
+                    PRODUCT, target, PRODUCT, PRODUCT, target, PRODUCT, OFFICIAL_REPO, tag, PRODUCT, PRODUCT)]
+    else:
+        steps = ["update the plugin from the official repository (Codex: `codex plugin marketplace upgrade yobiru` "
+                 "then `codex plugin add yobiru@yobiru`; Cursor/Grok Bot: update it from the plugin page), then "
+                 "start a new conversation"]
+    steps += ["`%s install-runtime --upgrade` (review), then `--apply`: a plugin update never changes the durable "
+              "receiver runtime" % PRODUCT,
+              "restart the receiver service so the running receiver loads the new runtime",
+              "`%s doctor` and `%s update status`: plugin, runtime and running receiver should all show %s"
+              % (PRODUCT, PRODUCT, target or "the new version"),
+              "`%s update notify%s` (dry run), then `--apply`, to tell your other installations"
+              % (PRODUCT, " --channel preview" if is_prerelease(target) else "")]
+    bridge_at = len(steps) - 2
     if f.get("codex_bridge_installed"):
-        steps.insert(3, "if the Codex bridge is installed: `%s codex-bridge install --thread-id <the same UUID> "
-                        "... --dry-run`, then without --dry-run (keeps the session, names and dispatcher "
-                        "instructions)" % PRODUCT)
+        steps.insert(bridge_at, "if the Codex bridge is installed: `%s codex-bridge install --thread-id <the same "
+                                "UUID> ... --dry-run`, then without --dry-run (keeps the session, names and "
+                                "dispatcher instructions)" % PRODUCT)
     return steps
 
 
@@ -2792,16 +2839,20 @@ def update_check(home, home_source, a):
         res.update(channel=a.channel, status="error", error=e.code, latest=None, latest_preview=None)
     nxt = []
     if res["status"] == "update_available":
-        nxt = upgrade_steps(f, res["latest"]["version"])
+        nxt = upgrade_steps(f, res["latest"]["version"], res["latest"])
     elif res["status"] == "no_stable_release" and res.get("latest_preview"):
         nxt = ["no stable release yet; the latest preview is %s: `%s update check --channel preview`"
                % (res["latest_preview"]["version"], PRODUCT)]
+    elif res["status"] == "ahead" and a.channel == "stable" and is_prerelease(versions["plugin"]):
+        nxt = ["this machine runs the prerelease %s and the stable channel lists stable releases only: "
+               "`%s update check --channel preview` also shows newer prereleases" % (versions["plugin"], PRODUCT)]
     elif res["status"] == "error":
         nxt = ["could not reach the official release list (%s); nothing changed, try again later" % res["error"]]
     if versions["runtime"] and versions["runtime"] != versions["plugin"] or versions["runtime_note"] and \
             "older" in versions["runtime_note"]:
-        nxt.append("the durable runtime is %s but the plugin is %s: `%s install-runtime --upgrade --apply`, then "
-                   "restart the receiver" % (versions["runtime"] or "older", versions["plugin"], PRODUCT))
+        nxt.append("the durable runtime is %s but the plugin is %s: %s"
+                   % (versions["runtime"] or "older", versions["plugin"],
+                      runtime_step(versions["plugin"], versions["runtime"])))
     elif versions["receiver"] and versions["receiver"] != versions["runtime"]:
         nxt.append("the running receiver is %s: restart it to load %s" % (versions["receiver"], versions["runtime"]))
     elif versions["receiver_note"] and "older" in versions["receiver_note"]:
@@ -2972,6 +3023,11 @@ def notice_text(me, version, release=None):
                 "updates, follow the yobiru-upgrade skill using only the official repository, keep this "
                 "machine's data, sessions, permissions and custom instructions, and report your status. "
                 "Do not forward this notice."}
+    if is_prerelease(version):
+        notice["prerelease"] = True
+        notice["opt_in"] = ("%s is a prerelease. Install it only if your owner chose this exact prerelease for this "
+                            "machine: an authorization for stable updates does not cover it, and plugin updates never "
+                            "install it. Keep a newer, development or locally modified runtime or bridge." % version)
     if compare_versions(version, "0.4.0") in (0, 1):
         notice["migration"] = {
             "topic": "access-policy-0.4", "new_install_default": "tailnet",
@@ -3412,17 +3468,22 @@ def maintain_once(home, home_source, a):
         plan = [p for p in notice_plan(state, items, probes, target, False) if p["key"] in keys]
         rel = next((r for r in releases or [] if r["version"] == target), None)
         can_send = local_ok and compare_versions(versions["plugin"], target) in (0, 1) and rel is not None
+        held = None
         if rel and rel["prerelease"] and a.channel != "preview":
+            # A stable timer never delivers prerelease notices: an owner who announced a prerelease runs (or
+            # installs a reminder template for) `update maintain --channel preview`.
             can_send = False
+            held = ("%s is a prerelease and this run uses the stable channel: run `%s update maintain --channel "
+                    "preview` (a reminder template made with --channel preview does)" % (target, PRODUCT))
         if a.apply and can_send:
             res["results"].extend(apply_notices(home, me, target, items, probes, False, release=rel,
                                                  notice_keys=keys))
         elif a.apply and plan:
-            res["errors"].append("%s: retry held; need matching local plugin/runtime/receiver at this version "
-                                 "or newer and its official release on the selected channel" % target)
+            res["errors"].append("%s: retry held; %s" % (target, held or "need matching local plugin/runtime/"
+                                 "receiver at this version or newer and its official release on the selected channel"))
         for p in plan:
             p.pop("ip", None)
-        res["plans"].append({"version": target, "ready": can_send, "plan": plan})
+        res["plans"].append({"version": target, "ready": can_send, "held": held, "plan": plan})
     return res
 
 
@@ -3445,6 +3506,8 @@ def update_maintain(home, home_source, a):
         if res["check"]:
             print("  release check: %s" % res["check"]["status"])
         for group in res["plans"]:
+            if group.get("held"):
+                print("  held: %s" % group["held"])
             for p in group["plan"]:
                 print("  %-46s %-15s %s" % (p["key"][:46], p["action"], p["why"]))
         for r in res["results"]:

@@ -1,4 +1,6 @@
 """Packaging: generated files in sync, manifests valid, archives deterministic and complete."""
+import contextlib
+import copy
 import io
 import json
 import os
@@ -142,6 +144,25 @@ class ArchiveTests(unittest.TestCase):
             self.assertIn(root + rel, names)
 
 
+class ReleaseFilesTests(unittest.TestCase):
+    def test_release_writes_this_versions_archives_and_their_checksums_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(0, B.cmd_release(P, tmp))
+            plugin = "%s-%s-plugin.zip" % (P["id"], P["version"])          # the exact version, prerelease included
+            market = "%s-%s-marketplace.zip" % (P["id"], P["version"])
+            self.assertEqual(sorted([plugin, market, "SHA256SUMS"]), sorted(os.listdir(tmp)))
+            sums = [line.split("  ") for line in Path(tmp, "SHA256SUMS").read_text().splitlines()]
+            self.assertEqual([market, plugin], [name for _, name in sums])
+            for digest, name in sums:
+                self.assertEqual(B.sha256(Path(tmp, name).read_bytes()), digest)
+            with zipfile.ZipFile(str(Path(tmp, plugin))) as z:
+                for rel in ("plugin.json", ".codex-plugin/plugin.json", ".cursor-plugin/plugin.json"):
+                    self.assertEqual(P["version"], json.loads(z.read("%s/%s" % (P["id"], rel)).decode())["version"])
+                self.assertIn('\nPRODUCT_VERSION = "%s"' % P["version"],
+                              z.read("%s/scripts/tailmsg.py" % P["id"]).decode("utf-8"))
+
+
 class FixtureTests(unittest.TestCase):
     """The checks must catch what would make an archive differ from the checked tree."""
 
@@ -244,6 +265,22 @@ class FixtureTests(unittest.TestCase):
             self.assertTrue(any("private marker" in e for e in B.validate(P, self.root)))
         finally:
             del os.environ["YOBIRU_PRIVATE_DENYLIST"]
+
+    def test_versions_are_strict_semver_and_a_prerelease_links_its_own_privacy_notice(self):
+        def errors(version, privacy=None):
+            p = copy.deepcopy(P)
+            p["version"] = version
+            if privacy:
+                p["codex"]["privacyPolicyURL"] = privacy
+            return "\n".join(B.validate(p, self.root))
+        for bad in ("0.6.0-beta.01", "0.6.0-beta..1", "0.6.0-", "0.6", "v0.6.0", "0.6.0-beta_1"):
+            self.assertIn("version must be SemVer 2.0", errors(bad), bad)
+        self.assertNotIn("SemVer 2.0", errors("0.6.0-beta.1"))
+        policy = "https://github.com/chekusu/yobiru/blob/%s/docs/PRIVACY.md"
+        for wrong in ("main", "v0.6.0-beta.1"):           # the stable branch, or an earlier prerelease's tag
+            self.assertIn("must point into its own tag", errors("0.6.0-beta.2", policy % wrong), wrong)
+        self.assertNotIn("must point into its own tag", errors("0.6.0-beta.2", policy % "v0.6.0-beta.2"))
+        self.assertNotIn("must point into its own tag", errors("0.6.0", policy % "main"))
 
     def test_manifest_drift_and_bad_skill_names_are_reported(self):
         m = self.base / ".cursor-plugin" / "plugin.json"

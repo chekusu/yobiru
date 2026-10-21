@@ -20,6 +20,9 @@ GUIDE = "docs/PUBLIC_BOTS.md"
 DEMO = "examples/public-bot-demo.sh"
 SKILLS = ("yobiru-public-bot", "yobiru-bot-contacts")
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
+# "Version 0.6.0-beta.1. Source: ..." -> the whole SemVer, dotted prerelease identifiers included, before the full stop
+SEMVER = r"\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+VERSION_LINE = re.compile(r"^Version (" + SEMVER + r")\.(?=\s|$)", re.M)
 
 
 def prose(text):
@@ -52,7 +55,13 @@ def section(text, heading):
 class BundledGuideTests(unittest.TestCase):
     def test_plugin_readme_states_the_packaged_version(self):
         text = (PLUGIN / "README.md").read_text(encoding="utf-8")
-        self.assertEqual([P["version"]], re.findall(r"^Version (\d+\.\d+\.\d+[^ .]*)\.", text, re.M))
+        self.assertEqual([P["version"]], VERSION_LINE.findall(text))
+        self.assertRegex(P["version"], B.SEMVER_RE)
+
+    def test_version_statement_keeps_dotted_prereleases_whole(self):
+        for version in ("0.5.3", "0.6.0-beta.1", "1.0.0-rc.1.2", "0.6.0-beta.1+build.7"):
+            self.assertEqual([version], VERSION_LINE.findall("Intro.\nVersion %s. Source: x.\n" % version))
+        self.assertEqual([], VERSION_LINE.findall("Version 0.6.0-beta.1 has no full stop here\n"))
 
     def test_guide_and_demo_ship_in_the_archive_as_checked_files(self):
         self.assertEqual(GUIDE, P["bundle"]["publicBots"][GUIDE])
@@ -100,16 +109,28 @@ class BundledGuideTests(unittest.TestCase):
 
     def test_repository_links_into_the_guide_name_existing_sections(self):
         names = anchors((REPO / GUIDE).read_text(encoding="utf-8"))
+        # CHANGELOG.md links the guide of a release by its tag, so the same entry also reads correctly on the default
+        # branch, which may not have the guide: such a link must name a release tag, and this release's own tag must
+        # name an existing section of this guide.
+        pinned = re.compile(r"^%s/blob/v(%s)/%s\Z" % (re.escape(P["repository"]), SEMVER, re.escape(GUIDE)))
         docs = sorted(REPO.glob("*.md")) + sorted((REPO / "docs").glob("*.md"))
         checked = 0
         for path in docs:
             for target in LINK.findall(prose(path.read_text(encoding="utf-8"))):
                 file_part, _, anchor = target.partition("#")
-                if file_part.endswith("PUBLIC_BOTS.md"):
+                if not file_part.endswith("PUBLIC_BOTS.md"):
+                    continue
+                if re.match(r"^[a-z][a-z0-9+.-]*:", file_part):
+                    tag = pinned.match(file_part)
+                    self.assertIsNotNone(tag, "%s: a link to the guide must name a release tag: %s"
+                                         % (path.name, target))
+                    if tag.group(1) != P["version"]:
+                        continue
+                else:
                     self.assertEqual(REPO / GUIDE, (path.parent / file_part).resolve(), "%s: %s" % (path.name, target))
-                    if anchor:
-                        self.assertIn(anchor, names, "%s: %s" % (path.name, target))
-                    checked += 1
+                if anchor:
+                    self.assertIn(anchor, names, "%s: %s" % (path.name, target))
+                checked += 1
         self.assertGreater(checked, 5)
 
     def test_walkthrough_runs_the_demo_and_defines_every_value(self):
