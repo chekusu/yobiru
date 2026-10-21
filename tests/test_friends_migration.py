@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 from support.pkg import REPO
-from support.public_harness import C, PUBLIC, FriendsGateway, plain_env
+from support.public_harness import PUBLIC, FriendsGateway, plain_env
 
 
 class MigrationTests(unittest.TestCase):

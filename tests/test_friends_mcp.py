@@ -10,7 +10,6 @@ Real bot_gateway.py subprocesses, a real bot_client.py subprocess for stdio, syn
 """
 import hashlib
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -273,6 +272,26 @@ class FlowTests(McpCase):
         self.assertEqual([], self.ok_tool(wtoken, "yobiru_host_notices", {})["notices"])
         self.assertTrue(self.ok_tool(token, "yobiru_message_status", {"message_id": notice["message_id"]})
                         ["lifecycle"]["agent_acknowledged_at"])
+
+    def test_withdrawn_files_are_withheld_from_mcp_reads(self):
+        bot_id = self.files_bot()
+        wtoken, _ = self.gw.native(bot_id)
+        actor_id, token = self.gw.actor()
+        mid = self.ok_tool(token, "yobiru_send_message", {"bot": bot_id, "op_key": "files-001", "text": "file",
+                                                          "attachments": [{"name": "q.md", "content": "Q-SECRET"}]})[
+            "message_id"]
+        self.assertEqual(200, self.gw.admit(bot_id, mid)[0])
+        job = self.ok_tool(wtoken, "yobiru_host_claim", {"job_id": mid})
+        self.ok_tool(wtoken, "yobiru_host_reply", {"job_id": mid, "lease_id": job["lease"]["lease_id"],
+                                                   "fence": job["lease"]["fence"], "text": "a",
+                                                   "attachments": [{"name": "a.md", "content": "A-SECRET"}]})
+        self.assertEqual(200, self.gw.approve_reply(bot_id, mid)[0])
+        self.assertEqual(200, self.gw.contact(bot_id, actor_id, "restrict", ["faq", "leave_message", "chat"])[0])
+        for name, args in (("yobiru_message_status", {"message_id": mid}), ("yobiru_inbox", {}),
+                           ("yobiru_history", {"conversation_id": job["conversation_id"]})):
+            text = json.dumps(self.ok_tool(token, name, args))
+            self.assertNotIn("SECRET", text, name)
+        self.assertIn("result_withheld", self.ok_tool(token, "yobiru_message_status", {"message_id": mid}))
 
     def test_revocation_reaches_the_mcp_tools(self):
         bot_id = self.gw.bot(self.handle())

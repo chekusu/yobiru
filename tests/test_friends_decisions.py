@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from support.public_harness import C, FriendsGateway
+from support.public_harness import FriendsGateway
 
 import bot_gateway as G  # noqa: E402  (on sys.path through the harness)
 
