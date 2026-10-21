@@ -268,13 +268,18 @@ class BridgeIntegration(unittest.TestCase):
         self.assertEqual(self.inspect('messages'), [])
 
     def test_more_than_one_page_is_forwarded_without_dropping_items(self):
-        for index in range(21):
+        for index in range(41):
             self.send_to_bridge('page-%d' % index)
+        # A page budget is a batch boundary: the run forwards and acknowledges what it read, and the next run
+        # resumes from the saved cursor, here reading two pages at once.
+        budget = self.run_bridge('--max-pages', '1')
+        self.assertEqual(budget.returncode, 0, budget.stdout + budget.stderr)
+        self.assertEqual((20, 20), (len(self.records('alpha')), len(self.inspect('receipts'))))
         result = self.run_bridge()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(len(self.records('alpha')), 21)
+        self.assertEqual(len(self.records('alpha')), 41)
         receipts = self.inspect('receipts')
-        self.assertEqual(len(receipts), 21)
+        self.assertEqual(len(receipts), 41)
         self.assertTrue(all(row['stage'] == 2 for row in receipts))
 
     def test_lost_waypost_response_retries_the_identical_write_without_duplicates(self):

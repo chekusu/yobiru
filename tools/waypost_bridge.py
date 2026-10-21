@@ -494,7 +494,9 @@ class Bridge:
                     self.journal.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', ('cursor', cursor))
             if not page['has_more']:
                 return planned, refused, failures
-        raise BridgeError('WAYPOST_PAGE_BUDGET_REACHED', True)
+        # The page budget is a batch boundary, not a failure: this run forwards and acknowledges what it read,
+        # and the next one resumes from the saved cursor.
+        return planned, refused, failures
 
     def ack(self, item_id, stage):
         request_id = 'yb-ack-' + hashlib.sha256(canonical([self.identity['space_id'],

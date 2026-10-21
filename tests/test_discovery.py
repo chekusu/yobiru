@@ -215,7 +215,6 @@ class NativeNameCacheTests(unittest.TestCase):
         gate.set()
 
 
-@unittest.skipUnless(os.name == "posix", "process groups")
 def process_state(pid):
     """'running', 'zombie' or 'gone'. kill(pid, 0) also succeeds for a process that was killed but not yet reaped
     by its parent, which can last indefinitely under a container init that does not reap orphans. The state is
@@ -242,6 +241,7 @@ GRANDCHILD_SCRIPT = ("import subprocess, sys, time\n"
                      "time.sleep(60)\n")
 
 
+@unittest.skipUnless(os.name == "posix", "process groups")
 class BoundedLookupTests(unittest.TestCase):
     def assert_ended(self, pid):
         for _ in range(50):
