@@ -278,6 +278,10 @@ def parse_config(raw):
     return cfg, out
 
 
+class TailscaleUnavailable(RuntimeError):
+    """The CLI timed out or could not connect to the local Tailscale daemon."""
+
+
 class Ctx:
     def __init__(self, home):
         self.home = Path(home).expanduser()
@@ -303,18 +307,20 @@ class Ctx:
         return cached_native_name(self.home, binding, self._name_cache, self._name_guard, self._name_lookup)
 
     # -------- tailscale CLI (LocalAPI) --------
-    def ts(self, *args):
+    def ts(self, *args, timeout=15):
         cmd = list(self.cfg["tailscale_cmd"]) + list(args)
         try:
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         except FileNotFoundError:
             raise RuntimeError("tailscale CLI not found: %r (set tailscale_cmd in config.json)" % cmd[0])
         except subprocess.TimeoutExpired:
-            raise RuntimeError("tailscale CLI timed out: %r" % cmd)
+            raise TailscaleUnavailable("tailscale CLI timed out: %r" % cmd)
         if p.returncode != 0:
             err = (p.stderr or p.stdout).strip()
-            if re.search(r"permission denied|access denied|operation not permitted", err, re.I):
+            if re.search(r"permission denied|access (?:is )?denied|operation not permitted", err, re.I):
                 err += ' (hint: set "tailscale_cmd": ["sudo","-n","tailscale"] in config.json)'
+            elif re.search(r"failed to connect to local (?:tailscaled|tailscale daemon)\b", err, re.I):
+                raise TailscaleUnavailable("%s: %s" % (" ".join(cmd), err))
             raise RuntimeError("%s: %s" % (" ".join(cmd), err))
         return p.stdout
 
@@ -326,7 +332,11 @@ class Ctx:
         if hit and hit[0] > time.time():
             return hit[1]
         try:
-            d = json.loads(self.ts("whois", "--json", ip))
+            # Keep a stalled identity lookup below the sender's five-second /info timeout.
+            d = json.loads(self.ts("whois", "--json", ip, timeout=3))
+        except TailscaleUnavailable:
+            log("whois temporarily unavailable for", ip)
+            raise
         except Exception as e:
             log("whois failed for", ip, e)
             return None
@@ -822,11 +832,13 @@ def make_handler(ctx, me):
         def log_message(self, fmt, *a):
             log(self.client_address[0], fmt % a)
 
-        def reply(self, code, obj):
+        def reply(self, code, obj, headers=None):
             body = json.dumps(obj, ensure_ascii=False).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
 
@@ -835,7 +847,12 @@ def make_handler(ctx, me):
             if not is_tailnet_ip(ip):
                 self.reply(403, {"ok": False, "error": "not a tailnet address"})
                 return None
-            ident = ctx.whois(ip)
+            try:
+                ident = ctx.whois(ip)
+            except TailscaleUnavailable:
+                self.reply(503, {"ok": False, "error": "identity lookup unavailable",
+                                 "code": "identity_unavailable"}, {"Retry-After": "1"})
+                return None
             if not isinstance(ident, dict) or not ident.get("node"):
                 self.reply(403, {"ok": False, "error": "unknown tailnet peer"})
                 return None
