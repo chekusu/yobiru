@@ -59,7 +59,8 @@ was tested against a fake `openclaw`.
   against a strict pattern; reject ids starting with `-`. Keep message text out of the prompt: the
   turn reads it with `sh Y show ID` as untrusted data.
 - Detach and return 0 at once. The receiver retries an adapter that exits non-zero or times out,
-  so fail only before anything was sent.
+  so fail only before anything was sent. A run that succeeded is never repeated, even when the
+  receiver cannot record its outcome (`wake_delivery` is then missing from the record).
 - Send at most one turn per invocation:
 
       openclaw agent --session-key KEY --message TEMPLATE --deliver --reply-channel CHANNEL --reply-to TARGET --timeout SECONDS --json
