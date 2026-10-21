@@ -152,8 +152,11 @@ For an existing installation, use this sequence only within the owner's migratio
 5. Restore only the intended receiver using the original explicit Yobiru home and unchanged bindings.
    Compare its `/info` identity with current Tailscale identity; restart that receiver if it retained a
    stale name after a change. Verify receiver version, session and all agent adapters, then a harmless
-   tracked request and final result in both directions with an owner-selected peer. Reconcile existing
-   uncertain requests instead of rerunning them.
+   tracked request and final result with an owner-selected peer. For push transport, verify both
+   directions. For one-way shared connections using `request-pull-v1`, verify the visitor uploads,
+   polls the final result and downloads the result files with matching hashes; no visitor receiver
+   or reverse connection is required. See [one-way sharing](SHARING.md). Reconcile existing uncertain
+   requests instead of rerunning them.
 
 The skills provide this procedure; Yobiru does not automatically migrate Tailscale state or install
 a host recovery script. Report separately what was configured, whether identity was retained and

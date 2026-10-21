@@ -1,0 +1,576 @@
+"""One-way sharing over real HTTP with fake Tailscale and isolated local state.
+
+Only the destination runs a receiver. Its socket.connect is instrumented to fail
+and record every outbound attempt, so successful requests cannot accidentally
+depend on a reverse route. No test can use real Tailscale or a production home.
+"""
+import copy
+import contextlib
+import datetime as dt
+import hashlib
+import http.client
+import json
+import os
+import secrets
+import signal
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import unittest
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+from support.pkg import REPO, SUPPORT, free_port
+
+
+ALPHA_ID = "shared-alpha-stable"
+BRAVO_ID = "destination-bravo-stable"
+CHARLIE_ID = "unrelated-charlie-stable"
+
+
+def principal(stable_id):
+    return "node:" + stable_id.encode("utf-8").hex()
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def status_node(name, stable_id):
+    return {"ID": stable_id, "DNSName": name + ".example.ts.net.", "HostName": name,
+            "TailscaleIPs": ["127.0.0.1"], "Online": True, "UserID": 1001}
+
+
+def identity(name="", stable_id=ALPHA_ID, address="127.0.0.1/32", user=1001):
+    return {"Node": {"Name": name + ".example.ts.net." if name else "", "StableID": stable_id,
+                     "ID": 101, "User": user, "Addresses": [address], "Hostinfo": {}, "Tags": []},
+            "UserProfile": {"ID": user, "LoginName": "alpha@example.com"}}
+
+
+HARNESS = r'''
+import importlib.util
+import ipaddress
+import json
+import os
+import socket
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("tailmsg", sys.argv[1])
+core = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(core)
+core.TAILNET_NETS.append(ipaddress.ip_network("127.0.0.0/8"))
+if os.environ.get("TEST_CLOCK"):
+    actual_now = core.now_utc
+    def now():
+        path = Path(os.environ["TEST_CLOCK"])
+        return core.parse_iso(path.read_text().strip()) if path.exists() else actual_now()
+    core.now_utc = now
+if os.environ.get("TEST_FORBID_OUTBOUND"):
+    def forbidden_connect(self, address):
+        with open(os.environ["TEST_FORBID_OUTBOUND"], "a") as stream:
+            stream.write(json.dumps(address) + "\n")
+        raise OSError("test: destination must never initiate a reverse connection")
+    socket.socket.connect = forbidden_connect
+if os.environ.get("TEST_LOSE_RESPONSE"):
+    original_request = core.http.client.HTTPConnection.request
+    original_response = core.http.client.HTTPConnection.getresponse
+    def request(self, method, url, *args, **kwargs):
+        self._test_request = (method, url)
+        return original_request(self, method, url, *args, **kwargs)
+    def getresponse(self):
+        result = original_response(self)
+        marker = Path(os.environ["TEST_LOSE_RESPONSE"])
+        if getattr(self, "_test_request", (None,))[0] == "PUT" and not marker.exists():
+            marker.write_text("accepted upload response lost")
+            result.read()
+            self.close()
+            raise ConnectionResetError("test: upload succeeded but its response was lost")
+        return result
+    core.http.client.HTTPConnection.request = request
+    core.http.client.HTTPConnection.getresponse = getresponse
+sys.argv = sys.argv[1:]
+sys.exit(core.main())
+'''
+
+
+class SharedRequestTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="yobiru one-way sharing ")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        user_home = self.root / "isolated user"
+        user_home.mkdir()
+        empty_path = self.root / "empty PATH"
+        empty_path.mkdir()
+        self.env = {"HOME": str(user_home), "PATH": str(empty_path), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
+        self.env["TEST_CLOCK"] = str(self.root / "test clock")
+        self.harness = self.root / "one_way_harness.py"
+        self.harness.write_text(HARNESS)
+        self.reverse_attempts = self.root / "forbidden outbound.jsonl"
+        self.homes, self.states = {}, {}
+        self.port = free_port()
+        self.client_port = free_port()
+        while self.client_port == self.port:
+            self.client_port = free_port()
+        self.server = None
+        self.addCleanup(self.stop)
+        for name, own_id, other, other_id, port in (
+                ("alpha", ALPHA_ID, "bravo", BRAVO_ID, self.client_port),
+                ("bravo", BRAVO_ID, "alpha", ALPHA_ID, self.port)):
+            home = self.root / (name + " data")
+            home.mkdir()
+            self.homes[name] = home
+            # The destination's status has no route/name for the shared source.
+            peers = {"peer": status_node(other, other_id)} if name == "alpha" else {}
+            state = {"status": {"BackendState": "Running", "Self": status_node(name, own_id), "Peer": peers},
+                     "whois": identity("bravo", BRAVO_ID) if name == "alpha" else identity(),
+                     "calls": str(self.root / (name + " tailscale calls.jsonl"))}
+            self.states[name] = self.root / (name + " tailscale.json")
+            self.states[name].write_text(json.dumps(state))
+            config = {"port": port, "bind": "127.0.0.1", "access_policy": "tailnet",
+                      "self_agent": "worker", "default_agent": "worker", "agents": {"worker": {}},
+                      "tailscale_cmd": [sys.executable, str(SUPPORT / "fake_tailscale.py"), "--state", str(self.states[name])]}
+            (home / "config.json").write_text(json.dumps(config))
+        self.start()
+
+    def command(self, name, *args):
+        return [sys.executable, str(self.harness), str(REPO / "tailmsg.py"), "--home", str(self.homes[name])] + list(args)
+
+    def environment(self, name, extra=None):
+        env = dict(self.env)
+        if name == "bravo":
+            env["TEST_FORBID_OUTBOUND"] = str(self.reverse_attempts)
+        env.update(extra or {})
+        return env
+
+    def start(self):
+        self.assertIsNone(self.server)
+        log_path = self.root / "receiver.log"
+        with log_path.open("a") as stream:
+            self.server = subprocess.Popen(self.command("bravo", "serve"), cwd=str(self.root),
+                                           env=self.environment("bravo"), stdout=stream,
+                                           stderr=subprocess.STDOUT, start_new_session=True)
+        deadline = time.monotonic() + 10
+        while self.server.poll() is None and time.monotonic() < deadline:
+            try:
+                if self.http("GET", "/health")[0] == 200:
+                    return
+            except OSError:
+                pass
+            time.sleep(0.05)
+        self.fail("destination receiver did not start: " + log_path.read_text())
+
+    def stop(self):
+        proc, self.server = self.server, None
+        if proc is not None:
+            if proc.poll() is None:
+                os.killpg(proc.pid, signal.SIGTERM)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(timeout=5)
+
+    def restart(self):
+        self.stop()
+        self.start()
+
+    def tm(self, name, *args, extra=None):
+        return subprocess.run(self.command(name, *args), cwd=str(self.root), env=self.environment(name, extra),
+                              capture_output=True, text=True, timeout=20)
+
+    def tm_json(self, name, *args, extra=None):
+        result = self.tm(name, *args, extra=extra)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        return json.loads(result.stdout)
+
+    def http(self, method, path, body=None, headers=None):
+        headers = dict(headers or {})
+        if isinstance(body, dict):
+            body = json.dumps(body).encode()
+            headers.setdefault("Content-Type", "application/json")
+        elif body is not None:
+            headers.setdefault("Content-Type", "application/octet-stream")
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            connection.request(method, path, body=body, headers=headers)
+            response = connection.getresponse()
+            content = response.read()
+            if "json" in (response.getheader("Content-Type") or ""):
+                content = json.loads(content)
+            return response.status, content
+        finally:
+            connection.close()
+
+    def address(self):
+        return "bravo:%d/worker" % self.port
+
+    def state(self, mid, refresh=True):
+        args = ["request", "status", mid, "--json"]
+        if refresh:
+            args.append("--refresh")
+        return self.tm_json("alpha", *args)
+
+    def request(self, *files):
+        args = ["request", "send", self.address(), "Inspect the uploaded sample", "--transport", "pull", "--wake", "none"]
+        for path in files:
+            args += ["--file", str(path)]
+        result = self.tm_json("alpha", *args)
+        self.assertEqual(202, result["status"])
+        return result["id"]
+
+    def rows(self, name, sql, args=()):
+        with contextlib.closing(sqlite3.connect(str(self.homes[name] / "requests" / "ledger.sqlite3"))) as connection:
+            connection.row_factory = sqlite3.Row
+            return [dict(row) for row in connection.execute(sql, args)]
+
+    def set_identity(self, whois):
+        state = json.loads(self.states["bravo"].read_text())
+        state["whois"] = whois
+        self.states["bravo"].write_text(json.dumps(state))
+        self.restart()  # also clears the authentication cache
+
+    def no_reverse_connections(self):
+        self.assertFalse(self.reverse_attempts.exists(), self.reverse_attempts.read_text() if self.reverse_attempts.exists() else "")
+        self.assertEqual([], self.rows("bravo", "SELECT id FROM response_outbox"))
+
+    def envelope(self, data=b"sample", name="sample.bin"):
+        mid, token = secrets.token_hex(8), secrets.token_urlsafe(32)
+        return {"v": 1, "id": mid, "from": principal(ALPHA_ID), "to": "bravo.example.ts.net",
+                "ts": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "kind": "request", "text": "Inspect staged sample", "agent": "worker", "from_agent": "worker", "wake": "none",
+                "request": {"timeout_seconds": 900, "reply_port": self.client_port, "transport": "pull",
+                            "uploads": [{"token": token, "name": name, "sha256": digest(data), "size": len(data),
+                                         "mime": "application/octet-stream"}]}}
+
+    def upload_path(self, env):
+        return "/requests/%s/uploads/%s" % (env["id"], env["request"]["uploads"][0]["token"])
+
+    def final_with_file(self):
+        mid = self.request()
+        artifact = self.root / "private result.txt"
+        data = b"Private result for the original shared node.\n" * 100
+        artifact.write_bytes(data)
+        self.tm_json("bravo", "reply", mid, "Finished", "--file", str(artifact))
+        response = self.state(mid)["response"]
+        return mid, response, data
+
+    def test_nameless_shared_peer_round_trip_has_no_client_receiver_or_reverse_connections(self):
+        source = self.root / "input sample.bin"
+        data = bytes(range(256)) * 1024 + "Shared request \u2713".encode()
+        source.write_bytes(data)
+        mid = self.request(source)
+        source.write_bytes(b"changed after upload")
+        record = self.tm_json("bravo", "show", mid)
+        self.assertEqual(principal(ALPHA_ID), record["envelope"]["from"])
+        self.assertEqual(ALPHA_ID, record["received"]["peer"]["stable_id"])
+        fetched = self.tm("bravo", "fetch", mid)
+        self.assertEqual(0, fetched.returncode, fetched.stdout + fetched.stderr)
+        received = self.homes["bravo"] / "inbox" / mid / "files" / source.name
+        self.assertEqual(digest(data), digest(received.read_bytes()))
+        self.assertEqual("received", self.state(mid)["state"])
+        self.tm_json("bravo", "request", "respond", mid, "Working on the uploaded data", "--state", "running")
+        self.assertEqual("running", self.state(mid)["state"])
+        self.restart()
+        self.assertEqual("running", self.state(mid)["state"])
+        artifact = self.root / "verified result.txt"
+        result_data = "The result from one-way sharing \u2713\n".encode() * 4096
+        artifact.write_bytes(result_data)
+        self.tm_json("bravo", "reply", mid, "Completed with the verified result", "--file", str(artifact))
+        artifact.write_bytes(b"edited after response snapshot")
+        self.restart()
+        state = self.state(mid)
+        self.assertEqual("completed", state["state"])
+        self.assertTrue(state["outcome_known"])
+        self.assertEqual("Completed with the verified result", state["response"]["text"])
+        response_id = state["response"]["id"]
+        fetched = self.tm("alpha", "fetch", response_id)
+        self.assertEqual(0, fetched.returncode, fetched.stdout + fetched.stderr)
+        downloaded = self.homes["alpha"] / "inbox" / response_id / "files" / artifact.name
+        self.assertEqual(len(result_data), downloaded.stat().st_size)
+        self.assertEqual(digest(result_data), digest(downloaded.read_bytes()))
+        self.assertEqual([], list((self.homes["alpha"] / "inbox").glob("*.json")))
+        self.no_reverse_connections()
+
+    def test_resume_after_lost_upload_response_and_restart_preserves_id_and_snapshot(self):
+        source = self.root / "resume snapshot.bin"
+        data = b"immutable upload snapshot\x00" * 8192
+        source.write_bytes(data)
+        marker = self.root / "lost response marker"
+        failed = self.tm("alpha", "request", "send", self.address(), "Resume safely", "--transport", "pull",
+                         "--wake", "none", "--file", str(source), extra={"TEST_LOSE_RESPONSE": str(marker)})
+        self.assertNotEqual(0, failed.returncode, failed.stdout + failed.stderr)
+        self.assertTrue(marker.exists(), failed.stdout + failed.stderr)
+        rows = self.rows("alpha", "SELECT id FROM requests WHERE direction='outgoing'")
+        self.assertEqual(1, len(rows))
+        mid = rows[0]["id"]
+        source.write_bytes(b"source was changed before resuming")
+        self.restart()
+        resumed = self.tm_json("alpha", "request", "resume", mid)
+        self.assertIn(resumed["status"], (200, 202))
+        self.assertEqual(mid, resumed["id"])
+        repeated = self.tm_json("alpha", "request", "resume", mid)
+        self.assertEqual(mid, repeated["id"])
+        self.assertEqual(1, len(list((self.homes["bravo"] / "inbox").glob("*.json"))))
+        self.assertEqual("received", self.state(mid)["state"])
+        self.assertEqual(data, (self.homes["bravo"] / "inbox" / mid / "files" / source.name).read_bytes())
+        self.no_reverse_connections()
+
+    def test_upload_requires_preparation_correct_token_complete_size_and_hash(self):
+        data = b"validated staged upload"
+        env = self.envelope(data)
+        route = self.upload_path(env)
+        self.assertIn(self.http("PUT", route, data)[0], (404, 409))
+        self.assertIn(self.http("POST", "/requests/prepare", env)[0], (200, 201))
+        self.assertEqual(200, self.http("POST", "/requests/prepare", env)[0])
+        self.assertIn(self.http("POST", "/msg", env)[0], (400, 409))
+        wrong = route.rsplit("/", 1)[0] + "/" + secrets.token_urlsafe(32)
+        self.assertEqual(404, self.http("PUT", wrong, data)[0])
+        for bad in (b"x" * len(data), data[:-1], data + b"x"):
+            with self.subTest(upload_bytes=len(bad)):
+                self.assertIn(self.http("PUT", route, bad)[0], (400, 409, 413, 422))
+                self.assertFalse((self.homes["bravo"] / "inbox" / (env["id"] + ".json")).exists())
+        self.assertIn(self.http("PUT", route, data)[0], (200, 201))
+        self.assertEqual(200, self.http("PUT", route, data)[0])
+        changed = copy.deepcopy(env)
+        changed["request"]["uploads"][0]["sha256"] = "0" * 64
+        self.assertEqual(409, self.http("POST", "/requests/prepare", changed)[0])
+        self.assertEqual(202, self.http("POST", "/msg", env)[0])
+        self.assertEqual(200, self.http("POST", "/msg", env)[0])
+        self.assertEqual(data, (self.homes["bravo"] / "inbox" / env["id"] / "files" / "sample.bin").read_bytes())
+        self.no_reverse_connections()
+
+    def test_status_upload_and_result_are_bound_to_original_stable_identity(self):
+        mid, response, secret = self.final_with_file()
+        file_path = urllib.parse.urlparse(response["fetch"][0]["url"]).path
+        staged = self.envelope()
+        self.assertIn(self.http("POST", "/requests/prepare", staged)[0], (200, 201))
+        self.set_identity(identity("alpha", CHARLIE_ID))  # same claimed DNS name, different authenticated node
+        code, body = self.http("GET", "/requests/" + mid)
+        self.assertEqual(404, code)
+        self.assertNotIn("Finished", json.dumps(body))
+        code, content = self.http("GET", file_path)
+        self.assertEqual(404, code)
+        self.assertNotEqual(secret, content)
+        self.assertIn(self.http("PUT", self.upload_path(staged), b"sample")[0], (403, 404, 409))
+        self.assertIn(self.http("POST", "/requests/prepare", staged)[0], (403, 409))
+        self.set_identity(identity("renamed-alpha", ALPHA_ID))
+        self.assertEqual(200, self.http("GET", "/requests/" + mid)[0])
+        self.assertEqual((200, secret), self.http("GET", file_path))
+        self.no_reverse_connections()
+
+    def test_forged_principal_and_unverified_shared_identity_are_rejected(self):
+        for sender in (principal(CHARLIE_ID), "alpha.example.ts.net", "bravo.example.ts.net"):
+            with self.subTest(sender=sender):
+                env = self.envelope()
+                env["from"] = sender
+                self.assertIn(self.http("POST", "/requests/prepare", env)[0], (400, 403))
+        for raw in (identity(stable_id=""), identity(address="127.0.0.2/32"), {"Node": {"Name": ""}}):
+            with self.subTest(identity=raw):
+                self.set_identity(raw)
+                self.assertEqual(403, self.http("GET", "/info")[0])
+        self.assertEqual([], list((self.homes["bravo"] / "inbox").glob("*.json")))
+
+    def test_poll_rejects_destination_replacement_with_same_dns_name(self):
+        mid = self.request()
+        self.assertEqual("received", self.state(mid)["state"])
+        self.tm_json("bravo", "reply", mid, "Original destination completed the work")
+        path = self.states["alpha"]
+        state = json.loads(path.read_text())
+        state["whois"] = identity("bravo", CHARLIE_ID)
+        path.write_text(json.dumps(state))
+        refreshed = self.state(mid)
+        self.assertEqual("unavailable", refreshed["refresh"])
+        self.assertEqual("received", refreshed["state"])
+        self.assertFalse(refreshed["outcome_known"])
+        self.assertIn("identity", refreshed["refresh_error"])
+        state["whois"] = identity("bravo", BRAVO_ID)
+        path.write_text(json.dumps(state))
+        self.assertEqual("completed", self.state(mid)["state"])
+        self.no_reverse_connections()
+
+    def test_revoked_access_denies_status_and_file_even_with_valid_token(self):
+        mid, response, _ = self.final_with_file()
+        route = urllib.parse.urlparse(response["fetch"][0]["url"]).path
+        staged = self.envelope()
+        self.assertIn(self.http("POST", "/requests/prepare", staged)[0], (200, 201))
+        path = self.homes["bravo"] / "config.json"
+        cfg = json.loads(path.read_text())
+        cfg["deny"] = ["user:alpha@example.com"]
+        path.write_text(json.dumps(cfg))
+        self.restart()
+        for method, path, body in (("GET", "/requests/" + mid, None), ("GET", route, None),
+                                   ("PUT", self.upload_path(staged), b"sample"),
+                                   ("POST", "/requests/prepare", self.envelope())):
+            with self.subTest(path=path):
+                self.assertEqual(403, self.http(method, path, body)[0])
+        self.no_reverse_connections()
+
+    def test_removing_allowlist_entry_revokes_pull_file_token(self):
+        path = self.homes["bravo"] / "config.json"
+        cfg = json.loads(path.read_text())
+        cfg.update(access_policy="allowlist", allow=["user:alpha@example.com"])
+        path.write_text(json.dumps(cfg))
+        self.restart()
+        mid, response, expected = self.final_with_file()
+        route = urllib.parse.urlparse(response["fetch"][0]["url"]).path
+        self.assertEqual((200, expected), self.http("GET", route))
+        cfg["allow"] = []
+        path.write_text(json.dumps(cfg))
+        self.restart()
+        self.assertEqual(403, self.http("GET", "/requests/" + mid)[0])
+        self.assertEqual(403, self.http("GET", route)[0])
+        self.no_reverse_connections()
+
+    def test_fetch_rejects_destination_replacement_with_same_dns_name(self):
+        _, response, expected = self.final_with_file()
+        item = response["fetch"][0]
+        target = self.homes["alpha"] / "inbox" / response["id"] / "files" / item["name"]
+        path = self.states["alpha"]
+        state = json.loads(path.read_text())
+        state["whois"] = identity("bravo", CHARLIE_ID)
+        path.write_text(json.dumps(state))
+        result = self.tm("alpha", "fetch", response["id"])
+        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("identity", (result.stdout + result.stderr).lower())
+        self.assertFalse(target.exists())
+        state["whois"] = identity("bravo", BRAVO_ID)
+        path.write_text(json.dumps(state))
+        result = self.tm("alpha", "fetch", response["id"])
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(digest(expected), digest(target.read_bytes()))
+        self.no_reverse_connections()
+
+    def test_reassigned_source_ip_cannot_use_cached_principal_without_restart(self):
+        mid, response, secret = self.final_with_file()
+        route = urllib.parse.urlparse(response["fetch"][0]["url"]).path
+        staged = self.envelope()
+        self.assertEqual(201, self.http("POST", "/requests/prepare", staged)[0])
+        self.assertEqual(200, self.http("GET", "/requests/" + mid)[0])
+        self.assertEqual((200, secret), self.http("GET", route))
+        # Deliberately retain the running receiver and its freshly populated whois cache.
+        path = self.states["bravo"]
+        state = json.loads(path.read_text())
+        state["whois"] = identity("alpha", CHARLIE_ID)
+        path.write_text(json.dumps(state))
+        self.assertEqual(404, self.http("GET", "/requests/" + mid)[0])
+        self.assertEqual(404, self.http("GET", route)[0])
+        self.assertEqual(404, self.http("PUT", self.upload_path(staged), b"sample")[0])
+        self.assertEqual(403, self.http("POST", "/requests/prepare", staged)[0])
+        self.assertEqual(403, self.http("POST", "/msg", staged)[0])
+        self.assertFalse((self.homes["bravo"] / "inbox" / (staged["id"] + ".json")).exists())
+        state["whois"] = identity("renamed-alpha", ALPHA_ID)
+        path.write_text(json.dumps(state))
+        self.assertEqual(200, self.http("GET", "/requests/" + mid)[0])
+        self.assertEqual((200, secret), self.http("GET", route))
+        self.no_reverse_connections()
+
+    def test_expired_uncommitted_uploads_are_closed_and_late_commit_never_restarts(self):
+        clock = Path(self.env["TEST_CLOCK"])
+        current = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+        clock.write_text(current.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        staged = self.envelope()
+        staged["request"]["timeout_seconds"] = 30
+        accepted = self.envelope(b"accepted")
+        accepted["request"]["timeout_seconds"] = 30
+        for env, body in ((staged, b"sample"), (accepted, b"accepted")):
+            env["ts"] = current.strftime("%Y-%m-%dT%H:%M:%SZ")
+            self.assertEqual(201, self.http("POST", "/requests/prepare", env)[0])
+            self.assertEqual(201, self.http("PUT", self.upload_path(env), body)[0])
+        self.assertEqual(202, self.http("POST", "/msg", accepted)[0])
+        clock.write_text((current + dt.timedelta(seconds=31)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        code, error = self.http("POST", "/requests/prepare", staged)
+        self.assertEqual(409, code)
+        self.assertIn("deadline", error["error"])
+        self.assertEqual(404, self.http("PUT", self.upload_path(staged), b"sample")[0])
+        # A commit already in flight can arrive late; it records an explicit timeout.
+        self.assertEqual(202, self.http("POST", "/msg", staged)[0])
+        self.assertEqual("timed_out", self.http("GET", "/requests/" + staged["id"])[1]["request"]["response"]["response"]["state"])
+        self.tm_json("bravo", "request", "maintain")
+        before = self.rows("bravo", "SELECT id,state,seq FROM requests ORDER BY id")
+        for env in (staged, accepted):
+            code, body = self.http("POST", "/requests/prepare", env)
+            self.assertEqual(200, code)
+            self.assertTrue(body["committed"])
+            self.assertEqual(200, self.http("POST", "/msg", env)[0])
+        self.assertEqual(before, self.rows("bravo", "SELECT id,state,seq FROM requests ORDER BY id"))
+        self.assertTrue(all(row["state"] == "timed_out" for row in before))
+        self.no_reverse_connections()
+
+    def test_wrong_file_token_and_encoded_traversal_do_not_expose_files(self):
+        _, response, secret = self.final_with_file()
+        route = urllib.parse.urlparse(response["fetch"][0]["url"]).path
+        parts = route.split("/")
+        token = parts[2]
+        for path in ("/f/%s/%s" % (secrets.token_urlsafe(32), parts[-1]),
+                     "/f/%s/%%2e%%2e%%2fconfig.json" % token,
+                     "/f/%s/%%2e%%2e%%5cconfig.json" % token,
+                     "/f/%s/.." % token):
+            with self.subTest(path=path):
+                code, content = self.http("GET", path)
+                self.assertEqual(404, code)
+                self.assertNotEqual(secret, content)
+        for name in ("../escape.bin", "..\\escape.bin", "/absolute.bin", "..", "a\x00b"):
+            with self.subTest(upload_name=name):
+                env = self.envelope(name=name)
+                self.assertEqual(400, self.http("POST", "/requests/prepare", env)[0])
+        self.assertFalse((self.homes["bravo"] / "escape.bin").exists())
+        self.no_reverse_connections()
+
+    def test_download_hash_or_size_mismatch_never_installs_corrupt_result(self):
+        _, response, original = self.final_with_file()
+        item = response["fetch"][0]
+        token = urllib.parse.urlparse(item["url"]).path.split("/")[2]
+        source = self.homes["bravo"] / "outbox" / token / "files" / item["name"]
+        target = self.homes["alpha"] / "inbox" / response["id"] / "files" / item["name"]
+        for bad in (b"x" * len(original), original[:-1]):
+            with self.subTest(download_bytes=len(bad)):
+                source.write_bytes(bad)
+                result = self.tm("alpha", "fetch", response["id"])
+                self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertRegex(result.stdout.lower(), "mismatch|sha256|size")
+                self.assertFalse(target.exists())
+                self.assertFalse(target.with_name(target.name + ".part").exists())
+        self.no_reverse_connections()
+
+    def test_pull_capability_is_required_without_silent_push_fallback(self):
+        self.stop()
+        posts = []
+
+        class LegacyHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                data = json.dumps({"node": "bravo.example.ts.net", "capabilities": ["request-lifecycle-v1"]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_POST(self):
+                posts.append(self.path)
+                self.send_error(500)
+
+        server = ThreadingHTTPServer(("127.0.0.1", self.port), LegacyHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            result = self.tm("alpha", "request", "send", self.address(), "Requires one-way mode", "--transport", "pull", "--wake", "none")
+            self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertRegex((result.stdout + result.stderr).lower(), "request-pull-v1|capabilit|upgrade|support")
+            self.assertEqual([], posts)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+
+if __name__ == "__main__":
+    unittest.main()

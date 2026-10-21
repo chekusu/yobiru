@@ -167,6 +167,11 @@ Once the user has asked for setup, the agent may run these steps with the host's
 
 ## Quick start: connect two agents
 
+For a **one-way Tailscale share**, use `request send ... --transport pull`: the visitor uploads input
+files, polls for the reply, and downloads result files without running an inbound receiver. Both ends
+need `request-pull-v1`; run `doctor --peer HOST[:PORT]` to check. Ordinary sends and push requests keep
+their existing reverse-connection requirements. See [one-way sharing and verification](docs/SHARING.md).
+
 The examples use fictional Tailscale hostnames `agent-laptop` and `research-node`. Replace them with **your own chosen peers**. Resolve `Y` on each machine as shown above. Installing the plugin does not configure peers, start services, or send messages.
 
 Prefer a stable short Tailscale hostname such as `research-node/grok` over a saved IP. Each send reads the current Tailscale status and resolves that name to its current IP. If a rebuilt machine shares the same reported hostname with an old offline entry, the unique online match is selected; ambiguous matches are rejected. Discovery (`agents --peer`) and explicit upgrade notices use the same rule. Full MagicDNS names and explicit IPs remain exact targets. After a rebuild, restore the chosen hostname and restart the receiver; if both the hostname and identity changed, select the new device explicitly. Old replies, file grants and queued upgrade notices are not silently reassigned to a different identity. [Tailscale machine names](https://tailscale.com/docs/concepts/machine-names).

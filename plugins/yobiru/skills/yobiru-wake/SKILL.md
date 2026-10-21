@@ -160,6 +160,11 @@ runs. Protocol responses use `wake: none` and never trigger another response. Th
 receiver's wake policy or enable model-generated business replies. A request can therefore be received
 but still waiting for its agent, or time out with an unknown execution result.
 
+For `request.transport: "pull"`, the receiver stores protocol responses and authorized results for
+the original requester to poll; it does not open a reverse connection or wake the requester.
+Uploaded input files are already local and verified before intake. Follow the inbox skill's pull
+attachment workflow when handing them to the lifecycle owner. Local storage is not delivery proof.
+
 For authorized work and replies, the lifecycle owner records `running` only after work starts, then
 one final outcome via `request respond` before `ack` (yobiru-inbox skill). Missing authority or prerequisites are a blocker,
 not completion. Keep `allow_replies=false` when the owner has not authorized changing it; automatic
