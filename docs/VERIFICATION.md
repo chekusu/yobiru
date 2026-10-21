@@ -3,6 +3,36 @@
 Yobiru release verification. This page separates what has actually been run from what has not. It is not a
 security guarantee: the tests show the behaviors listed below, nothing more.
 
+## 0.6.0-beta.1 release preparation
+
+On 2026-10-21, on the release branch for 0.6.0-beta.1 (the Friends schema-3 work below plus the version and
+prerelease changes; local commits only, nothing pushed, published, deployed or installed), on Python 3.12, with
+synthetic homes and data, injected release metadata, loopback HTTP and subprocess stdio only:
+
+- `python3 -m unittest discover -s tests -p 'test_*.py'` passed **459 tests** on the committed tree (`c98ec0a`).
+  A run just before that commit had one failure: the guide link check read the changelog's link pinned to the
+  `v0.6.0-beta.1` tag as a relative path. The check now accepts tag-pinned links and checks their anchors.
+- `python3 -m unittest test_codex_bridge test_codex_queue_client test_codex_resident test_install_codex_bridge
+  test_install_codex_bridge_linux` passed **194 tests** on the same tree.
+- `python3 tools/build_plugin.py sync` and `check` passed; `release` wrote `yobiru-0.6.0-beta.1-plugin.zip`,
+  `yobiru-0.6.0-beta.1-marketplace.zip` and `SHA256SUMS`, and every manifest in them carries `0.6.0-beta.1`.
+- The Beta guide's archive commands ran as written against the built plugin archive (the `SHA256SUMS` line,
+  extraction, `version`), and the unpacked launcher's `install-runtime --upgrade --apply` refused to replace a
+  `0.6.0-dev.1` runtime.
+
+What the new tests cover:
+
+| Area | Behavior shown |
+| --- | --- |
+| Prerelease updates (`test_update.py`) | The stable channel never offers `0.6.0-beta.1`, even when GitHub's prerelease flag is missing; the preview channel offers its exact tag; a Beta installation is `ahead` on stable and `current` on preview, and a final `0.6.0` supersedes it; `0.6.0-dev.1` sorts above the Beta and is never offered it. Steps for a prerelease name its tag page, archive, `SHA256SUMS`, a version check and a Codex marketplace pinned with `--ref`, never a branch upgrade; a newer runtime is never advised to be replaced; prerelease notices carry `prerelease: true` and the opt-in, stable ones neither; a stable maintenance run holds a queued prerelease notice, says why, and a preview run sends it. |
+| Runtime downgrade guard (`test_cli.py`) | `install-runtime --upgrade` refuses to replace a newer (development) runtime and writes nothing; with `--allow-downgrade` it replaces it and keeps it as the backup; an older runtime needs no flag. |
+| Build (`test_build.py`) | `release` writes exactly this version's two archives and a matching `SHA256SUMS`, with the exact version in every manifest and in the bundled runtime; the product version must be SemVer 2.0 (`0.6.0-beta.01`, `0.6.0-beta..1`, `0.6.0-` and others are refused); a prerelease must link the privacy notice in its own tag, not `main` or an earlier tag. |
+| Version line (`test_public_bundle.py`) | The plugin README's version statement keeps a dotted prerelease whole (`0.6.0-beta.1`, not `0.6.0-beta`). |
+
+Not tested here: the live GitHub release list, publishing, installing the archive on another machine, the Codex
+marketplace route pinned with `--ref`, native hosts (Grok Bot, Muse, Dots), Windows, macOS and Python 3.8 execution.
+`selftest.sh` was not run.
+
 ## Friends schema 3: routing, delivery evidence, decisions, loop budgets, attachments and MCP (in 0.6.0-beta.1)
 
 On 2026-10-21, on a development branch based on the delivery reliability branch (version unchanged; nothing
