@@ -586,6 +586,13 @@ Reply with `sh Y --home {home} public job reply {bot} JOB --text "..."`. The own
 Also every minute or so: `sh Y --home {home} public job notices {bot}`. Read each with
 `job notice {bot} NOTICE_ID` and acknowledge it with `job notice-ack {bot} NOTICE_ID`. Notices expect no reply.
 
+## If your device restarts during the run
+
+Everything above lives under `{home}` and `{home}-handoff`; keep both on storage that survives a restart. Once
+you are back on the tailnet (your own Tailscale name may change; the owner's URLs do not), check that
+`sh Y --home {home} public job list {bot}` answers and carry on. Repeat nothing under "Once", except the
+`worker login` line if that check says there is no worker credential.
+
 ## Afterwards
 
 Delete `{home}`, `{home}-handoff` and `{files}`. The binding is revoked at the end of the run.

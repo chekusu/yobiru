@@ -175,10 +175,12 @@ python3 tools/friends_acceptance.py --host remote --public-url https://ADMIN.TAI
 The script writes `native.token`, `resource-access.token` and `RUNBOOK.md` (the owner's instructions for that agent,
 no credentials) to `--handoff`. Copy the two token files to the agent's device yourself, never through a chat; the
 agent then follows the runbook, and the script waits for it (`--wait-minutes`, 30 by default) wherever it has to
-act. The owner's reviews are made by the script with the owner credential, as above. It exits 0 when every check
-passed, 1 when one failed or a command broke off, and 3 when the agent did not act in time; in every case it revokes
-the binding, unpublishes the bot, stops its services and deletes the test homes and its own copies of the tokens.
-Remove the HTTPS routes afterwards (`tailscale serve reset`).
+act. It never addresses that device by name: the agent dials the admin device's URLs, so a restart that changes the
+device's Tailscale name only costs waiting time, and the runbook says how to resume. The owner's reviews are made by
+the script with the owner credential, as above. It exits 0 when every check passed, 1 when one failed or a command
+broke off, and 3 when the agent did not act in time; in every case it revokes the binding, unpublishes the bot,
+stops its services and deletes the test homes and its own copies of the tokens. Remove the HTTPS routes afterwards
+(`tailscale serve reset`).
 
 ## Not verified in this Beta
 
