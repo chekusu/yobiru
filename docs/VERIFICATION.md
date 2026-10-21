@@ -13,7 +13,8 @@ plugin or gateway change; nothing released), on Python 3.13 on Linux, with synth
   put the friend's export into the follower's reply failed item 4 and still cleaned up completely.
 - `python3 -m unittest test_friends_acceptance` passed **2 tests**: the whole checklist with the scripted host, and
   a remote host that never acts, which ends as a timeout (exit 3) after a complete cleanup that leaves only
-  `RUNBOOK.md` in the handoff folder.
+  `RUNBOOK.md` in the handoff folder. The whole suite, `python3 -m unittest discover` in `tests/`, passed **461
+  tests** (1 skipped).
 - A rehearsal of `--host remote` on the same machine (`http://127.0.0.1` routes instead of HTTPS, and a scratch
   script, not an agent, that ran `RUNBOOK.md` literally in its own home) passed **35 checks**. Its first attempt
   showed that the runbook must `chmod 600` the copied token files, because the CLI refuses any other mode; the
