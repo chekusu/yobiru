@@ -46,6 +46,44 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(want, core.safe_name(raw))
 
 
+class WakeRateTests(unittest.TestCase):
+    """The hourly `now` budget belongs to the authenticated peer and agent, whichever transport carries the message:
+    a pull sender is recorded by its stable principal where a push sender keeps its DNS name."""
+    NAMED = {"node": "alpha.example.ts.net", "dns_name": "alpha.example.ts.net", "host": "alpha", "tags": [],
+             "user": "", "stable_id": "alpha-stable"}
+
+    def receiver(self):
+        from pathlib import Path
+        home = tempfile.TemporaryDirectory()
+        self.addCleanup(home.cleanup)
+        ctx = core.Ctx(Path(home.name))
+        ctx.cfg.update(wake_rate=1, wake_policy={"default_max": "now", "peers": {}})
+        return ctx
+
+    def decide(self, ctx, ident, agent="worker"):
+        return ctx.wake_decision("now", ident, agent=agent)[0]
+
+    def test_push_and_pull_share_one_budget_in_either_order(self):
+        pull = dict(self.NAMED, node=core.peer_identity(self.NAMED))      # as the receiver records a pull sender
+        for first, second in ((self.NAMED, pull), (pull, self.NAMED)):
+            with self.subTest(first=first["node"]):
+                ctx = self.receiver()
+                self.assertEqual(["now", "batch"], [self.decide(ctx, first), self.decide(ctx, second)])
+
+    def test_a_renamed_peer_keeps_its_budget_and_each_agent_has_its_own(self):
+        ctx = self.receiver()
+        renamed = dict(self.NAMED, node="alpha-2.example.ts.net", dns_name="alpha-2.example.ts.net", host="alpha-2")
+        self.assertEqual(["now", "batch", "now"],
+                         [self.decide(ctx, self.NAMED), self.decide(ctx, renamed), self.decide(ctx, renamed, "other")])
+
+    def test_a_peer_without_a_stable_id_is_counted_by_its_name(self):
+        ctx = self.receiver()
+        beta = {"node": "beta.example.ts.net", "host": "beta", "tags": [], "user": ""}
+        gamma = dict(beta, node="gamma.example.ts.net", host="gamma")
+        self.assertEqual(["now", "batch", "now"],
+                         [self.decide(ctx, beta), self.decide(ctx, beta), self.decide(ctx, gamma)])
+
+
 class WebhookDiagnosticsTests(unittest.TestCase):
     """A webhook can echo anything it received. Only its HTTP status, one standardized error code that repeats
     nothing that was sent to it, and a numeric Retry-After may reach the receiver log or the inbox record."""

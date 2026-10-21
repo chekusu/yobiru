@@ -4,7 +4,7 @@
   "files": {
     "scripts/tailmsg.py": {
       "source": "tailmsg.py",
-      "sha256": "c0098b9781081f1318b8a974d420abc3b762b1a08912593be77f145d5fe36239"
+      "sha256": "93a6673d35820a81694373681951710b46d3cc8201db6cd66b0ba7689bee4a3c"
     },
     "scripts/codex_bridge/CODEX_DISPATCHER.md": {
       "source": "CODEX_DISPATCHER.md",

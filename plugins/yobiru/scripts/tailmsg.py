@@ -381,7 +381,7 @@ class Ctx:
             log("created default config", cfg_path, "(authenticated Tailscale peers may communicate)")
         self.cfg, self.agents = parse_config(json.loads(cfg_path.read_text(encoding="utf-8")))
         self._whois_cache = {}
-        self._now_hits = {}          # (sender node, agent) -> [epoch seconds of effective `now`]
+        self._now_hits = {}          # (peer identity, agent) -> [epoch seconds of effective `now`]
         self._wake_lock = threading.Lock()
         self._inbox_lock = threading.Lock()
         self._name_cache = {}        # session id -> (expires epoch, native name lookup result)
@@ -555,7 +555,7 @@ class Ctx:
             t = time.time()
             limit = int(self.cfg.get("wake_rate") or 0)
             with self._wake_lock:
-                key = (ident["node"], agent)
+                key = (peer_identity(ident), agent)     # one budget per peer, whether it pushes or pulls
                 hits = [x for x in self._now_hits.get(key, []) if x > t - 3600]
                 if len(hits) >= limit:
                     eff = "batch"

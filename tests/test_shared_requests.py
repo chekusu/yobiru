@@ -660,6 +660,28 @@ class SharedRequestTests(unittest.TestCase):
                 received = self.homes["bravo"] / "inbox" / directory.name / "files" / "one.bin"
                 self.assertEqual(b"SYNTHETIC private input\n", received.read_bytes())
 
+    def test_push_and_pull_from_one_named_peer_share_its_wake_budget(self):
+        # A named peer that can push and pull gets one hourly `now` budget per agent, in either order: the
+        # receiver records a pull sender by its stable principal and a push sender by its DNS name.
+        config = self.homes["bravo"] / "config.json"
+        cfg = json.loads(config.read_text())
+        cfg.update(wake_rate=1, wake_policy={"default_max": "now", "peers": {}})
+        config.write_text(json.dumps(cfg))
+        self.set_identity(identity("alpha", ALPHA_ID))                  # restarts with an empty hourly window
+
+        def push():
+            return self.tm_json("alpha", "send", self.address(), "Pushed note", "--wake", "now")["id"]
+
+        def pull():
+            return self.tm_json("alpha", "request", "send", self.address(), "Pulled request", "--transport", "pull",
+                                "--wake", "now")["id"]
+
+        def effective(mid):
+            return json.loads((self.homes["bravo"] / "inbox" / (mid + ".json")).read_text())["received"]["wake"]["effective"]
+        self.assertEqual(["now", "batch", "batch"], [effective(push()), effective(push()), effective(pull())])
+        self.restart()                                                  # the in-memory window starts over
+        self.assertEqual(["now", "batch", "batch"], [effective(pull()), effective(pull()), effective(push())])
+
     def test_poll_rejects_destination_replacement_with_same_dns_name(self):
         mid = self.request()
         self.assertEqual("received", self.state(mid)["state"])
