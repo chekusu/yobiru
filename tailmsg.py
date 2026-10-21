@@ -1658,7 +1658,13 @@ def wake_payload(rec):
     return d
 
 
-WEBHOOK_ERROR_CODE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.:-]{1,63}\Z")
+# The only error codes a webhook diagnostic may name: generic categories, printed in this spelling and never as
+# received, so no prefix, suffix or variant of a remote code can carry private text into a log.
+WEBHOOK_ERROR_CODES = frozenset((
+    "bad_request", "invalid_request", "invalid_payload", "invalid_json", "invalid_hook", "unknown_hook",
+    "unauthorized", "invalid_token", "expired_token", "invalid_signature", "forbidden", "not_found",
+    "method_not_allowed", "conflict", "payload_too_large", "unsupported_media_type", "rate_limited",
+    "too_many_requests", "internal_error", "bad_gateway", "service_unavailable", "gateway_timeout", "timeout"))
 WEBHOOK_RETRY_AFTER_RE = re.compile(r"[0-9]{1,5}\Z")
 
 
@@ -1684,9 +1690,9 @@ def repeats_sent(value, sensitive):
 def webhook_error(status, retry_after, body, sensitive):
     """Bounded, non-secret diagnostics for a non-2xx webhook answer. A webhook can echo anything it received
     (its own path, headers, the message), so no free text from the body is ever kept: only the HTTP status, one
-    standardized error code from a JSON body (`code`, `error_code`, `error` or `error.code`, an identifier
-    such as `invalid_hook`) and a numeric Retry-After, each kept only when it repeats nothing that was sent
-    (the Retry-After neither as written nor without its leading zeros)."""
+    error code from a JSON body (`code`, `error_code`, `error` or `error.code`) that names a category of the
+    fixed WEBHOOK_ERROR_CODES, such as `invalid_hook`, and a numeric Retry-After, each kept only when it repeats
+    nothing that was sent (the Retry-After neither as written nor without its leading zeros)."""
     detail = []
     try:
         obj = json.loads(body.decode("utf-8"))
@@ -1696,8 +1702,8 @@ def webhook_error(status, retry_after, body, sensitive):
         nested = obj.get("error") if isinstance(obj.get("error"), dict) else {}
         for code in (obj.get("code"), obj.get("error_code"), obj.get("error"), nested.get("code")):
             low = code.lower() if isinstance(code, str) else ""
-            if WEBHOOK_ERROR_CODE_RE.match(low) and not repeats_sent(low, sensitive):
-                detail.append("code " + code)
+            if low in WEBHOOK_ERROR_CODES and not repeats_sent(low, sensitive):
+                detail.append("code " + low)
                 break
     seconds = retry_after.strip() if isinstance(retry_after, str) else ""
     if WEBHOOK_RETRY_AFTER_RE.match(seconds) and not any(repeats_sent(v, sensitive) for v in (seconds, str(int(seconds)))):

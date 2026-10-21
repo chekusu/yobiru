@@ -14,9 +14,9 @@ prerelease, and the version stays 0.5.3 until a release is chosen.
   reach the daemon, it answers `503` with `code: identity_unavailable` and `Retry-After` instead of `403`;
   unknown or denied peers still get `403`. `update notify` keeps such a notice pending and later sends the
   identical envelope.
-- **Webhook wake errors** (#15): a failed webhook wake records its HTTP status, a standard error code that
-  repeats nothing that was sent and a `Retry-After` that does not either, or only the exception type when the
-  call fails. It never records response or exception text, which can echo the webhook's URL token or the
+- **Webhook wake errors** (#15): a failed webhook wake records its HTTP status, an error code from a fixed
+  list of generic categories and a `Retry-After`, both repeating nothing that was sent, or only the exception
+  type when the call fails. It never records response or exception text, which can echo the webhook's URL token or the
   message.
 - **One-way shares** (#19): with `request send --transport pull`, a visitor whose machine cannot accept
   connections uploads inputs, polls for the result and downloads result files from a receiver that advertises

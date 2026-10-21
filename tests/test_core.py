@@ -150,6 +150,34 @@ class WebhookDiagnosticsTests(unittest.TestCase):
                              headers={"Retry-After": "30"})
         self.assertEqual("HTTP 429 (code rate_limited, retry after 30 s)", self.error(adapter))
 
+    def test_only_a_listed_code_is_named_never_one_that_wraps_private_text(self):
+        import contextlib
+        import io
+        from pathlib import Path
+        # A code that wraps a word of a longer message passes any comparison with the whole values sent, so only a
+        # code from the fixed list is named, in its own spelling; any other code is left out.
+        record = self.record()
+        record["envelope"]["text"] = "Please review the confidential project SYNTHETIC_PRIVATE_123 tomorrow."
+        for code in ("invalid_project:SYNTHETIC_PRIVATE_123", "rate_limited.SYNTHETIC_PRIVATE_123",
+                     "SYNTHETIC_PRIVATE_123", "custom_failure"):
+            with self.subTest(code=code):
+                adapter = self.serve(400, lambda *a: {"code": code})
+                with self.assertRaises(core.AdapterError) as caught:
+                    core.call_webhook(adapter, record, 5)
+                self.assertEqual("HTTP 400", str(caught.exception))
+                with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(io.StringIO()) as log:
+                    ctx = core.Ctx(Path(d))
+                    ctx.cfg.update(wake_attempts=1, wake_backoff_s=0, wake_adapter=adapter)
+                    path = ctx.inbox / (ENV["id"] + ".json")
+                    path.write_text(json.dumps(record), encoding="utf-8")
+                    self.assertFalse(core.deliver_wake(ctx, path))
+                    stored = json.loads(path.read_text(encoding="utf-8"))["wake_delivery"]["error"]
+                self.assertEqual("HTTP 400", stored)
+                self.assertIn("HTTP 400", log.getvalue())
+                self.assertNotIn("SYNTHETIC_PRIVATE", log.getvalue())
+        adapter = self.serve(429, lambda *a: {"error": {"code": "Rate_Limited"}}, headers={"Retry-After": "30"})
+        self.assertEqual("HTTP 429 (code rate_limited, retry after 30 s)", self.error(adapter))
+
     def test_a_code_that_repeats_what_was_sent_or_free_text_is_dropped(self):
         for code in (self.TOKEN, self.QUERY.lower(), self.TEXT, self.SECRET, "webhooks", "not an identifier",
                      "x" * 80):
