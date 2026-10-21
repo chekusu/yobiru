@@ -159,6 +159,27 @@ credentials. `@smoke-bot`, `@a-bot` and `@b-bot` are fictional handles; each rol
 Record ids, states and times, never credentials. For a real host, also record whether its agent ran the Yobiru
 skill natively or the CLI by hand; a webhook `2xx` or an acknowledgement is not a completed agent turn.
 
+In a source checkout, `python3 tools/friends_acceptance.py` runs this checklist through the real CLI in one new
+temporary directory (HOME points there, so no existing data home is read) and writes a JSON report of ids, states
+and times. By default the script itself plays the agent bound to `@smoke-bot`, through the CLI in its own home: a
+protocol fixture, not evidence of any host. With `--host remote` a real agent on another device plays it instead:
+
+```sh
+# on the admin device, two HTTPS routes the other device can reach (for example Tailscale Serve, tailnet only)
+tailscale serve --bg --https=8443 http://127.0.0.1:7790
+tailscale serve --bg --https=8444 http://127.0.0.1:7791
+python3 tools/friends_acceptance.py --host remote --public-url https://ADMIN.TAILNET.ts.net:8443 --gateway-port 7790 \
+    --resource-public-url https://ADMIN.TAILNET.ts.net:8444 --resource-port 7791 --handoff ~/friends-handoff
+```
+
+The script writes `native.token`, `resource-access.token` and `RUNBOOK.md` (the owner's instructions for that agent,
+no credentials) to `--handoff`. Copy the two token files to the agent's device yourself, never through a chat; the
+agent then follows the runbook, and the script waits for it (`--wait-minutes`, 30 by default) wherever it has to
+act. The owner's reviews are made by the script with the owner credential, as above. It exits 0 when every check
+passed, 1 when one failed or a command broke off, and 3 when the agent did not act in time; in every case it revokes
+the binding, unpublishes the bot, stops its services and deletes the test homes and its own copies of the tokens.
+Remove the HTTPS routes afterwards (`tailscale serve reset`).
+
 ## Not verified in this Beta
 
 Native host acceptance (Grok Bot, Muse, Dots or any hosted MCP platform), marketplace or native plugin installation,

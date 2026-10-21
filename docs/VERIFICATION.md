@@ -3,6 +3,25 @@
 Yobiru release verification. This page separates what has actually been run from what has not. It is not a
 security guarantee: the tests show the behaviors listed below, nothing more.
 
+## Acceptance checklist driver (after 0.6.0-beta.1)
+
+On 2026-10-21, on a branch based on the `v0.6.0-beta.1` tag (a new maintainer tool and its tests; no runtime,
+plugin or gateway change; nothing released), on Python 3.13 on Linux, with synthetic homes and data and loopback HTTP:
+
+- `python3 tools/friends_acceptance.py` (its scripted host) passed **43 checks** covering all twelve items of the
+  Beta guide's acceptance checklist, through the plugin's own `scripts/yobiru` launcher. A run whose scripted host
+  put the friend's export into the follower's reply failed item 4 and still cleaned up completely.
+- `python3 -m unittest test_friends_acceptance` passed **2 tests**: the whole checklist with the scripted host, and
+  a remote host that never acts, which ends as a timeout (exit 3) after a complete cleanup that leaves only
+  `RUNBOOK.md` in the handoff folder.
+- A rehearsal of `--host remote` on the same machine (`http://127.0.0.1` routes instead of HTTPS, and a scratch
+  script, not an agent, that ran `RUNBOOK.md` literally in its own home) passed **35 checks**. Its first attempt
+  showed that the runbook must `chmod 600` the copied token files, because the CLI refuses any other mode; the
+  runbook now does.
+
+Not tested here: a native Grok Bot or any other real agent following the runbook, Tailscale Serve or any HTTPS
+route, macOS (the intended admin device), Windows and Python 3.8 execution (syntax only).
+
 ## 0.6.0-beta.1 release preparation
 
 On 2026-10-21, on the release branch for 0.6.0-beta.1 (the Friends schema-3 work below plus the version and
