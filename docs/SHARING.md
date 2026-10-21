@@ -129,6 +129,13 @@ If upload or submission was interrupted or its outcome is uncertain, resume the 
 sh "$Y" request resume REQUEST_ID
 ```
 
+Before reserving the request, before each upload connection (after re-checking the saved snapshot) and
+before the final submission, the CLI confirms again that the address still belongs to the stable Tailscale
+identity saved with the request, that local policy still allows it and that this machine is still the
+sender. If anything changed, it stops before sending anything more, and the request stays resumable under the
+same ID. Request inputs and results are stored readable only by their owner (files 0600, new folders 0700),
+whatever the process umask.
+
 Do not issue a new `request send` as a transport retry: it creates a new request ID and could
 duplicate work. A deadline timeout means the outcome is unknown, not that remote work was cancelled.
 Reconcile status and actual effects before repeating the task.

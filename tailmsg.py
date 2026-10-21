@@ -131,6 +131,29 @@ def sync_directory(path):
         pass
 
 
+def private_open(path, truncate=False):
+    """A new file only this user can read (0600) whatever the process umask, never following a link. Request
+    inputs and results can be private even when a custom data home is traversable by other users."""
+    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | (os.O_TRUNC if truncate else os.O_EXCL)
+    descriptor = os.open(str(path), flags, 0o600)
+    if truncate and hasattr(os, "fchmod"):
+        os.fchmod(descriptor, 0o600)                 # an earlier partial file keeps its mode otherwise
+    return os.fdopen(descriptor, "wb")
+
+
+def private_mkdir(path):
+    """Create a directory and any missing parents as 0700; existing directories keep their mode."""
+    path, missing = Path(path), []
+    while not path.exists():
+        missing.append(path)
+        path = path.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+
+
 def durable_write(path, data):
     path = Path(path)
     temporary = path.with_name(path.name + ".tmp-" + secrets.token_hex(8))
@@ -937,7 +960,7 @@ def materialize_pull_uploads(ctx, env, ident):
     if not uploads:
         return
     directory = ctx.inbox / env["id"] / "files"
-    directory.mkdir(parents=True, exist_ok=True)
+    private_mkdir(directory)                       # the hard links share the uploads' 0600 inodes
     for item in uploads:
         source = ctx.home / "requests" / "uploads" / env["id"] / item["token"]
         if (not source.is_file() or source.is_symlink() or source.stat().st_size != item["size"] or
@@ -1131,14 +1154,14 @@ def make_handler(ctx, me):
             if size != item["size"] or size < 0 or size > cfg["max_fetch_bytes"]:
                 return self.reply(413, {"ok": False, "error": "upload length does not match manifest or limit"})
             directory = ctx.home / "requests" / "uploads" / mid
-            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            private_mkdir(directory)
             destination = directory / token
             temporary = directory / (token + ".part-" + secrets.token_hex(8))
             existed, digest, remaining = destination.is_file(), hashlib.sha256(), size
             old_timeout = self.connection.gettimeout()
             try:
                 self.connection.settimeout(30)
-                with open(temporary, "xb") as stream:
+                with private_open(temporary) as stream:
                     while remaining:
                         chunk = self.rfile.read(min(1 << 20, remaining))
                         if not chunk:
@@ -1151,7 +1174,12 @@ def make_handler(ctx, me):
                 if digest.hexdigest() != item["sha256"]:
                     raise ValueError("upload sha256 mismatch")
                 # Recheck access and reservation after a potentially long upload.
-                current = fresh_whois(ctx, self.client_address[0])
+                try:
+                    current = fresh_whois(ctx, self.client_address[0])
+                except TailscaleUnavailable:     # PR #17: retryable; the sender resumes the same request
+                    self.close_connection = True
+                    return self.reply(503, {"ok": False, "error": "identity lookup unavailable",
+                                            "code": "identity_unavailable"}, {"Retry-After": "1"})
                 if (not current or peer_identity(current) != peer_identity(ident) or not ctx.access_decision(current)[0] or
                         pull_upload_manifest(ctx, mid, peer_identity(current), token) != item):
                     return self.reply(409, {"ok": False, "error": "upload authorization or request state changed"})
@@ -1931,7 +1959,7 @@ def prepare_attachments(ctx, a, env, to_fqdn, persistent_request=None):
         expires = iso(now_utc() + dt.timedelta(seconds=int(ttl * 3600)))
         token = secrets.token_urlsafe(32)
         d = ctx.outbox / token
-        (d / "files").mkdir(parents=True)
+        private_mkdir(d / "files")
         meta = {"id": msg_id, "to": to_fqdn, "expires": expires, "files": {}}
         if persistent_request:
             meta["persistent_request"] = persistent_request
@@ -1946,7 +1974,7 @@ def prepare_attachments(ctx, a, env, to_fqdn, persistent_request=None):
                 name = "_" + name
             dst = d / "files" / name
             if persistent_request:
-                with open(src, "rb") as reader, open(dst, "xb") as writer:
+                with open(src, "rb") as reader, private_open(dst) as writer:
                     while True:
                         chunk = reader.read(1 << 20)
                         if not chunk:
@@ -1958,7 +1986,8 @@ def prepare_attachments(ctx, a, env, to_fqdn, persistent_request=None):
                     writer.flush()
                     os.fsync(writer.fileno())
             else:
-                shutil.copyfile(src, dst)  # snapshot: hash stays valid even if the original changes
+                with open(src, "rb") as reader, private_open(dst) as writer:
+                    shutil.copyfileobj(reader, writer)  # snapshot: hash stays valid even if the original changes
             mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
             item = {"name": name, "size": dst.stat().st_size, "sha256": sha256_file(dst), "mime": mime,
                     "url": "http://%s:%d/f/%s/%s" % (me, int(ctx.cfg["port"]), token, urllib.parse.quote(name)),
@@ -1992,10 +2021,10 @@ def prepare_pull_attachments(ctx, a, env):
                 name = secrets.token_hex(4) + name[-192:]
         names.add(name)
         token = secrets.token_urlsafe(32)
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_mkdir(directory)
         target = directory / token
         digest, size = hashlib.sha256(), 0
-        with open(source, "rb") as reader, open(target, "xb") as writer:
+        with open(source, "rb") as reader, private_open(target) as writer:
             while True:
                 chunk = reader.read(1 << 20)
                 if not chunk:
@@ -2020,6 +2049,9 @@ def upload_request_file(ctx, env, item, ip, port, peer):
     if (not source.is_file() or source.is_symlink() or source.stat().st_size != item["size"] or
             sha256_file(source) != item["sha256"]):
         raise ValueError("saved request attachment is missing or changed: " + item["name"])
+    # Hashing a large snapshot takes time: check the pinned destination again right before connecting, so a
+    # private input never goes to whoever holds the address now.
+    verify_pull_destination(ctx, env, peer, ip)
     connection = http.client.HTTPConnection(ip, port, timeout=30)
     try:
         with open(source, "rb") as stream:
@@ -2042,7 +2074,11 @@ def upload_request_file(ctx, env, item, ip, port, peer):
         connection.close()
 
 
-def submit_pull_request(ctx, env, peer, ip, port):
+def verify_pull_destination(ctx, env, peer, ip):
+    """The destination pinned when the request was saved, checked again before each new connection: the
+    address must still belong to that stable Tailscale identity and local policy must still allow it, and
+    this machine must still be the request's sender. Each upload and the final commit opens a new
+    connection, and the identity behind the address can change between them."""
     identity = fresh_whois(ctx, ip)
     if not identity or identity.get("node") != peer or not ctx.access_decision(identity)[0]:
         raise RuntimeError("request destination denied by local identity/access policy")
@@ -2053,6 +2089,10 @@ def submit_pull_request(ctx, env, peer, ip, port):
         raise RuntimeError("request destination stable identity changed")
     if stable_peer_id(ctx.self_node().get("stable_id")) != env["from"]:
         raise RuntimeError("request sender stable identity changed")
+
+
+def submit_pull_request(ctx, env, peer, ip, port):
+    verify_pull_destination(ctx, env, peer, ip)
     try:
         status, prepared = http_json(ip, port, "POST", "/requests/prepare", env, host=peer)
         if (status not in (200, 201) or not isinstance(prepared, dict) or prepared.get("ok") is not True or
@@ -2061,7 +2101,8 @@ def submit_pull_request(ctx, env, peer, ip, port):
                                (status, prepared.get("error", "invalid response") if isinstance(prepared, dict) else "invalid response"))
         if not prepared.get("committed"):
             for item in env["request"].get("uploads", []):
-                upload_request_file(ctx, env, item, ip, port, peer)
+                upload_request_file(ctx, env, item, ip, port, peer)   # checks the destination before connecting
+        verify_pull_destination(ctx, env, peer, ip)
         status, body = http_json(ip, port, "POST", "/msg", env, host=peer)
     except (RuntimeError, OSError, ValueError) as exc:
         with request_db(ctx) as db:
@@ -2270,7 +2311,7 @@ def cmd_fetch(ctx, a):
     _, r = load_msg(ctx, a.id)
     env, sender = r["envelope"], r["received"]["peer"]["node"]
     out = ctx.inbox / env["id"] / "files"
-    out.mkdir(parents=True, exist_ok=True)
+    private_mkdir(out)
     if is_pull_request(env):
         for item in env["request"].get("uploads", []):
             path = out / item["name"]
@@ -2314,7 +2355,7 @@ def cmd_fetch(ctx, a):
                     raise TransportError(transport_diagnostic(sender, ip, u.port or 80, "file fetch", e)) from e
                 h, n = hashlib.sha256(), 0
                 part = dst.with_name(dst.name + ".part")
-                with open(part, "wb") as w:
+                with private_open(part, truncate=True) as w:
                     while True:
                         try:
                             chunk = resp.read(1 << 20)

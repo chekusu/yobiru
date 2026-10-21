@@ -93,6 +93,56 @@ if os.environ.get("TEST_LOSE_RESPONSE"):
         return result
     core.http.client.HTTPConnection.request = request
     core.http.client.HTTPConnection.getresponse = getresponse
+if os.environ.get("TEST_REPLACE_DESTINATION_AFTER"):
+    # After the Nth response to a matching route, this machine's Tailscale now reports another stable
+    # identity for the same destination address: the destination was replaced mid-flight.
+    when_method, when_prefix, when_count = os.environ["TEST_REPLACE_DESTINATION_AFTER"].split(" ")
+    replace_request = core.http.client.HTTPConnection.request
+    replace_response = core.http.client.HTTPConnection.getresponse
+    seen = []
+    def request(self, method, url, *args, **kwargs):
+        self._test_route = (method, url)
+        return replace_request(self, method, url, *args, **kwargs)
+    def getresponse(self):
+        result = replace_response(self)
+        method, url = getattr(self, "_test_route", (None, ""))
+        if method == when_method and url.startswith(when_prefix):
+            seen.append(url)
+            if len(seen) == int(when_count):
+                path = Path(os.environ["TEST_DESTINATION_STATE"])
+                data = json.loads(path.read_text())
+                data["whois"]["Node"]["StableID"] = os.environ["TEST_REPLACEMENT_ID"]
+                path.write_text(json.dumps(data))
+        return result
+    core.http.client.HTTPConnection.request = request
+    core.http.client.HTTPConnection.getresponse = getresponse
+if os.environ.get("TEST_REQUEST_LOG"):
+    log_request = core.http.client.HTTPConnection.request
+    def request(self, method, url, *args, **kwargs):
+        with open(os.environ["TEST_REQUEST_LOG"], "a") as stream:
+            stream.write(json.dumps([method, url]) + "\n")
+        return log_request(self, method, url, *args, **kwargs)
+    core.http.client.HTTPConnection.request = request
+if os.environ.get("TEST_REPLACE_DESTINATION_WHILE_HASHING"):
+    # The destination is replaced while the saved upload snapshot is being hashed.
+    real_sha256_file = core.sha256_file
+    def sha256_file(path):
+        result = real_sha256_file(path)
+        if "sending" in Path(path).parts:
+            state = Path(os.environ["TEST_DESTINATION_STATE"])
+            data = json.loads(state.read_text())
+            data["whois"]["Node"]["StableID"] = os.environ["TEST_REPLACEMENT_ID"]
+            state.write_text(json.dumps(data))
+        return result
+    core.sha256_file = sha256_file
+if os.environ.get("TEST_UPLOAD_RECHECK_UNAVAILABLE"):
+    # The receiver's identity lookup fails only for its recheck after an upload body was read.
+    real_fresh_whois = core.fresh_whois
+    def fresh_whois(ctx, ip):
+        if Path(os.environ["TEST_UPLOAD_RECHECK_UNAVAILABLE"]).exists() and sys._getframe(1).f_code.co_name == "do_PUT":
+            raise core.TailscaleUnavailable("test: identity lookup unavailable after the upload")
+        return real_fresh_whois(ctx, ip)
+    core.fresh_whois = fresh_whois
 sys.argv = sys.argv[1:]
 sys.exit(core.main())
 '''
@@ -153,7 +203,8 @@ class SharedRequestTests(unittest.TestCase):
         log_path = self.root / "receiver.log"
         with log_path.open("a") as stream:
             self.server = subprocess.Popen(self.command("bravo", "serve"), cwd=str(self.root),
-                                           env=self.environment("bravo"), stdout=stream,
+                                           env=self.environment("bravo", getattr(self, "receiver_extra", None)),
+                                           stdout=stream,
                                            stderr=subprocess.STDOUT, start_new_session=True)
         deadline = time.monotonic() + 10
         while self.server.poll() is None and time.monotonic() < deadline:
@@ -320,6 +371,131 @@ class SharedRequestTests(unittest.TestCase):
         self.assertEqual("received", self.state(mid)["state"])
         self.assertEqual(data, (self.homes["bravo"] / "inbox" / mid / "files" / source.name).read_bytes())
         self.no_reverse_connections()
+
+    def replaced_midflight(self, after, files):
+        """Send a pull request whose destination identity changes after `after` (method, route prefix, count)."""
+        sources = []
+        for index in range(files):
+            source = self.root / ("private input %d.txt" % index)
+            source.write_bytes(b"SYNTHETIC-PRIVATE input %d for the original receiver only\n" % index)
+            sources.append(source)
+        args = ["request", "send", self.address(), "Midflight replacement", "--transport", "pull", "--wake", "none"]
+        for source in sources:
+            args += ["--file", str(source)]
+        failed = self.tm("alpha", *args, extra={"TEST_REPLACE_DESTINATION_AFTER": " ".join(after),
+                                                "TEST_DESTINATION_STATE": str(self.states["alpha"]),
+                                                "TEST_REPLACEMENT_ID": CHARLIE_ID})
+        self.assertNotEqual(0, failed.returncode, failed.stdout + failed.stderr)
+        self.assertIn("request destination stable identity changed", failed.stderr)
+        self.assertIn("request resume", failed.stderr)
+        mid = self.rows("alpha", "SELECT id FROM requests WHERE direction='outgoing'")[0]["id"]
+        self.assertEqual([{"submission": "unknown"}],
+                         self.rows("alpha", "SELECT submission FROM requests WHERE direction='outgoing'"))
+        return mid, sources
+
+    def restore_destination(self):
+        state = json.loads(self.states["alpha"].read_text())
+        state["whois"] = identity("bravo", BRAVO_ID)
+        self.states["alpha"].write_text(json.dumps(state))
+
+    def uploaded(self, mid):
+        directory = self.homes["bravo"] / "requests" / "uploads" / mid
+        return sorted(p.name for p in directory.iterdir() if ".part-" not in p.name) if directory.is_dir() else []
+
+    def assert_resumes_with_the_same_id(self, mid, sources):
+        self.assertFalse((self.homes["bravo"] / "inbox" / (mid + ".json")).exists(), "nothing was committed")
+        self.restore_destination()
+        resumed = self.tm_json("alpha", "request", "resume", mid)
+        self.assertEqual((mid, 202), (resumed["id"], resumed["status"]))
+        for source in sources:
+            self.assertEqual(source.read_bytes(),
+                             (self.homes["bravo"] / "inbox" / mid / "files" / source.name).read_bytes())
+        self.assertEqual(1, len(list((self.homes["bravo"] / "inbox").glob("*.json"))))
+
+    def test_destination_replaced_after_prepare_receives_no_input_and_the_same_request_resumes(self):
+        mid, sources = self.replaced_midflight(("POST", "/requests/prepare", "1"), files=1)
+        self.assertEqual([], self.uploaded(mid), "a private input was uploaded after the destination changed")
+        self.assert_resumes_with_the_same_id(mid, sources)
+
+    def test_destination_replaced_between_uploads_receives_no_further_input(self):
+        mid, sources = self.replaced_midflight(("PUT", "/requests/", "1"), files=2)
+        self.assertEqual(1, len(self.uploaded(mid)), "only the upload before the change reached the receiver")
+        self.assert_resumes_with_the_same_id(mid, sources)
+
+    def test_destination_replaced_after_the_last_upload_is_not_committed(self):
+        mid, sources = self.replaced_midflight(("PUT", "/requests/", "1"), files=1)
+        self.assertEqual(1, len(self.uploaded(mid)))
+        self.assert_resumes_with_the_same_id(mid, sources)
+
+    def test_destination_replaced_while_hashing_the_snapshot_never_opens_an_upload_connection(self):
+        source = self.root / "large private input.bin"
+        source.write_bytes(b"SYNTHETIC-PRIVATE " * 65536)
+        requests = self.root / "sender requests.jsonl"
+        failed = self.tm("alpha", "request", "send", self.address(), "Hash window", "--transport", "pull",
+                         "--wake", "none", "--file", str(source),
+                         extra={"TEST_REPLACE_DESTINATION_WHILE_HASHING": "1", "TEST_REQUEST_LOG": str(requests),
+                                "TEST_DESTINATION_STATE": str(self.states["alpha"]), "TEST_REPLACEMENT_ID": CHARLIE_ID})
+        self.assertNotEqual(0, failed.returncode, failed.stdout + failed.stderr)
+        self.assertIn("request destination stable identity changed", failed.stderr)
+        sent = [tuple(json.loads(line)) for line in requests.read_text().splitlines()]
+        self.assertEqual([], [r for r in sent if r[0] == "PUT"], "no upload connection after the identity changed")
+        self.assertIn(("POST", "/requests/prepare"), sent)
+        mid = self.rows("alpha", "SELECT id FROM requests WHERE direction='outgoing'")[0]["id"]
+        self.assertEqual([], self.uploaded(mid))
+        upload_dir = self.homes["bravo"] / "requests" / "uploads" / mid
+        self.assertEqual([], list(upload_dir.iterdir()) if upload_dir.is_dir() else [], "no upload bytes at all")
+        self.assert_resumes_with_the_same_id(mid, [source])
+
+    def test_identity_outage_after_an_upload_answers_503_and_the_same_request_resumes(self):
+        marker = self.root / "identity outage"
+        marker.write_text("on")
+        self.receiver_extra = {"TEST_UPLOAD_RECHECK_UNAVAILABLE": str(marker)}
+        self.restart()
+        source = self.root / "input.txt"
+        source.write_bytes(b"SYNTHETIC input\n")
+        failed = self.tm("alpha", "request", "send", self.address(), "Outage", "--transport", "pull",
+                         "--wake", "none", "--file", str(source))
+        self.assertNotEqual(0, failed.returncode, failed.stdout + failed.stderr)
+        self.assertIn("HTTP 503", failed.stderr)
+        self.assertIn("request resume", failed.stderr)
+        mid = self.rows("alpha", "SELECT id FROM requests WHERE direction='outgoing'")[0]["id"]
+        self.assertEqual([], self.uploaded(mid), "the upload was discarded, not kept")
+        marker.unlink()                                   # the lookup recovers
+        resumed = self.tm_json("alpha", "request", "resume", mid)
+        self.assertEqual((mid, 202), (resumed["id"], resumed["status"]))
+        self.assertEqual(source.read_bytes(), (self.homes["bravo"] / "inbox" / mid / "files" / source.name).read_bytes())
+
+    def test_pull_inputs_and_results_stay_private_under_umask_022(self):
+        def mode(path):
+            return oct(path.stat().st_mode & 0o777)
+        previous = os.umask(0o022)
+        try:
+            self.restart()                                 # the receiver runs with umask 022 as well
+            source = self.root / "private input.txt"
+            source.write_bytes(b"SYNTHETIC-PRIVATE input\n")
+            mid = self.request(source)
+            artifact = self.root / "private result.txt"
+            artifact.write_bytes(b"SYNTHETIC-PRIVATE result\n")
+            self.tm_json("bravo", "reply", mid, "Finished", "--file", str(artifact))
+            response = self.state(mid)["response"]
+            fetched = self.tm("alpha", "fetch", response["id"])
+            self.assertEqual(0, fetched.returncode, fetched.stdout + fetched.stderr)
+        finally:
+            os.umask(previous)
+        alpha, bravo = self.homes["alpha"], self.homes["bravo"]
+        sending = alpha / "requests" / "sending" / mid
+        uploads = bravo / "requests" / "uploads" / mid
+        results = [p for p in (bravo / "outbox").glob("*/files") if p.is_dir()]
+        self.assertEqual(1, len(results))
+        downloads = alpha / "inbox" / response["id"] / "files"
+        for directory in (sending, uploads, bravo / "inbox" / mid, bravo / "inbox" / mid / "files", results[0],
+                          results[0].parent, downloads.parent, downloads):
+            self.assertEqual("0o700", mode(directory), directory)
+        files = list(sending.iterdir()) + list(uploads.iterdir()) + list((bravo / "inbox" / mid / "files").iterdir())
+        files += list(results[0].iterdir()) + list(downloads.iterdir())
+        self.assertEqual(5, len(files))
+        for path in files:
+            self.assertEqual("0o600", mode(path), path)
 
     def test_upload_requires_preparation_correct_token_complete_size_and_hash(self):
         data = b"validated staged upload"
