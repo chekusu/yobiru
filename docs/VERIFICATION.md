@@ -20,8 +20,9 @@ plugin or gateway change; nothing released), on Python 3.13 on Linux, with synth
   showed that the runbook must `chmod 600` the copied token files, because the CLI refuses any other mode; the
   runbook now does.
 
-Not tested here: a native Grok Bot or any other real agent following the runbook, Tailscale Serve or any HTTPS
-route, macOS (the intended admin device), Windows and Python 3.8 execution (syntax only).
+Not tested here: a native Grok Bot or any other real agent following the runbook, a restart of the agent's device
+during a run (the runbook's resume section), Tailscale Serve or any HTTPS route, macOS (the intended admin device),
+Windows and Python 3.8 execution (syntax only).
 
 ## 0.6.0-beta.1 release preparation
 
