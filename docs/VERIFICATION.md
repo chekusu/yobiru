@@ -3,6 +3,42 @@
 Yobiru release verification. This page separates what has actually been run from what has not. It is not a
 security guarantee: the tests show the behaviors listed below, nothing more.
 
+## Friends schema 3: routing, delivery evidence, decisions, loop budgets, attachments and MCP (unreleased)
+
+On 2026-10-21, on a development branch based on the delivery reliability branch (version unchanged; nothing
+released, deployed, installed or restarted), on Python 3.12, with synthetic homes and data, loopback HTTP and
+subprocess stdio only:
+
+- `python3 -m unittest discover -s tests -p 'test_*.py'` passed **448 tests** (in 260 s).
+- `python3 -m unittest test_codex_bridge test_codex_queue_client test_codex_resident test_install_codex_bridge
+  test_install_codex_bridge_linux` passed **194 tests**.
+- After that run, one MCP test was added (files withdrawn, as seen through the tools), unused test imports were
+  removed and documentation was edited, without any runtime change. The affected suites (`test_friends_mcp`,
+  `test_friends_decisions`, `test_friends_migration`, `test_public_bundle` and `test_build`) then passed
+  **55 tests**.
+- `python3 tools/build_plugin.py sync` and `check` passed; `git diff --check` was clean; the changed Python files
+  parse with the Python 3.8 grammar (parsing, not execution on Python 3.8).
+
+What the new tests cover (real `bot_gateway.py` subprocesses, the real CLI, and `bot_client.py mcp` as a real
+stdio subprocess; the native host and connector are played by the tests through their credentials):
+
+| Area | Behavior shown |
+| --- | --- |
+| Routing and directory (`test_friends_routing.py`) | A renamed bot keeps its saved alias and conversation and `contacts --refresh` reports the new handle, while the old handle names nothing; a reused handle never retargets a saved contact; a rebind keeps the bot and fences the old binding; a renamed handle stays reserved to its owner; the owner directory shows bindings, hosts and session notes that no card, caller view, job view or MCP lookup contains. |
+| Delivery evidence (`test_friends_routing.py`) | Declarations are validated and stay claims; the card reports `binding_configured`, never online; a bare acknowledgement or an accepted wake alone is not wake evidence, a correlated one is; quiet-wake correlation needs an unused credential; evidence only moves forward and keeps the winning event's route; a replaced binding, 8-day-old evidence and a future time read `unknown`, `stale` and `unknown`; lifecycle stages stay separate, and a GET is recorded as served, only an explicit acknowledgement as acknowledged. |
+| Decision receipts (`test_friends_decisions.py`) | Each review writes one idempotent receipt whose digest covers the record; review and receipts are the owner credential's only; a decision id authorizes nothing; a caller's projection hides rejected and unreleased draft hashes (no oracle) and verifies itself; other callers, owners, issuers, revoked callers and trust receipts get the same 404; history stays while the current authorization ends; trust receipts follow the current state and are never reused across generations; an admission past its deadline is not current even before any sweep (fake clock, in-process); attachment names and contents are bound into both the request and the draft hash. |
+| Loop budgets and notices (`test_friends_loops.py`) | Exact retries succeed after a budget is exhausted and are charged once, changed ones (text, kind, cause) are refused before any charge; the pair budget survives new and deleted conversations and a restart; `human`, `reset` and `hop` are refused and only the owner continues; 8 concurrent admissions are charged exactly, 4 concurrent identical retries store one message; continuations are bounded, idempotent, refused when changed or with a stale anchor, and voided by a rebind or a narrowed grant; causes are validated and hops bounded; notices are never charged, woken for or turned into chat turns, and 101 notices drain from the agent's inbox oldest first without starvation while a stale sender's notice is retired. |
+| Attachments (`test_friends_attachments.py`) | `files` is checked by presence (also for an empty file) on sends and replies; invalid names, contents, counts, sizes, duplicates and extra fields fail before any effect; daily and retained quotas (the caller's whole exposure, reply included) are prechecked, a retry is free, and deleting a conversation releases stored bytes; before admission the worker learns nothing about attachments; withdrawing `files` withholds them from every view and transcript and widening again revives nothing; the sender CLI refuses unsafe roots, hidden, secret-looking, oversized, non-UTF-8, control-character, device, FIFO, directory, symlinked (final or intermediate), traversing and outside paths, and a replaced root; the recipient revalidates every item before writing and never follows a planted link; a full CLI roundtrip (send, admit, claim, export, reply with a file, approve, receive, save, verify), then a revoked caller saves nothing new. |
+| MCP (`test_friends_mcp.py`) | Version negotiation, notifications (202, empty), ping, unknown methods and cursors; 405 without SSE, Origin (403, an allowed origin passes), missing, malformed, unknown and revoked credentials (401), owner, connector, verifier, ticket and deterministic-worker credentials (403), Content-Type (415), Accept (406), batches, response objects, parse errors, protocol header and body size; a disabled endpoint; 17 caller and 10 host tools with closed input schemas, output schemas and annotations, no administration tools, and isolation between roles; invalid arguments and other-gateway links refused before anything runs; idempotent sends, a conversation that must belong to the named bot (chat, notice and an existing op key), and a retry after the handle moved that reaches the same bot; the supervised flow with attachments, acknowledgement, decisions, verification, check-in and the notice inbox; withdrawn files and revocation as seen through the tools; the stdio proxy answering one JSON line per request with clean stdout and no credential, refusing `--host` next to the owner credential and `--as` with `--host`, and reporting an unreachable gateway as an unknown outcome. |
+| Migration (`test_friends_migration.py`) | A real schema-2 database (from `tests/fixtures/bot_gateway_v2.py`, the gateway at 961f065) is refused by `serve`, migrated once (idempotent), and keeps capabilities, follows, the queued chat and its request hash, wake evidence and no invented decision or declaration; a failing migration rolls back to schema 2 completely. |
+
+Independently of the suite, the maintainers ran the official MCP SDK client against a local gateway over HTTP and
+through the stdio proxy, including the packaged launcher from a built plugin archive in a path with spaces (17
+caller and 10 host tools, role and protocol negatives, idempotence and the replay after a handle moved), and
+independent identity, delivery and attachment reviews. Not tested: a hosted MCP platform (Grok, Muse, Dots), an
+OAuth-only host, a real native agent answering through MCP, file attachments on Windows (they need POSIX
+`dir_fd`), execution on Python 3.8, a production gateway or real Tailscale. `selftest.sh` was not run.
+
 ## Delivery and maintenance reliability (unreleased development branch)
 
 On 2026-10-21, on a development branch based on the Friends branch (version unchanged; nothing released,

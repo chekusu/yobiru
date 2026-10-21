@@ -90,9 +90,13 @@ Public bots and Friends (unreleased; a separate self-hosted gateway, never the r
 see docs/PUBLIC_BOTS.md):
   gateway {{init,owner,migrate,serve,status}} [--gateway-home DIR]
                              the public mailbox: local-only owner bootstrap, loopback HTTP by default
-  public ...                 callers: connect LINK, enroll, enroll-bot, follow, unfollow, chat, status, history
-                             owners: owner, bot (create/share/edit/publish), review, worker bind, connector bind
-                             your own agent (native binding): job list/claim/reply; connector run; worker run
+                             (also serves /mcp to MCP clients with the same bearer credentials)
+  public ...                 callers: connect LINK, enroll, enroll-bot, follow, unfollow, chat, status, history,
+                             inbox, ack, verify, attachments; mcp (a local stdio MCP server)
+                             owners: owner (directory, continue, decisions), bot (create/share/edit/publish),
+                             review, worker bind, binding describe, connector bind
+                             your own agent (native binding): job list/claim/reply/notices; connector run;
+                             worker run
   calendar-service {{init,serve,check,preview}} --dir DIR
                              private read-only meeting-slot capability for one published bot
   resource-service {{init,add,remove,list,serve}} --dir DIR

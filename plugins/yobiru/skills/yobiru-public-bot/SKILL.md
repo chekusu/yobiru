@@ -1,6 +1,6 @@
 ---
 name: yobiru-public-bot
-description: Publish one of the user's bots through a self-hosted Yobiru gateway and share its link so other people's agents can talk to it - initialize the gateway, create, share and publish the bot, set what visitors, followers and friends may use, follow other bots back, grant, restrict, block or trust contacts, bind the user's own agent for supervised chat (admit messages, approve replies, resolve unknown outcomes), run the connector that wakes it, and set up the deterministic FAQ/leave-message/calendar worker and owner-approved resource exports. Unreleased development version.
+description: Publish one of the user's bots through a self-hosted Yobiru gateway and share its link so other people's agents can talk to it - initialize or migrate the gateway, create, share and publish the bot, set what visitors, followers and friends may use (including opt-in small text files), follow other bots back, grant, restrict, block or trust contacts, bind and describe the user's own agent for supervised chat (admit messages and notices, approve replies, resolve unknown outcomes, continue budgeted bot conversations, read decision receipts and the private directory), run the connector that wakes it, configure the MCP endpoint, and set up the deterministic FAQ/leave-message/calendar worker and owner-approved resource exports. Unreleased development version.
 ---
 
 # Yobiru: publish a bot and decide who may use what
@@ -45,6 +45,13 @@ This is an unreleased development version. Say so when the user asks whether it 
     sh Y public bot share alice                     # the link to give to others, and its card
 
 `bot create` also stores a source credential so this device can follow and talk as the bot.
+`owner directory` shows the user's bots with what only they see (bindings, hosts, session notes, workers,
+evidence, reserved handles). A gateway from an earlier version needs `gateway --gateway-home GW migrate` first
+(stop it and back it up; `serve` refuses an older schema).
+
+The gateway also serves its API to MCP clients at `<public URL>/mcp` with the same credentials (no OAuth;
+`"mcp": {"enabled": false}` in `GW/gateway.json` turns it off; browser origins are refused unless listed in
+`allowed_origins`). It has not been tested with any hosted platform.
 
 ## Who may use what
 
@@ -62,6 +69,11 @@ separate per-contact decision; a ceiling caps a contact even when they become a 
 Prefer the smallest set; ask the user before granting calendar or resources. Any narrowing cancels pending
 work and withholds earlier answers from the caller; what they already received cannot be recalled.
 `PRINCIPAL_ID` is `act_...` (a visitor) or `bot_...` (another bot), from `owner contacts` or `owner followers`.
+`trust` and `untrust` are recorded as decision receipts, like every review.
+
+Small text files are opt-in: add `files` to `--offered` and to the presets or grants of the callers who may
+exchange them (for example `--friend-capabilities chat,faq,files`). Ask the user first: the gateway stores the
+files in plaintext with the messages, within daily and stored-byte quotas.
 
 ## Chat answered by the user's own agent (supervised)
 
@@ -73,9 +85,23 @@ work and withholds earlier answers from the caller; what they already received c
     sh Y public review reject-inbound|reject-reply alice JOB_ID [--text "note for the caller"]
     sh Y public review resolve alice JOB_ID retry|abandon|rewake
 
-Show the user each draft and approve only what they approve. `uncertain` means the agent may have started:
-`retry` can repeat what it did, `abandon` records the outcome as unknown. Turns of one conversation are
-answered in order. Moving the agent: `worker bind alice --adapter native --replace --token-file new.token`.
+Show the user each draft (and its attachments) and approve only what they approve. The inbound list also holds
+notices (information without a reply); admitting one lets the agent read it. `uncertain` means the agent may
+have started: `retry` can repeat what it did, `abandon` records the outcome as unknown. Turns of one
+conversation are answered in order. Moving the agent: `worker bind alice --adapter native --replace --token-file
+new.token`. Each admission, release, rejection, trust and continuation leaves a decision receipt (`owner
+decisions alice`, `owner decision ID`): an audit record of the owner credential's use, not proof that a person
+clicked, and never a credential.
+
+Describe the binding for the user only (never shown to callers): `binding describe alice WORKER_ID --host codex
+--session-note "..." --tier turn` (`push`: a wake starts an idle host; `turn`: picked up at its next turn; `pull`:
+only when it checks). `binding show alice` puts that declaration next to the recorded evidence (`recent`,
+`stale`, `none` or `unknown`); evidence is a correlation, not proof that the host was idle or online. Do not
+declare more than the user's setup does.
+
+Bot-to-bot conversations stop after a budget of automated turns. Continuing one is the user's decision:
+`owner continue CONVERSATION_ID --turns 5 --ttl-seconds 3600` (bound to the latest turn they saw; a rebind or a
+narrowed grant ends it).
 
 Waking the agent (optional; it never sends message text):
 
@@ -113,7 +139,8 @@ are not a sandbox: for a real boundary the service runs under another account or
 
 ## Report honestly
 
-A receipt means stored, not answered. Chat waits for the user's reviews and for their agent to run; nothing
-wakes a sleeping host except a configured route. The gateway stores messages in plaintext (finished bodies
+A receipt means stored, not answered; served is not delivered until the caller acknowledges it. Chat waits for
+the user's reviews and for their agent to run; nothing wakes a sleeping host except a configured route, and a
+declared tier is a claim, not a test. The gateway stores messages in plaintext (finished bodies
 deleted after 30 days by default) without end-to-end encryption. Do not claim deployment, isolation,
 automatic answering or marketplace availability.

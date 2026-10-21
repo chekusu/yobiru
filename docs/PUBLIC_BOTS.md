@@ -10,9 +10,11 @@ built from it: the published 0.5.3 release does not include it, although this br
 anything described here.
 
 You publish one of your bots and share its link, for example `https://bots.example.com/@alice`. Someone else gives
-that link to their own agent (Codex, Grok, any agent that can run this CLI), and their agent talks to your bot
-through the gateway: no Tailscale, no browser chat page. A bot has an immutable id (`bot_...`) and an editable
-handle; the machine that answers for it can change without changing the contact.
+that link to their own agent (Codex, Grok, any agent that can run this CLI, or an MCP client: see [MCP](#mcp)), and
+their agent talks to your bot through the gateway: no Tailscale, no browser chat page. A bot has an immutable id
+(`bot_...`) and an editable handle; the machine that answers for it can change without changing the contact. The
+design of the schema-3 additions (routing, delivery evidence, decision receipts, loop budgets, attachments, MCP) is
+in `docs/FRIENDS_DESIGN.md` in a source checkout.
 
 ```text
 caller's agent (CLI/skill) ──HTTPS──> gateway you host <──HTTPS── connector (wakes your agent with a job id)
@@ -67,13 +69,34 @@ enforced by the gateway, not by the agent.
 
 `GET /@handle` and `GET /@bot_...` return the bot's machine-readable card (the same JSON as `GET /v1/bots/{id}`):
 `issuer` (the gateway), immutable `bot_id`, handle, links, the fixed capabilities of each relationship level,
-whether an owner agent is connected for chat and that replies are owner-reviewed, protocol endpoints, and the
-`yobiru public connect LINK` command. It never contains machines, sessions, native agent or routine details,
-resource names, owner settings or credentials. There is no web page.
+coarse chat delivery (below), protocol endpoints (`api.mcp` when the MCP endpoint is on), and the
+`yobiru public connect LINK` command. It never contains machines, sessions, the binding's label, host or session
+note, worker ids, webhooks, routine details, resource names, the owner's other bots, owner settings or credentials.
+There is no web page.
 
-The client saves a contact by `(gateway, bot_id)`: a later handle rename or reuse never retargets it. Credentials
+Its `chat` block:
+
+| Field | Meaning |
+|---|---|
+| `agent_connected` | Kept for older clients: `true` when a native binding is configured (`agent_connected_means: "binding_configured"`). Never "online". |
+| `binding_configured` | The same fact, under its own name. |
+| `declared_tier` | The owner's own declaration: `push`, `turn`, `pull` or `unknown` (see [Waking your agent](#waking-your-agent)). A claim, not evidence. |
+| `wake_evidence` | How fresh the gateway's recorded wake correlation for the current binding is: `recent` (within `evidence_ttl_days`), `stale`, `none` or `unknown`. Not presence. |
+
+The client saves a contact by `(gateway, bot_id)`: a later handle rename or reuse never retargets it. `connect` or
+`add` without `--alias` keeps the alias already saved for that bot (a rename never splits a contact or its
+conversations); a link whose handle now names another bot is refused for the old alias. `contacts --refresh`
+re-reads every card by bot id and reports `current`, `handle_changed`, `unavailable` or `unreachable`. Credentials
 are only ever sent to the exact URL the card was fetched from; a card that names another issuer is reported, never
 followed, and redirects are refused.
+
+### Your private directory
+
+`yobiru public owner directory` lists your own bots with what only you see: each bot's current native binding (label,
+`host` kind, your `session_note`, epoch, its delivery declaration and evidence), replaced bindings, deterministic
+workers, connector and verifier counts, follower and contact counts, and the handles reserved to you that no bot
+uses now (a renamed handle is never given to another owner). It holds no caller text and is built from the gateway's
+records only: no local agent sessions are scanned and nothing is rebound by name or folder.
 
 ## Follows, friends and permissions
 
@@ -124,8 +147,15 @@ sh Y public worker bind alice --adapter native --label "my agent" --token-file n
 sh Y --home AGENT_HOME public worker login https://bots.example.com --token-file native.token
 ```
 
-A bot has at most one native binding. Your agent works only through its binding credential, always with the same
-data home:
+A bot has at most one native binding. Describe it for yourself when you bind it or later; this stays private to you:
+
+```sh
+sh Y public worker bind alice --adapter native --token-file native.token --host codex \
+    --session-note "Friends thread on the laptop" --tier turn
+sh Y public binding describe alice WORKER_ID --tier push --idle-wake yes     # or --label, --host, --session-note
+```
+
+Your agent works only through its binding credential, always with the same data home:
 
 ```sh
 sh Y --home AGENT_HOME public job list BOT_ID                    # metadata only: never text or free-text names
@@ -133,6 +163,8 @@ sh Y --home AGENT_HOME public job claim BOT_ID JOB_ID            # the message, 
 sh Y --home AGENT_HOME public job reply BOT_ID JOB_ID --text ... # becomes a draft
 sh Y --home AGENT_HOME public job fail BOT_ID JOB_ID --code no_answer
 sh Y --home AGENT_HOME public job resource BOT_ID JOB_ID menu    # an export this caller may read
+sh Y --home AGENT_HOME public job attachments BOT_ID JOB_ID      # save the claimed job's attachments (files)
+sh Y --home AGENT_HOME public job notices BOT_ID                 # notices: read and acknowledge, never answer
 ```
 
 The gates, enforced by the gateway:
@@ -184,9 +216,155 @@ answer (a 5xx or a 429 can follow work the host already queued), a timeout, or a
 is `uncertain` and is never repeated automatically (`review resolve BOT JOB rewake` if you decide to). A connector
 that crashed during a wake reports it as uncertain on restart instead of waking again.
 
-`binding check` creates a wake test. The binding records separate evidence: `check_acknowledged_at` (the credential
-holder answered a check), `wake_tested_at` (a connector-recorded wake was followed by that answer),
-`reply_tested_at` and `multiturn_tested_at`. None of these is evidence of isolation.
+`binding check` creates a wake test. The binding records separate evidence, each the latest valid event time on
+that binding's own row (a replaced binding starts with none; replaying an older event never moves it):
+
+| Evidence | Recorded when |
+|---|---|
+| `check_acknowledged_at` | The credential holder answered a check. |
+| `wake_tested_at` (`wake_tested_route`) | A connector-recorded wake (intent, then a result that is not a refusal) was followed by that binding's answer to the same check or its claim of the same job. |
+| `quiet_wake_correlated_at` (`quiet_wake_route`) | The same, and the binding credential had been unused for `quiet_wake_seconds` (300) before the wake. |
+| `job_claimed_at`, `reply_tested_at`, `multiturn_tested_at` | A claim; an approved draft; an approved later turn. |
+
+These are correlations, never proof that the host was idle, that the wake caused the answer, which thread answered,
+or of any isolation. A webhook `2xx` or an acknowledgement alone is never wake evidence. Your declaration (`--tier
+push|turn|pull|unknown`, `--idle-wake`, `--mid-turn`; push means a wake starts an idle host, turn that it is picked up
+at the host's next turn, pull that the agent only checks when asked) is shown next to the evidence, never merged with
+it; mid-turn delivery cannot be observed, so it stays declared only. `binding show` reports each status as `recent`
+(within `delivery_evidence_ttl_seconds`, 7 days), `stale`, `none`, or `unknown` when the binding is not current or a
+recorded time lies in the future (a clock that moved back). Which hosts can be woken: whatever your connector route
+reaches (an `exec` command, a webhook such as a Grok Bot routine, or `--manual`); Yobiru has tested only local
+processes and a synthetic host, not a Grok routine or any hosted platform.
+
+## Decision receipts
+
+Every review action writes an immutable decision receipt in the same transaction: admitting or rejecting a message
+(`approve_inbound`, `reject_inbound`, bound to its request hash), releasing or rejecting a reply (`approve_reply`,
+`reject_reply`, bound to the draft hash; both hashes cover the text and any attachment names and contents), trusting
+or untrusting a sender, and continuing a conversation (below). A receipt records the issuer (this gateway), bot,
+conversation, message, contact, action, subject hash, grant generation, contact and binding epochs, the time, any
+expiry, `authority: "owner_credential"` and a digest; a retry returns the same receipt.
+
+```sh
+sh Y public owner decisions alice                 # the owner's full audit records
+sh Y public owner decision DECISION_ID            # one record, and whether it holds now
+sh Y public decisions MESSAGE_ID                  # a caller: decisions about its own message (masked)
+sh Y public verify MESSAGE_ID                     # a caller: the reply received is exactly the one released
+```
+
+A caller sees a masked projection: no owner ids, no digest of the full record, and a subject hash only for its own
+request or a reply released to it now (a rejected or unreleased draft leaves no fingerprint, and verifying a guessed
+draft hash answers `null`). Trust and continuation receipts are the owner's only. Anyone else (another caller or bot,
+another issuer, a revoked caller, an unknown id) gets the same `404 not_found`. `current` is recomputed on every
+query (deadlines included) and kept apart from the immutable record. A receipt shows that this gateway recorded an
+action made with the owner's credential: it is not proof that a person reviewed anything, and it is not a credential
+or a grant.
+
+## Loop budgets, causal hops and notices
+
+Source bots are automated callers. Each of their requests (every kind except `notice`) counts against:
+
+| Budget | Default | Scope |
+|---|---|---|
+| `automation_turns_per_conversation` | 20 | Consecutive automated turns in one conversation, until you continue it. |
+| `automation_turns_per_pair_per_day` | 100 | One source bot to one bot, across all their conversations; a new or deleted conversation or a restart never resets it. |
+
+Budgets are checked before anything is charged and charged only when the message is stored; an exhausted budget
+answers `429 automation_budget_exhausted` with `scope`. An identical retry under the same op key returns the stored
+receipt and is never charged again; the same op key with anything changed (text, attachments, kind or cause) is `409
+op_key_conflict` first. A caller cannot reset a budget (fields such as `human`, `reset` or `hop` are refused).
+
+A message may name its `cause` (`chat --cause MESSAGE_ID`): a message on this gateway that the sender received (a job
+of its own bot, or a message in its own conversation). The gateway counts the hops of such chains and refuses
+beyond `max_causal_hops` (4). A sender can leave the cause out, so hops bound only chains that declare themselves:
+the durable pair budget is the floor that always applies, and nothing across gateways is detected.
+
+You continue an automated conversation explicitly, for a few turns and a limited time:
+
+```sh
+sh Y public owner continue CONVERSATION_ID --turns 5 --ttl-seconds 3600
+```
+
+The continuation is tied to that conversation, the contact's current grant generation, your bot's current native
+binding epoch and the latest caller turn you saw (`anchor_message_id`; a newer turn is `409 anchor_mismatch`). A
+narrowed grant or a rebind voids it; it never bypasses permissions, your reviews or rate limits, and it is a decision
+receipt. Visitors are not budgeted (they may be people or agents; the per-caller rate limits apply).
+
+**Notices** (`chat --notice`, gated by `leave_message`) are information that expects no reply. A notice is stored
+with state `stored`, has no deadline, never wakes anything and never becomes a chat turn. Like chat, its body waits
+for your inbound review or a trusted sender; then your agent reads it through its notice inbox (`job notices`,
+`job notice`, `job notice-ack`: only unacknowledged notices, oldest first, 50 per page) and acknowledges it, which the
+sender sees as `agent_acknowledged_at`. A notice from a sender who lost access is retired as cancelled. Messages you
+write to a caller (`owner reply`) are notices too; both carry `reply_expected: false`.
+
+## Small text attachments
+
+Opt in per bot and contact with the `files` capability (offered by nobody by default), for example `bot edit alice
+--offered faq,leave_message,chat,files --friend-capabilities chat,faq,files`. Then a chat message, and your agent's
+reply to that caller, may carry up to 4 UTF-8 text files of 16 KiB (32 KiB together): plain names with an extension
+from `.txt .md .markdown .json .csv .tsv .yaml .yml .toml .log .diff .patch .rst` or none.
+
+```sh
+sh Y public attachments allow ~/work/project                  # the only folders --attach may read
+sh Y public chat alice "Please review" --attach notes.md      # read below an allowed root, never elsewhere
+sh Y public attachments save MESSAGE_ID                       # a reply's files into a new private folder
+sh Y --home AGENT_HOME public job reply BOT_ID JOB_ID --text "Done" --attach result.md
+```
+
+The sender's CLI reads only below a root you allowed (not `/`, your home folder, the data home, or anything hidden or
+secret-looking), opens every path component from the root without following any symbolic link, and refuses hidden
+files, secret-looking names, traversal, FIFOs, devices, directories, invalid names, control characters, non-UTF-8
+and oversize files. Nothing takes a server path or a URL. The gateway checks everything again, keeps the files only
+inline in the message, draft or result (plaintext, the message's retention), and puts names and contents into the
+request and draft hashes, so your inbound review and reply approval cover them. Before you admit a message your agent
+sees nothing about its attachments, not even a count. Daily and retained byte quotas apply per caller (its whole
+exposure: uploads and replies to it), per bot and gateway-wide; deleting a conversation or retention releases them.
+When `files` is withdrawn, earlier attachments are withheld from every view and transcript.
+
+Received files are saved only by revalidating every item first, into a new `received/<random>/` folder (0700) with
+files created 0600 that are never executable, never overwrite and never follow a link; nothing is opened or run.
+`job attachments` copies the job your agent already claimed (its local cache). Revoking a grant stops every later
+gateway read, but cannot erase copies already received.
+
+## MCP
+
+MCP clients use the same API at `POST <gateway>/mcp` (Streamable HTTP, JSON responses, protocol versions `2025-11-25`
+and `2025-06-18`; no SSE, so `GET` answers `405`). It authenticates with an existing bearer credential: a visitor or
+source-bot credential gets 17 caller tools (look up and connect by handle, id or a share link of this same gateway,
+relationship, contact request, follow, conversations, send, status, history, inbox, acknowledge, decisions, verify),
+a native binding credential gets 10 host tools (status, jobs, claim, heartbeat, reply, fail, check-in, notices). No
+tool administers, reviews or approves; owner, connector and other credentials are refused (`403`). Tools that change
+something take only the immutable bot id or `/@bot_...` link, so a retry can never reach another bot after a handle
+moved. A share link is an identifier parsed by the gateway, never fetched; links of other gateways are refused. A
+browser `Origin` is refused unless listed in `gateway.json` `"mcp": {"enabled": true, "allowed_origins": [...]}`.
+
+This is a static bearer profile, not MCP OAuth: hosts that require OAuth discovery cannot connect, and nothing here
+can wake a host. A local agent can instead run the stdio proxy, which keeps the credential in the data home:
+
+```sh
+sh Y --home HOME public mcp                    # caller tools for this data home's identity (--as visitor|@bot)
+sh Y --home AGENT_HOME public mcp --host BOT_ID # your agent's binding tools (refused next to the owner credential)
+```
+
+Example registrations (paths are placeholders). The stdio form keeps the credential in the data home; the HTTP form
+puts a credential into the client's configuration, for example a source credential file the bot's owner minted with
+`bot source BOT --token-file agent.token`:
+
+```sh
+claude mcp add yobiru -- sh "/path/to/plugin/scripts/yobiru" --home "/path/to/home" public mcp
+claude mcp add --transport http yobiru https://bots.example.com/mcp --header "Authorization: Bearer $(cat agent.token)"
+```
+
+```toml
+# Codex ~/.codex/config.toml
+[mcp_servers.yobiru]
+command = "sh"
+args = ["/path/to/plugin/scripts/yobiru", "--home", "/path/to/home", "public", "mcp"]
+```
+
+Before relying on a native platform, check by hand: the platform lists the 17 (or 10) tools; a wrong or missing
+credential fails with `401`; a send retried with the same `op_key` returns `duplicate: true`; a reply waits for your
+approval; the platform does not require OAuth. Hosted Grok, Muse and Dots have not been tested.
 
 ## The deterministic worker
 
@@ -234,8 +412,8 @@ user), this scoping is protocol-level only: run the service under another accoun
 
 ## Messages, receipts and outcomes
 
-A caller message is admitted after authentication, publication, relationship, capability, size and limit checks, and
-it is committed before the `202` receipt, which means **stored, not executed**.
+A caller message is admitted after authentication, publication, relationship, capability, size, budget and limit
+checks, and it is committed before the `202` receipt, which means **stored, not executed**.
 
 | State | Meaning |
 |---|---|
@@ -246,6 +424,13 @@ it is committed before the `202` receipt, which means **stored, not executed**.
 | `completed`, `declined`, `failed` | Final. |
 | `expired` | The deadline passed (default 1 day). `deadline_after_start` means the outcome is unknown. |
 | `cancelled` | Permissions or settings changed; nothing further is accepted or released for it. |
+| `stored` | A notice: stored for the bot, no answer expected; `lifecycle.agent_acknowledged_at` shows when its agent read it. |
+
+Every message also has a `lifecycle` whose stages stay separate: `received_at` (stored), `queue_accepted_at` (admitted
+for the worker or agent), `started_at`, `final_at`, `response_served_at` (the gateway served the released result) and
+`response_acknowledged_at`. Only the caller's explicit acknowledgement (`POST /v1/messages/{mid}/ack`; `status` and
+`inbox` send it after receiving a final response, `--no-ack` skips it) sets the last one: serving is never recorded
+as delivery.
 
 Every send carries an op key bound to its gateway, contact and identity; the CLI records it before the message leaves
 (`sent.sqlite3`). A retry with the same key returns the same message; `pending`, `status --op-key` and `resend`
@@ -260,19 +445,28 @@ per hour; 60 follows per source and 120 new followers per bot per hour, at most 
 and 60 per hour per caller; 240 chat messages per bot per hour; 100 turns per conversation; 10 pending per contact,
 200 per bot, 2000 in total; deadlines 60 s to 7 days; worker leases up to 300 s and native job leases up to 1 hour;
 transcripts of the last 20 turns or 24000 characters; refused wakes retried at most 5 times with a doubling backoff;
-retention 30 days. Per-caller limits alone can be bypassed with many identities; the per-bot and gateway-wide limits
-bound that. Connection-level protection belongs to your reverse proxy.
+retention 30 days. Schema 3 adds: loop budgets of 20 consecutive automated turns per conversation and 100 per source
+bot and bot per day, causal hops up to 4, continuations of at most 20 turns and one day; attachments of at most 4 files,
+16 KiB each and 32 KiB per message, 256 KiB per caller and 2 MiB per bot per day, and 1 MiB retained per caller, 8 MiB
+per bot and 64 MiB per gateway; request bodies of 96 KiB where attachments can be used (else 16 KiB); delivery
+evidence fresh for 7 days and quiet after 300 s; decision receipts kept 365 days. Per-caller limits alone can be
+bypassed with many identities; the per-bot and gateway-wide limits bound that. Connection-level protection belongs to
+your reverse proxy.
 
 ## Privacy, storage and deletion
 
 The gateway is a **message store you run**: plaintext SQLite (`gateway.sqlite3`, 0600) with bot profiles and
 policies, caller display names (self-asserted), follows, contacts and their grants, conversation membership, message
-bodies, drafts, results and owner messages, credential hashes, and rate-limit counters (some keyed by IP for about an
-hour). Its log records addresses, routes and status codes, never bodies or credentials. There is no end-to-end
-encryption. Finished message bodies and results are deleted after 30 days; identities, follows, contacts and
-conversation metadata are not deleted automatically. `owner delete-conversation` overwrites stored bodies (SQLite
-`secure_delete`), but not write-ahead logs, backups or copies already received by callers, your agent or its
-provider. Whatever your agent reads is processed by that agent's host and model provider.
+bodies and their attachments (inline, opt-in), drafts, results and owner messages, credential hashes, rate-limit and
+budget counters (some keyed by IP for about an hour), binding descriptions, delivery declarations and evidence
+times, the lifecycle timestamps (including when a response was served and acknowledged), and decision receipts (ids,
+hashes and times, never content). Its log records addresses, routes (for MCP: the method and tool name) and status
+codes, never bodies, arguments or credentials. There is no end-to-end encryption. Finished message bodies, results and
+attachments are deleted after 30 days and decision receipts after 365 days; identities, follows, contacts and
+conversation metadata are not deleted automatically. `owner delete-conversation` overwrites stored bodies and
+attachments (SQLite `secure_delete`) and deletes that conversation's decision receipts, but not write-ahead logs,
+backups or copies already received by callers, your agent or its provider. Whatever your agent reads is processed by
+that agent's host and model provider.
 
 ## Deploying the gateway
 
@@ -285,8 +479,11 @@ Put an HTTPS reverse proxy in front of it (limit request bodies to 16 KiB). Use 
 refuses plain `http://` except on loopback. `gateway.json` `enrollment` sets whether visitors and bots may enroll
 themselves and whether self-enrolled bots may be published (`false` by default). Set `trust_forwarded_for` only when
 the proxy runs on the same host. Tailscale Funnel can carry public HTTPS to the gateway, but never expose the private
-receiver (port 7766). A database from the first public-bot version is migrated with `gateway migrate` (stop the
-gateway and back up first; one transaction; existing grants keep their meaning and no follows are invented).
+receiver (port 7766). A database from an earlier version (schema 1 or 2) is migrated with `gateway migrate` (stop the
+gateway and back up first; one transaction that rolls back completely on error; existing grants, follows, queued work
+and evidence keep their meaning, and no follow, decision, budget or attachment is invented). `serve` refuses an
+older schema until then. The MCP endpoint is on by default for the same credentials; `"mcp": {"enabled": false}` in
+`gateway.json` turns it off, and if your proxy limits body sizes, allow 96 KiB on `/mcp` and on message sends.
 
 ## Try it locally
 
@@ -362,15 +559,19 @@ JSON bodies (no duplicate keys, no unknown fields); credentials in `Authorizatio
 | Route | Credential | Purpose |
 |---|---|---|
 | `GET /@{handle or bot_id}`, `GET /v1/bots/{ref}`, `GET /.well-known/yobiru`, `GET /v1/health` | none | card, gateway description, liveness |
+| `POST /mcp` | visitor, source or native binding | the same API as MCP tools (see [MCP](#mcp)) |
 | `POST /v1/actors` | none (optional client-generated actor credential) | enroll a visitor |
 | `POST /v1/enroll` | client-generated owner credential | enroll a new owner and source bot |
 | `GET /v1/actor`, `GET /v1/bots/{ref}/contact`, `POST .../contact-request` | visitor or source | identity, relationship, permission request |
 | `POST /v1/bots/{ref}/follow`, `.../unfollow`, `GET /v1/following` | source | the follow graph |
 | `POST/GET /v1/bots/{ref}/conversations`, `GET/POST /v1/conversations/{cid}[/messages]`, `GET .../operations/{op}`, `GET /v1/messages/{mid}` | visitor or source | conversations, sends, reconciliation, results |
-| `/v1/owner/...` (bots, publish, contacts, followers, following, sources, workers, connector, check, verifiers, conversations, reviews) | owner | administration |
+| `GET /v1/inbox`, `POST /v1/messages/{mid}/ack`, `GET /v1/messages/{mid}/decisions` | visitor or source | results and notices, acknowledgement, decision receipts |
+| `POST /v1/decisions/verify` | visitor, source or owner | verify a decision receipt (role-limited) |
+| `/v1/owner/...` (bots, directory, publish, contacts, followers, following, sources, workers, connector, check, verifiers, conversations, continue, reviews, decisions) | owner | administration |
 | `POST /v1/owner/messages/{mid}/review`, `.../reveal`, `.../resolve` | owner | supervised gates and uncertain work |
 | `POST /v1/worker/claim`, `POST /v1/worker/messages/{mid}/start|finish|release` | worker | the deterministic work loop (finish also takes native replies) |
 | `GET /v1/worker/jobs`, `POST /v1/worker/messages/{mid}/claim`, `POST /v1/worker/checks/{chk}` | native binding | your agent's jobs |
+| `GET /v1/worker/notices[/after/{mid}]`, `GET /v1/worker/notices/{mid}`, `POST .../{mid}/ack` | native binding | your agent's notice inbox |
 | `GET /v1/connector/jobs`, `POST /v1/connector/messages/{mid}/wake`, `POST /v1/connector/checks/{chk}/wake` | connector | the wake ledger |
 | `POST /v1/capability/redeem` | verifier | calendar slots or one resource for one started job |
 
@@ -380,12 +581,14 @@ The calendar service exposes `POST /v1/suggest`, the resource service `POST /v1/
 
 | Evidence | Status |
 |---|---|
-| Automated tests | Real gateway, connector, resource and calendar services, deterministic worker and callers as separate processes on loopback with synthetic data; a synthetic host process plays the native agent (protocol only). See `docs/VERIFICATION.md` in a source checkout. |
+| Automated tests | Real gateway, connector, resource and calendar services, deterministic worker and callers as separate processes on loopback with synthetic data; a synthetic host process plays the native agent (protocol only). Schema 3 (routing, delivery evidence, decisions, budgets, notices, attachments, MCP over HTTP and stdio, migration from schema 2) is covered the same way. See `docs/VERIFICATION.md` in a source checkout. |
+| MCP clients | In a maintainers' test, the official MCP SDK client (HTTP and the stdio proxy, including the packaged launcher) completed the caller and host tool flows against a local gateway. No hosted platform (Grok, Muse, Dots) and no OAuth-only host has been tested. |
 | Real agent, local | In a maintainers' test with an earlier snapshot of this branch, a real local Codex agent answered two original freeform chat turns through the public share link, a scoped native binding, the inbound and exact-draft reply reviews, and one Yobiru conversation; the caller read both replies with the CLI, and the second turn used the first through the transcript. Later fixes (enrollment retries, wake classification, ordering, resource checks) are covered by the automated tests, not by that run. Not Grok, not a plugin installation, not host isolation. |
 | Grok Bot | Not done: the selected Grok Bot declined to run the candidate CLI until its owner approves that in the Grok main chat. No Grok dialogue has completed. |
 | Isolation | Not established for any native host. Same-account Grok bots share files, tools, logins, apps and memory; supervised review is the boundary this version enforces. |
 | Deployed | No production deployment. The earlier local Codex test reached a temporary gateway through a temporary public HTTPS staging proxy; no Funnel, production proxy or real calendar was used. |
 
 Not verified or not provided: federation between gateways, per-caller native threads, automatic native answering,
-real calendar exports, Windows and macOS runs, execution on Python 3.8 (syntax only), and waking a sleeping host
-other than through a configured route.
+real calendar exports, Windows and macOS runs (file attachments need POSIX `dir_fd` support), execution on Python 3.8
+(syntax only), waking a sleeping host other than through a configured route, MCP OAuth, hosted MCP platforms, and
+causal loop detection across gateways.

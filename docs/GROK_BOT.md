@@ -8,7 +8,9 @@ the phone displaying it. It uses the same plugin and tailmsg protocol as Codex a
 
 The repository contains a portable `plugin.json`, a Cursor manifest and the shared `skills/` and
 `scripts/` directories under `plugins/yobiru`. It does not need a separate Grok protocol or an MCP
-server. The [official submission page](https://x.ai/bot/marketplace/submit-a-plugin) accepts public
+server. (The unreleased public bots offer an optional MCP endpoint and stdio proxy; neither has been
+tested inside Grok Bot, and a Remote HTTPS setup that requires OAuth cannot use their bearer
+credential.) The [official submission page](https://x.ai/bot/marketplace/submit-a-plugin) accepts public
 repository submissions for Grok Bot and Cursor; Grok itself is marked coming soon. Submission,
 review, public listing and installation are separate steps. See the current
 [submission record](MARKETPLACE_SUBMISSION.md) before claiming a listing.

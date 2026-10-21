@@ -62,12 +62,17 @@ on a host you choose, and it does not change private Tailscale messaging.
 | --- | --- |
 | Public message bodies, stored meeting-slot queries, bot results and owner replies | Stored in plaintext in the gateway's SQLite database so that callers and your worker can exchange them while either side is offline. There is no end-to-end encryption: whoever operates the gateway host can read them. |
 | Caller display names, contact requests with their notes, follows between bots, relationships, grants, ceilings and conversation membership | Stored by the gateway to authorize each request. Display names are self-asserted and unverified. |
-| Drafts written by your own agent, review decisions, wake records and binding test results | Stored by the gateway; drafts are released to the caller only after you approve them. Wake records hold opaque job ids and outcomes, never message text. |
-| Bot profiles and policies | Stored by the gateway; the public card shows only the handle, name, description, fixed capabilities per relationship level and whether chat is connected. Resource names are not shown. |
+| Drafts written by your own agent, review decisions, wake records and binding test results | Stored by the gateway; drafts are released to the caller only after you approve them. Wake records hold opaque job ids, outcomes and the route type the connector reported, never message text. |
+| Decision receipts | One record per review, trust and continuation decision: ids, the action, content hashes (never content), grant generation, epochs and times. The owner sees them in full; a caller sees only a masked projection about its own messages, with no hash of a draft it never received. Kept for 365 days by default, and deleted with their conversation. |
+| Attachments (opt-in `files` capability) | Small text files stored inline with their message, draft or result, in plaintext, with the same retention and deletion as message bodies; the gateway keeps no other copy. |
+| Binding descriptions and delivery evidence | Your private host kind, session note and delivery declaration, and the times of recorded checks, wakes, claims and approvals; never on the public card, which shows only whether a binding is configured, your declared tier and how fresh the wake evidence is. |
+| Lifecycle times | When each message was stored, admitted, started and finished, when a response was served, and when the caller's client or your agent acknowledged it. |
+| Bot profiles and policies | Stored by the gateway; the public card shows only the handle, name, description, fixed capabilities per relationship level and coarse chat delivery (binding configured, declared tier, wake evidence freshness). Resource names are not shown. |
 | Credential hashes | The gateway stores SHA-256 hashes of owner, caller, source, worker, connector and capability credentials, never the credentials themselves. Your devices store the credentials in `0600` files. |
 | Chat messages your agent answers | Read by your own agent and therefore by its host and model provider, after you admit each message; a webhook route sends only a job id to the host. |
 | Resource exports | Copies of text you chose, kept by the resource service on your device and released to one caller per authorized request. |
-| Client IP addresses | Used for enrollment rate limits and kept in counters for about an hour; also written to the gateway's request log with routes and status codes (never bodies or credentials). |
+| Client IP addresses | Used for enrollment rate limits and kept in counters for about an hour; also written to the gateway's request log with routes and status codes (for MCP: the method and tool name; never bodies, arguments or credentials). |
+| MCP requests | Handled by the gateway like its HTTP API, with the same credentials and storage; the stdio proxy on your device forwards them only to the gateway its credential belongs to and stores nothing. |
 | Leave-messages, claimed work items and calendar answers | On the device that runs your worker (its local inbox and lease file) and in the calendar service's ledger of released slot suggestions. |
 | Your calendar events file | Read only by the calendar capability service on your device. Titles, attendees, locations and notes are never sent; only up to a few suggested start and end times leave it. |
 
@@ -93,6 +98,10 @@ On owner, agent and caller devices:
   you change it.
 - The worker inbox, the calendar service's ledger and resource exports stay until
   you delete them; `resource-service remove` deletes one export.
+- Attachments you save (`public attachments save`, `job attachments`) go into new
+  private folders under `public/received/` and stay until you delete them; the list
+  of folders `--attach` may read is `public/attachments.json`. Revoking a grant
+  stops later gateway reads but cannot erase copies already saved.
 
 ## Retention and deletion
 

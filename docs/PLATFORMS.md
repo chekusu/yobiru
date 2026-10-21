@@ -14,10 +14,14 @@ and CLI observations retain their dates below; check them again before relying o
 | `.agents/plugins/marketplace.json` | Codex repository marketplace | `source: {source: local, path: ./plugins/yobiru}`, policy `AVAILABLE` / `ON_INSTALL`, category `Productivity`. |
 | `.cursor-plugin/marketplace.json` | Cursor (repository, team marketplace import) | `name`, `owner.name`, `plugins[]` with `source: plugins/yobiru`. |
 
-Not shipped: MCP servers (`mcp.json`), hooks, rules, commands, agents, variables. The skills plus the
-bundled command already cover every operation. A stdio MCP wrapper would need separate tested launch
-configuration per host, because Cursor does not expand the standard `${PLUGIN_ROOT}` variable in
-`mcp.json`, and a remote MCP endpoint would need a server this project deliberately does not run.
+Not shipped in any manifest: MCP server registrations (`mcp.json`), hooks, rules, commands, agents,
+variables. The skills plus the bundled command already cover every operation, and no host starts an MCP
+server from the plugin on its own: a registration would need separate tested launch configuration per
+host, because Cursor does not expand the standard `${PLUGIN_ROOT}` variable in `mcp.json`. For the
+unreleased public bots and Friends only, a user may add the local stdio proxy `yobiru public mcp` to an MCP
+client by hand, and a gateway the user hosts serves the same API at `/mcp` to bearer-authenticated clients
+(no OAuth). This project runs no MCP service of its own, and no hosted MCP platform has been tested; see
+[public bots and Friends](PUBLIC_BOTS.md#mcp).
 
 ## Tailscale (onboarding)
 
@@ -39,11 +43,12 @@ machine's own Tailscale address, so hosts that can only run Tailscale in userspa
 - Current submission portal: <https://platform.openai.com/plugins>. Skills that run local programs
   follow the desktop-only route, declaring `requires_local_executor: true` in `extensions.com.openai`:
   <https://developers.openai.com/plugins/deploy/desktop-only>. Yobiru uses this route with no MCP
-  server and no second ChatGPT implementation. It requires a local execution environment with
+  server registration and no second ChatGPT implementation. It requires a local execution environment with
   Python and Tailscale, not a hosted ChatGPT web/mobile connector. Organization eligibility,
   identity verification, clean desktop testing and review still apply. A portal access restriction
-  must be reported rather than bypassed. Local MCP allowlisting is a separate case; Yobiru ships
-  no local MCP server. See [submission status](MARKETPLACE_SUBMISSION.md).
+  must be reported rather than bypassed. Local MCP allowlisting is a separate case; the plugin
+  registers no MCP server (the optional `yobiru public mcp` stdio proxy for public bots is added by a
+  user by hand and is not part of a submission). See [submission status](MARKETPLACE_SUBMISSION.md).
 - CLI used in the instructions: `codex plugin marketplace add|upgrade|remove`, `codex plugin
   add|remove NAME@MARKETPLACE` (checked against `codex plugin --help`, codex-cli 0.162.1).
 - Optional Codex bridge: `codex queue --thread <session UUID or exact name> --message TEXT` queues a
@@ -92,7 +97,8 @@ Grok Bot is documented on cursor.com and docs.x.ai. It is not the Grok Build CLI
   usually the teammate's computer, Slack channels and group chats a shared computer:
   <https://docs.x.ai/grok-bot/team-bots>, <https://cursor.com/help/grok-bot/team-bots>
 - Custom MCP servers can be **Command** (runs on the conversation's computer) or **Remote HTTPS**:
-  <https://docs.x.ai/grok-bot/team-bots>
+  <https://docs.x.ai/grok-bot/team-bots>. Neither has been tried with Yobiru's public bot MCP endpoint
+  or stdio proxy; a Remote HTTPS server that requires OAuth cannot use its static bearer credential.
 - Tailscale on team computers (Enterprise **Team Setup** scripts, Debian-based Linux, `sudo`
   available): <https://cursor.com/docs/grok-bot/private-networks>
 - Routine webhooks: the routine's **Webhook** section shows the URL, the key and the header

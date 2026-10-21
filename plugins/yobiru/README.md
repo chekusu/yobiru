@@ -29,12 +29,14 @@ Repository installation does not establish a public listing.
 | `scripts/yobiru`, `scripts/yobiru.py` | The `yobiru` command: setup, doctor and status, plus the messaging commands. |
 | `scripts/tailmsg.py` | The bundled tailmsg CLI and receiver (stdlib only). |
 | `scripts/codex_bridge/` | Optional bridge into one fixed Codex session: macOS desktop app, or Linux user systemd + local app-server socket. |
-| `scripts/public_bots/` | Unreleased public bots and Friends: the gateway, the client (callers, owners, your agent, connector, worker) and the private calendar and resource services (stdlib only). |
-| `docs/PUBLIC_BOTS.md` | The public bots and Friends guide: identities, follows and permissions, supervised chat, limits, storage, deployment. |
+| `scripts/public_bots/` | Unreleased public bots and Friends: the gateway (with an optional MCP endpoint), the client (callers, owners, your agent, connector, worker, a local MCP stdio proxy) and the private calendar and resource services (stdlib only). |
+| `docs/PUBLIC_BOTS.md` | The public bots and Friends guide: identities, follows and permissions, supervised chat, delivery evidence, decision receipts, loop budgets and notices, attachments, MCP, limits, storage, deployment. |
 | `examples/public-bot-demo.sh` | A self-contained demo of the deterministic part: synthetic data on 127.0.0.1 only, deleted when it ends (`sh examples/public-bot-demo.sh`). |
 | `scripts/SOURCES.json` | Where the bundled files come from, with SHA-256. |
 
-No hooks, MCP servers or permission settings are included. Installing the plugin runs nothing.
+No hooks, MCP server registrations or permission settings are included. Installing the plugin runs nothing. For the
+unreleased public bots, `yobiru public mcp` is a stdio MCP server you may add to an MCP client yourself, and a gateway
+you host can serve `/mcp` to bearer-authenticated clients (no OAuth; no hosted platform has been tested).
 
 The OpenAI package declares desktop execution because the skills run local programs. It uses the
 same implementation for Codex and compatible ChatGPT desktop installations; no hosted web or mobile
@@ -121,8 +123,8 @@ task execution authority. Preserve local scope restrictions when updating dispat
 | `request send`, `request respond`, `request maintain` | save request/response state; maintain may retry responses over the network |
 | `request status`, `request list` | read-only; status `--refresh` contacts the original receiver and saves the reconciled response |
 | `send`, `reply`, `inbox`, `show`, `fetch`, `ack`, `wake`, `serve` | tailmsg commands; tracked requests require a durable outcome before ack |
-| `gateway init`, `gateway owner add/rotate`, `gateway migrate` | write a new gateway home or credential file (never overwrite), or upgrade a first-version database in one transaction; `gateway serve` runs the public mailbox |
-| `public ...` | unreleased public bots and Friends; state in `<home>/public/` only (guide: `docs/PUBLIC_BOTS.md` in this plugin) |
+| `gateway init`, `gateway owner add/rotate`, `gateway migrate` | write a new gateway home or credential file (never overwrite), or upgrade an earlier database (schema 1 or 2) to schema 3 in one transaction; `gateway serve` runs the public mailbox |
+| `public ...` | unreleased public bots and Friends; state in `<home>/public/` only (guide: `docs/PUBLIC_BOTS.md` in this plugin); `public attachments save` and `job attachments` write only new private folders under `<home>/public/received/`; `public mcp` serves MCP over stdio and writes protocol messages only to stdout |
 | `calendar-service init/serve/check/preview` | private read-only calendar capability for one public bot |
 | `resource-service init/add/remove/list/serve` | private owner-approved text exports for one public bot; `add` copies a file into its directory |
 

@@ -61,7 +61,7 @@ Files: recipient fetches from the sender, then checks size + SHA-256.
 
 接收进程监听本机的 Tailscale 地址，默认端口为 `tcp:7766`。它通过 `tailscale whois` 验证连接机器的身份，检查本地访问策略，然后保存接受的消息。附件暂存在发送方，通过有时效的链接提供给指定收件机器。链接默认有效期为 24 小时。
 
-私有消息使用现有的 **tailmsg protocol v1**，不附带 MCP 服务器，也不需要 Yobiru 账户。公开 bot 与 Friends 使用另一套小型 HTTP 协议，身份是你托管的网关上的匿名凭证。Tailscale 提供网络和机器身份，可能直接传输加密流量，也可能通过其中继传输。参见 [Tailscale 连接类型](https://tailscale.com/docs/reference/connection-types)。
+私有消息使用现有的 **tailmsg protocol v1**，没有 MCP 服务器，也不需要 Yobiru 账户。公开 bot 与 Friends 使用另一套小型 HTTP 协议，身份是你托管的网关上的匿名凭证；该网关也可以把同一套 API 提供给 MCP 客户端（`/mcp`，使用现有的 bearer 凭证，不支持 OAuth），`yobiru public mcp` 是可选的本地 stdio 代理。插件本身不注册任何 MCP 服务器。Tailscale 提供网络和机器身份，可能直接传输加密流量，也可能通过其中继传输。参见 [Tailscale 连接类型](https://tailscale.com/docs/reference/connection-types)。
 
 ## 前置条件
 
@@ -301,8 +301,13 @@ sh "$Y" session bind --agent grok --runtime grok --session-id CHAT_ID --display-
 - **由你自己的 agent 聊天（受监督）：** 自由对话由你自己的 agent 通过该 bot 唯一的原生绑定回答。每条消息在你放行之前不会交给你的 agent 读取（也可以信任某个发送者），每条回复也必须经你按原文批准后来访者才能看到。每位来访者有各自的 Yobiru 对话，你的 agent 拿到的是该对话的记录：这是逻辑上的对话，不是隔离的原生线程。不提供自动回答。同一账户下的 Grok bot 共享文件、工具、登录、应用和记忆，因此单独建一个 bot 并不构成隐私边界。
 - **自动回答仅限确定性内容：** 所有者编写的 FAQ、留言，以及私有日历服务给出的只读会议时间建议，由一个永远收不到聊天内容的 worker 回答。
 - **资源：** 所有者批准的文本导出，只在某位来访者的权限有效期间，通过私有服务发放给该来访者。
-- **如实报告投递：** 回执表示“已保存”而非“已完成”；结果未知时按 op key 核对；你的 agent 可能已经开始的任务绝不会被自动重复执行。
-- **存储：** 网关以明文保存消息、草稿和结果（已结束消息的正文默认 30 天后删除）；没有端到端加密。
+- **稳定的地址：** 联系人按 bot 不可变的 id 保存，handle 改名或被重新使用都不会把它引向别的 bot。只有你能看到自己 bot 的绑定、宿主和会话备注（`owner directory`）。
+- **投递：声明与记录分开：** 名片只说明是否配置了绑定、你声明的层级（push、turn 或 pull）以及记录到的唤醒关联有多新，从不声称 agent 在线。回执表示“已保存”而非“已完成”；结果被提供给来访者并不等于送达，要等来访者的客户端确认；结果未知时按 op key 核对；你的 agent 可能已经开始的任务绝不会被自动重复执行。
+- **决定回执：** 每次放行、回复的发布或拒绝、信任和继续，都在同一事务中留下审计记录，表明使用了你的凭证（不证明有人亲手点击，也不是凭证）。来访者可以核对自己收到的回复。
+- **循环预算与通知：** bot 之间的自动轮次按对话、按每对 bot 每天计数，用完后需要你明确允许继续；通知只是信息，不期待回复。
+- **小型文本附件（需开启）：** 开通 `files` 能力后，聊天和回复可以附带少量小型 UTF-8 文本文件，同样受你的审核约束；CLI 只从你允许的文件夹读取，并把收到的文件保存到新的私有文件夹。
+- **MCP：** 通过网关的 `/mcp` 或本地 `yobiru public mcp` stdio 代理提供来访者与 agent 的工具，凭证和检查完全相同；没有审核或管理工具，不支持 OAuth，未在任何托管平台上测试。
+- **存储：** 网关以明文保存消息、草稿、结果和开通后的附件（已结束消息的正文默认 30 天后删除）；没有端到端加密。
 
 目前的真实 agent 测试：一个真实的本地 Codex agent 已经通过本分支较早的快照完成了受监督的两轮对话；Grok Bot 测试尚未进行（该 bot 正在等待其所有者在 Grok 主对话中批准）。完整协议、信任模型、限制和部署见[公开 bot 与 Friends](docs/PUBLIC_BOTS.md)（英文）。skills：`yobiru-bot-contacts`（通过链接与 bot 对话）、`yobiru-public-bot`（发布、权限、审核）和 `yobiru-friends-host`（你的 agent 回答聊天）。
 
@@ -381,7 +386,7 @@ python3 tools/build_plugin.py release
 | Cursor / Grok Bot / DOTS | 手动部署的 Grok Bot 0.5.0 runtime 已完成真实跨机器可追踪请求和认证状态查询。原生 Grok／Cursor 市场安装及重建恢复仍需单独验收。未提供 DOTS 连接器。 |
 | 0.3.0 引导、发现与更新 | 离线测试：各平台引导（未安装、未登录、守护进程、权限、无 TUN），带认证的 `/info` 与不含机密的投影，原生名称／确认标题／别名与 UUID，旧版 404／403／不可达／格式错误／慢速对端，release 解析与渠道，通知去重、重试和 uncertain 处理，桥接升级保留名称。未连接真实 Tailscale、GitHub 或对端。 |
 | 公共市场上架 | 见[提交记录](docs/MARKETPLACE_SUBMISSION.md)。仓库安装、提交、审核与正式上架是不同阶段。 |
-| 公开 bot 与 Friends（未发布） | 自动化测试以独立本地进程运行真实网关、connector、确定性 worker、日历与资源服务和来访者，仅用回环地址和合成数据；由一个合成宿主进程扮演所有者的 agent。一个真实的本地 Codex agent 已通过较早的快照完成受监督的两轮对话。未验证 Grok Bot 运行、生产环境部署、真实日历或宿主隔离；该较早快照的 Codex 测试使用的是临时网关和临时的公网 HTTPS 预发布代理。见[公开 bot 与 Friends](docs/PUBLIC_BOTS.md#what-has-and-has-not-been-verified)。 |
+| 公开 bot 与 Friends（未发布） | 自动化测试以独立本地进程运行真实网关、connector、确定性 worker、日历与资源服务和来访者，仅用回环地址和合成数据；由一个合成宿主进程扮演所有者的 agent。schema 3 新增的内容（路由、投递证据、决定回执、循环预算、通知、附件、HTTP 与 stdio 上的 MCP、迁移）以同样方式覆盖，维护者用官方 MCP SDK 客户端在本地的测试也已通过；未测试任何托管 MCP 平台。一个真实的本地 Codex agent 已通过较早的快照完成受监督的两轮对话。未验证 Grok Bot 运行、生产环境部署、真实日历或宿主隔离；该较早快照的 Codex 测试使用的是临时网关和临时的公网 HTTPS 预发布代理。见[公开 bot 与 Friends](docs/PUBLIC_BOTS.md#what-has-and-has-not-been-verified)。 |
 
 `sh selftest.sh` 需要 Tailscale 和可用的临时端口 `7866–7883`，不会使用生产端口 `7766` 或默认数据目录。其他待验收项目见 [平台说明与来源](docs/PLATFORMS.md)。
 
