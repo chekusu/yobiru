@@ -10,6 +10,7 @@ import json
 import os
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -215,32 +216,94 @@ class NativeNameCacheTests(unittest.TestCase):
 
 
 @unittest.skipUnless(os.name == "posix", "process groups")
+def process_state(pid):
+    """'running', 'zombie' or 'gone'. kill(pid, 0) also succeeds for a process that was killed but not yet reaped
+    by its parent, which can last indefinitely under a container init that does not reap orphans. The state is
+    therefore read from /proc, or from ps where there is no /proc."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "gone"
+    except PermissionError:
+        pass                                           # it exists, owned by another user
+    try:
+        state = Path("/proc/%d/stat" % pid).read_text().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        ps = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+        if ps.returncode != 0 or not ps.stdout.strip():
+            return "gone"
+        state = ps.stdout.strip()[0]
+    return "zombie" if state in ("Z", "X") else "running"
+
+
+GRANDCHILD_SCRIPT = ("import subprocess, sys, time\n"
+                     "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                     "open(%r, 'w').write(str(p.pid))\n"
+                     "time.sleep(60)\n")
+
+
 class BoundedLookupTests(unittest.TestCase):
+    def assert_ended(self, pid):
+        for _ in range(50):
+            if process_state(pid) != "running":
+                return
+            try:                                       # reap it if it became this process's zombie
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pass
+            time.sleep(0.1)
+        os.kill(pid, signal.SIGKILL)
+        self.fail("the app-server stand-in survived the lookup timeout")
+
     def test_timeout_kills_the_whole_process_group(self):
         with tempfile.TemporaryDirectory() as d:
             pidfile = Path(d) / "grandchild.pid"
-            script = ("import subprocess, sys, time\n"
-                      "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
-                      "open(%r, 'w').write(str(p.pid))\n"
-                      "time.sleep(60)\n" % str(pidfile))
             t0 = time.monotonic()
-            code, out, err = core.run_bounded([sys.executable, "-c", script], timeout=1.0)
+            code, out, err = core.run_bounded([sys.executable, "-c", GRANDCHILD_SCRIPT % str(pidfile)], timeout=1.0)
             self.assertIsNone(code)
             self.assertLess(time.monotonic() - t0, 10)
-            pid = int(pidfile.read_text())
-            for _ in range(50):
-                try:
-                    os.kill(pid, 0)
-                except ProcessLookupError:
+            self.assert_ended(int(pidfile.read_text()))
+
+    def test_process_state_counts_a_zombie_as_ended_although_kill_0_succeeds(self):
+        live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(live.wait)
+        self.addCleanup(live.kill)
+        self.assertEqual("running", process_state(live.pid))
+        done = subprocess.Popen([sys.executable, "-c", "pass"])
+        try:
+            for _ in range(100):
+                if process_state(done.pid) == "zombie":
                     break
-                try:                                   # reap if it became our zombie (it should not)
-                    os.waitpid(pid, os.WNOHANG)
-                except ChildProcessError:
-                    pass
-                time.sleep(0.1)
-            else:
-                os.kill(pid, signal.SIGKILL)
-                self.fail("the app-server stand-in survived the lookup timeout")
+                time.sleep(0.05)
+            self.assertEqual("zombie", process_state(done.pid))
+            os.kill(done.pid, 0)                       # the old check: a zombie still "exists"
+        finally:
+            done.wait()
+        self.assertEqual("gone", process_state(done.pid))
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "PR_SET_CHILD_SUBREAPER is Linux-only")
+    def test_timeout_kill_is_seen_under_an_init_that_never_reaps(self):
+        # The fresh verifier box: the killed stand-in's parent dies too, and its new parent never reaps it.
+        # A subreaper that never calls wait() plays that init; the stand-in must count as ended.
+        with tempfile.TemporaryDirectory() as d:
+            pidfile = Path(d) / "grandchild.pid"
+            helper = ("import ctypes, importlib.util, sys, time\n"
+                      "if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:\n"
+                      "    sys.exit(3)\n"
+                      "spec = importlib.util.spec_from_file_location('core', %r)\n"
+                      "core = importlib.util.module_from_spec(spec)\n"
+                      "spec.loader.exec_module(core)\n"
+                      "core.run_bounded([sys.executable, '-c', %r], timeout=1.0)\n"
+                      "print('done', flush=True)\n"
+                      "time.sleep(60)\n" % (str(REPO / "tailmsg.py"), GRANDCHILD_SCRIPT % str(pidfile)))
+            init = subprocess.Popen([sys.executable, "-c", helper], stdout=subprocess.PIPE, text=True)
+            self.addCleanup(init.stdout.close)
+            self.addCleanup(init.wait)
+            self.addCleanup(init.kill)
+            self.assertEqual("done", init.stdout.readline().strip(), "the non-reaping init could not start")
+            pid = int(pidfile.read_text())
+            self.assert_ended(pid)
+            self.assertEqual("zombie", process_state(pid), "killed, and left unreaped by its new parent")
 
     def test_output_is_bounded(self):
         code, out, _ = core.run_bounded([sys.executable, "-c", "import sys; sys.stdout.write('x' * 2000000)"],
