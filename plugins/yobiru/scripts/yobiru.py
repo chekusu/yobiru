@@ -1866,6 +1866,15 @@ def validate_info(body, expect_node=None):
     return info, None
 
 
+def identity_unavailable(body):
+    """A receiver's documented 503 answer: its Tailscale identity lookup is temporarily unavailable."""
+    try:
+        obj = json.loads(body.decode("utf-8")) if len(body) <= MAX_REPLY_BYTES else None
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return isinstance(obj, dict) and obj.get("ok") is False and obj.get("code") == "identity_unavailable"
+
+
 def probe_info(ip, port, timeout=3.0, expect_node=None, host=None):
     """What a receiver tells this machine. kind: info | legacy | blocked | unreachable | malformed | error.
     A 404 on /info is an older receiver (0.2.x or earlier), not a missing installation; 403 is policy."""
@@ -1887,6 +1896,9 @@ def probe_info(ip, port, timeout=3.0, expect_node=None, host=None):
         res.update(kind="info", info=info) if info else res.update(kind="malformed", error=problem)
     elif status == 403:
         res["kind"] = "blocked"
+    elif status == 503 and identity_unavailable(body):
+        res.update(kind="error", error="HTTP 503: the receiver could not verify this machine's identity yet; "
+                                        "try again shortly")
     elif status == 404:
         try:
             left = deadline - time.monotonic()
@@ -2736,7 +2748,9 @@ def notice_text(me, version, release=None):
 
 def post_notice(ip, port, node, env, timeout=10.0):
     """POST one stored envelope. -> (outcome, detail, http status). outcome: notified | blocked | rejected |
-    uncertain | not_sent. Only a connection that was never established proves the notice was not sent."""
+    uncertain | not_sent. Only a connection that was never established, or the receiver's documented refusal to
+    authenticate this machine yet (503 identity_unavailable, sent before it reads a message), proves that the notice
+    was not stored."""
     data = json.dumps(env, ensure_ascii=False).encode("utf-8")
     c = http.client.HTTPConnection(ip, int(port), timeout=timeout)
     with Deadline(c, timeout) as d:
@@ -2763,6 +2777,12 @@ def post_notice(ip, port, node, env, timeout=10.0):
         return "uncertain", "HTTP %d without a valid receipt for this message id" % r.status, r.status
     if r.status == 403:
         return "blocked", "HTTP 403: the receiver's access policy refuses this machine", r.status
+    if r.status == 503 and isinstance(receipt, dict) and receipt.get("ok") is False and \
+            receipt.get("code") == "identity_unavailable":
+        # The receiver could not look up this machine's Tailscale identity yet and stored nothing: the same stored
+        # envelope is sent again on a later run. Any other 503 stays uncertain.
+        return "not_sent", "HTTP 503: the receiver could not verify this machine's identity yet (retried later)", \
+            r.status
     if r.status in (400, 404, 411, 413, 415):
         err = clean((receipt or {}).get("error") if isinstance(receipt, dict) else None, 120)
         return "rejected", "HTTP %d%s" % (r.status, ": " + err if err else ""), r.status
