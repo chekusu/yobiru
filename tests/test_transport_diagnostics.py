@@ -4,7 +4,9 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import socket
+import sys
 import tempfile
 import threading
 import unittest
@@ -202,7 +204,13 @@ class PackagedDiagnosticsTests(unittest.TestCase):
             self.assertEqual("", result.stdout)
             self.assertIn("POST /msg to " + PEER, result.stderr)
             self.assertIn("127.0.0.1:%d" % port, result.stderr)
-            self.assertIn("ConnectionRefusedError", result.stderr)
+            # Linux refuses a connection to a bound but non-listening port; a host whose firewall silently drops
+            # it (some macOS setups) times out instead. Either way the message was not delivered.
+            refused = "ConnectionRefusedError" in result.stderr
+            if sys.platform.startswith("linux"):
+                self.assertTrue(refused, result.stderr)
+            else:
+                self.assertTrue(refused or re.search(r"\b(?:TimeoutError|timeout)\b", result.stderr), result.stderr)
             self.assertIn("Delivery is unknown for message", result.stderr)
             self.assertNotIn("Traceback", result.stderr)
             _, data = pkg.run_json(["doctor", "--json"], user, **opts)

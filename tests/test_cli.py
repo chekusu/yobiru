@@ -49,10 +49,11 @@ class LocateTests(Base):
     def test_paths_resolve_inside_the_unpacked_archive(self):
         r, d = PKG.run_json(["paths"], self.user)
         self.assertEqual(0, r.returncode)
-        self.assertEqual(str(PKG.plugin), d["plugin_root"])
+        # The launcher reports its own resolved location: on macOS the temporary /var/... is /private/var/...
+        self.assertEqual(os.path.realpath(str(PKG.plugin)), d["plugin_root"])
         self.assertTrue(" " in d["plugin_root"])
         self.assertFalse(d["plugin_root"].startswith(str(REPO)))
-        self.assertEqual(str(PKG.core), d["core"])
+        self.assertEqual(os.path.realpath(str(PKG.core)), d["core"])
         self.assertEqual(str(self.home), d["home"])
         self.assertEqual("default", d["home_source"])
         self.assertFalse(d["config_exists"])
@@ -64,7 +65,7 @@ class LocateTests(Base):
         if not link.exists():
             os.symlink(str(PKG.launcher), str(link))
         r, d = PKG.run_json(["paths"], self.user, launcher=link, cwd=PKG.root / "Plugin Cache")
-        self.assertEqual(str(PKG.plugin), d["plugin_root"])
+        self.assertEqual(os.path.realpath(str(PKG.plugin)), d["plugin_root"])
 
     def test_python_entry_point_and_home_selection(self):
         import subprocess
