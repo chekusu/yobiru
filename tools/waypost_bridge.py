@@ -6,6 +6,9 @@ The private SQLite journal is required for recovery. Preserve it: ordinary
 Yobiru send cannot supply a stable envelope ID, so uncertain sends must be
 reconciled by a human and are never automatically sent again. A processed
 receipt means the bridge confirmed forwarding, not that a remote task ran.
+A message the bridge refuses (no route, unverified sender, attachments, an
+unreadable record) is quarantined in the journal: recorded once, never
+forwarded or acknowledged, and it never stops the bridge.
 """
 import argparse
 import contextlib
@@ -177,15 +180,19 @@ def read_inbox_envelopes(home):
     if inbox.is_symlink() or not inbox.is_dir():
         raise BridgeError('UNSAFE_INBOX')
     for child in sorted(inbox.glob('*.json')):
+        # One bad record must not stop the bridge: it is yielded with its problem and quarantined.
         if child.is_symlink() or not child.is_file() or child.stat().st_size > MAX_BYTES:
-            raise BridgeError('UNSAFE_INBOX_RECORD')
+            yield child.stem, None, None, 'UNSAFE_INBOX_RECORD'
+            continue
         try:
             record = strict_json(child.read_text(encoding='utf-8'))
         except (OSError, ValueError, UnicodeError):
-            raise BridgeError('INVALID_INBOX_RECORD')
+            yield child.stem, None, None, 'INVALID_INBOX_RECORD'
+            continue
         if not isinstance(record, dict) or not isinstance(record.get('envelope'), dict) or not isinstance(record.get('received'), dict):
-            raise BridgeError('INVALID_INBOX_RECORD')
-        yield child.stem, record['envelope'], record['received']
+            yield child.stem, None, None, 'INVALID_INBOX_RECORD'
+            continue
+        yield child.stem, record['envelope'], record['received'], None
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -269,6 +276,9 @@ class Journal:
                     self.db.execute('INSERT INTO meta VALUES(?,?)', ('binding', canonical(binding)))
                 # A process could have died after the peer stored a message. Do not repeat send.
                 self.db.execute("UPDATE outgoing SET state='unknown',error='INTERRUPTED_SEND' WHERE state='attempting'")
+                # Earlier builds kept refusals as pending rows that failed every run: quarantine them.
+                self.db.execute("UPDATE incoming SET state='refused' WHERE state='pending' AND error IS NOT NULL")
+                self.db.execute("UPDATE outgoing SET state='refused' WHERE state='pending' AND error IS NOT NULL")
         except BaseException:
             self.close()
             raise
@@ -348,21 +358,27 @@ class Bridge:
         return payload
 
     def poll_yobiru_once(self):
-        failures, count = [], 0
-        for mid, envelope, received in read_inbox_envelopes(self.args.home):
-            record = canonical({'envelope': envelope, 'received': received})
-            # Local inbox filenames are unique; the full immutable envelope plus verified
-            # sender are recorded before any remote write. Mutable wake/ack fields are not keys.
-            key = hashlib.sha256(canonical([self.identity['space_id'], mid,
-                received.get('peer'), envelope.get('from_agent')]).encode('utf-8')).hexdigest()
-            payload, error = None, None
-            try:
-                payload = self.incoming_plan(mid, envelope, received)
-            except BridgeError as exc:
-                error = exc.code
+        failures, refused, count = [], [], 0
+        for mid, envelope, received, problem in read_inbox_envelopes(self.args.home):
+            if problem:
+                # Nothing in an unreadable record can be trusted, so its file name is the only key.
+                record = canonical({'unreadable_record': mid})
+                key = hashlib.sha256(canonical([self.identity['space_id'], 'unreadable', mid]).encode('utf-8')).hexdigest()
+            else:
+                record = canonical({'envelope': envelope, 'received': received})
+                # Local inbox filenames are unique; the full immutable envelope plus verified
+                # sender are recorded before any remote write. Mutable wake/ack fields are not keys.
+                key = hashlib.sha256(canonical([self.identity['space_id'], mid,
+                    received.get('peer'), envelope.get('from_agent')]).encode('utf-8')).hexdigest()
+            payload, error = None, problem
+            if not problem:
+                try:
+                    payload = self.incoming_plan(mid, envelope, received)
+                except BridgeError as exc:
+                    error = exc.code
             if self.args.dry_run:
                 if error:
-                    failures.append(BridgeError(error, item=mid))
+                    refused.append(BridgeError(error, item=mid))
                 else:
                     count += 1
                 continue
@@ -370,19 +386,21 @@ class Bridge:
             existing = db.execute('SELECT record,payload FROM incoming WHERE source_key=?', (key,)).fetchone()
             if existing is not None:
                 old = strict_json(existing['record'])
-                if old['envelope'] != envelope:
+                if old.get('envelope') != envelope:
                     raise BridgeError('INBOX_RECORD_CONFLICT', item=mid)
             else:
+                # A refusal is quarantined at once: recorded with its reason, reported this time only, never
+                # forwarded, and never a reason to stop the bridge or to retry.
                 with db:
                     db.execute('INSERT INTO incoming VALUES(?,?,?,?,?,?,NULL)',
-                               (key, mid, record, canonical(payload) if payload else None, error, 'pending'))
+                               (key, mid, record, canonical(payload) if payload else None, error,
+                                'refused' if error else 'pending'))
+                if error:
+                    refused.append(BridgeError(error, item=mid))
         if self.args.dry_run:
-            return count, failures
+            return count, refused, failures
         db = self.journal.db
         for row in db.execute("SELECT * FROM incoming WHERE state='pending' ORDER BY source_key").fetchall():
-            if row['error']:
-                failures.append(BridgeError(row['error'], item=row['envelope_id']))
-                continue
             try:
                 result = waypost_request(self.args.waypost_url, self.token, 'POST', '/v0/messages', strict_json(row['payload']))
                 if result.get('submission_state') != 'committed' or not valid_resource(result.get('message_id')):
@@ -394,11 +412,11 @@ class Bridge:
             except BridgeError as exc:
                 exc.item = row['envelope_id']
                 failures.append(exc)
-        return count, failures
+        return count, refused, failures
 
     def ingest_waypost(self):
         cursor = None if self.args.dry_run else self.journal.get('cursor')
-        planned, failures = 0, []
+        planned, refused, failures = 0, [], []
         for _ in range(self.args.max_pages):
             page = waypost_request(self.args.waypost_url, self.token, 'POST', '/v0/inbox/read',
                 {'consumer_id': self.identity['consumer_id'], 'cursor': cursor, 'limit': self.limit})
@@ -423,25 +441,28 @@ class Bridge:
                 if (message.get('message_id') != item['resource_id'] or message.get('producer_id') != item['producer_id']
                         or message.get('space_id') != self.identity['space_id']):
                     raise BridgeError('WAYPOST_MESSAGE_MISMATCH', item=mid)
-                if not isinstance(message.get('body'), dict) or not isinstance(message['body'].get('text'), str):
-                    raise BridgeError('INVALID_WAYPOST_MESSAGE', item=mid)
                 error = None
                 address = self.routes['outgoing'].get(item['producer_id'])
                 if address is None:
                     error = 'UNKNOWN_OUTGOING_ROUTE'
                 if message.get('attachment_ids') not in (None, []):
                     error = 'ATTACHMENTS_UNSUPPORTED'
+                if not isinstance(message.get('body'), dict) or not isinstance(message['body'].get('text'), str):
+                    error = 'INVALID_WAYPOST_MESSAGE'
                 if self.args.dry_run:
                     if error:
-                        failures.append(BridgeError(error, item=mid))
+                        refused.append(BridgeError(error, item=mid))
                     else:
                         planned += 1
                     continue
+                # A refused item is quarantined: never sent to Yobiru and never acknowledged in Waypost.
                 with self.journal.db:
                     self.journal.db.execute('''INSERT INTO outgoing
                         (item_id,resource_id,producer_id,feed,message,address,state,error)
-                        VALUES(?,?,?,?,?,?,'pending',?)''', (mid,item['resource_id'],item['producer_id'],
-                        canonical(item),canonical(message),address,error))
+                        VALUES(?,?,?,?,?,?,?,?)''', (mid,item['resource_id'],item['producer_id'],
+                        canonical(item),canonical(message),address,'refused' if error else 'pending',error))
+                if error:
+                    refused.append(BridgeError(error, item=mid))
             next_cursor = page.get('next_cursor')
             if not isinstance(next_cursor, str) or (page['has_more'] and next_cursor == cursor):
                 raise BridgeError('INVALID_WAYPOST_CURSOR')
@@ -450,7 +471,7 @@ class Bridge:
                 with self.journal.db:
                     self.journal.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', ('cursor', cursor))
             if not page['has_more']:
-                return planned, failures
+                return planned, refused, failures
         raise BridgeError('WAYPOST_PAGE_BUDGET_REACHED', True)
 
     def ack(self, item_id, stage):
@@ -467,13 +488,11 @@ class Bridge:
 
     def process_outgoing(self, selected=None):
         db, sent, failures = self.journal.db, 0, []
-        rows = db.execute("SELECT * FROM outgoing WHERE state!='done' ORDER BY item_id").fetchall()
+        rows = db.execute("SELECT * FROM outgoing WHERE state NOT IN ('done','refused','dismissed') "
+                          "ORDER BY item_id").fetchall()
         for row in rows:
             mid = row['item_id']
             if selected is not None and selected != mid:
-                continue
-            if row['error'] and row['state'] == 'pending':
-                failures.append(BridgeError(row['error'], item=mid))
                 continue
             if row['state'] in ('unknown', 'attempting'):
                 failures.append(BridgeError('YOBIRU_DELIVERY_UNKNOWN', item=mid))
@@ -534,20 +553,50 @@ class Bridge:
             db.execute("UPDATE outgoing SET state='pending',error=NULL WHERE item_id=?",(mid,))
         return 0, []  # A later explicit run performs the newly authorized retry.
 
+    def refused(self):
+        """Quarantined and dismissed items, oldest decisions first; reasons and ids only, never content."""
+        rows = [('incoming', r['envelope_id'], r['state'], r['error']) for r in self.journal.db.execute(
+            "SELECT envelope_id,state,error FROM incoming WHERE state IN ('refused','dismissed') ORDER BY rowid")]
+        rows += [('outgoing', r['item_id'], r['state'], r['error']) for r in self.journal.db.execute(
+            "SELECT item_id,state,error FROM outgoing WHERE state IN ('refused','dismissed') ORDER BY rowid")]
+        return [{'direction': d, 'item_id': i, 'state': s, 'error': e} for d, i, s, e in rows]
+
+    def resolve_refused(self, item, action):
+        """dismiss: the operator has looked at a quarantined item; it stays unforwarded and unacknowledged.
+        retry: forget an incoming refusal so that the next run plans the current inbox record again; this
+        command forwards nothing. Outgoing refusals depend on the journal's fixed routes and cannot be retried."""
+        db = self.journal.db
+        incoming = db.execute("SELECT source_key FROM incoming WHERE envelope_id=? AND state='refused'",
+                              (item,)).fetchall()
+        outgoing = db.execute("SELECT item_id FROM outgoing WHERE item_id=? AND state='refused'", (item,)).fetchall()
+        if len(incoming) + len(outgoing) != 1:
+            raise BridgeError('ONLY_ONE_REFUSED_ITEM_CAN_BE_RESOLVED')
+        with db:
+            if action == 'dismiss' and incoming:
+                db.execute("UPDATE incoming SET state='dismissed' WHERE source_key=?", (incoming[0]['source_key'],))
+            elif action == 'dismiss':
+                db.execute("UPDATE outgoing SET state='dismissed' WHERE item_id=?", (item,))
+            elif incoming:
+                db.execute("DELETE FROM incoming WHERE source_key=?", (incoming[0]['source_key'],))
+            else:
+                raise BridgeError('ONLY_INCOMING_REFUSALS_CAN_BE_RETRIED')
+
     def run_once(self):
-        incoming, failures = self.poll_yobiru_once()
-        planned, remote_failures = self.ingest_waypost()
+        incoming, refused, failures = self.poll_yobiru_once()
+        planned, remote_refused, remote_failures = self.ingest_waypost()
         failures += remote_failures
+        refused += remote_refused
         if self.args.dry_run:
-            return {'dry_run':True,'incoming_planned':incoming,'outgoing_planned':planned,'sent':False}, failures
+            return {'dry_run':True,'incoming_planned':incoming,'outgoing_planned':planned,
+                    'refused_planned':len(refused),'sent':False}, refused, failures
         outgoing, remote_failures = self.process_outgoing()
         failures += remote_failures
-        return {'incoming_sent':incoming,'outgoing_sent':outgoing}, failures
+        return {'incoming_sent':incoming,'outgoing_sent':outgoing,'refused':len(refused)}, refused, failures
 
 
-def emit_errors(errors):
+def emit_errors(errors, key='error'):
     for error in errors:
-        value = {'error':error.code}
+        value = {key:error.code}
         if valid_resource(error.item):
             value['item_id'] = error.item
         print(json.dumps(value),file=sys.stderr)
@@ -570,6 +619,9 @@ def main(argv=None):
     reconcile=parser.add_mutually_exclusive_group()
     reconcile.add_argument('--confirm-sent',nargs=2,metavar=('ITEM_ID','YOBIRU_ID'),help='ONLY after verifying this exact delivery on the remote peer; ACK without sending again')
     reconcile.add_argument('--retry-unsent',metavar='ITEM_ID',help='ONLY after verifying the unknown attempt did not reach the peer; authorize a later retry')
+    reconcile.add_argument('--list-refused',action='store_true',help='print quarantined and dismissed items (ids and reasons only)')
+    reconcile.add_argument('--dismiss-refused',metavar='ITEM_ID',help='mark a quarantined item as reviewed; it stays unforwarded and unacknowledged')
+    reconcile.add_argument('--retry-refused',metavar='ENVELOPE_ID',help='forget an incoming refusal so the next run plans its current inbox record again')
     args=parser.parse_args(argv)
     bridge=None
     try:
@@ -586,12 +638,23 @@ def main(argv=None):
                 or not 0.1<=args.interval<=3600 or not args.interval<=args.max_backoff<=3600
                 or not 1<=args.max_failures<=10 or not 1<=args.max_pages<=1000):
             raise ValueError('invalid bridge options')
-        if args.dry_run and (args.confirm_sent or args.retry_unsent):
+        if args.dry_run and (args.confirm_sent or args.retry_unsent or args.list_refused or args.dismiss_refused
+                             or args.retry_refused):
             raise ValueError('dry-run cannot reconcile delivery state')
         args.state=args.state or str(Path(args.home)/'waypost-bridge.sqlite3')
         old_mask=os.umask(0o077)
         try:
             bridge=Bridge(args,read_token(args.token_file))
+            if args.list_refused:
+                for row in bridge.refused():
+                    print(json.dumps(row))
+                return 0
+            if args.dismiss_refused or args.retry_refused:
+                bridge.resolve_refused(args.dismiss_refused or args.retry_refused,
+                                       'dismiss' if args.dismiss_refused else 'retry')
+                print(json.dumps({'resolved':args.dismiss_refused or args.retry_refused,
+                                  'action':'dismissed' if args.dismiss_refused else 'retry_next_run'}))
+                return 0
             if args.confirm_sent or args.retry_unsent:
                 count,errors=bridge.reconcile(args.confirm_sent,args.retry_unsent)
                 print(json.dumps({'reconciled':not bool(errors),'outgoing_sent':count}))
@@ -600,8 +663,9 @@ def main(argv=None):
             failures=0
             while True:
                 try:
-                    summary,errors=bridge.run_once()
+                    summary,refused,errors=bridge.run_once()
                     print(json.dumps(summary))
+                    emit_errors(refused, 'refused')     # reported once; quarantine never stops the bridge
                 except BridgeError as exc:
                     errors=[exc]
                 emit_errors(errors)

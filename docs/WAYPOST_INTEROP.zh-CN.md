@@ -20,7 +20,7 @@ Yobiru 负责机器之间直接送信、唤醒和本机策略。[Waypost](https:
 - 将本机已经收到的 Yobiru 文本，投递给配置中的 Waypost 收件人。
 - 将指定 Waypost 发信人的消息，以 `notice`、`wake: none` 送往配置中的 Yobiru 机器和助手。
 - 先在本地 SQLite 保存正文与转发状态，再执行发送或确认。重启后保留进度，沿用原来的 Waypost 请求与回执 ID。
-- 来源认证缺失、没有匹配路由、包含附件，或已有账本的空间/身份/路由发生变化时，明确失败，不把消息当作成功处理。
+- 来源认证缺失、没有匹配路由、包含附件或无法读取的消息会被拒绝并**隔离**：连同原因记入账本，只报告一次，绝不转发，也不在 Waypost 确认，桥接继续运行。已有账本的 Waypost 空间、Actor、Consumer 或路由配置发生变化时则明确报错并停止。
 - 日志只报告 ID、数量和状态，不输出私人正文或凭据。
 
 这是转发器。收到的文字仍然是请求，不构成执行批准；送达通知也不证明远端助手已阅读或完成工作。
@@ -85,6 +85,8 @@ Yobiru 普通 `send` 每次调用都会生成新 ID。因此，发送时崩溃�
 
 核对接收端确实已有这条消息后，用同一组连接参数追加 `--confirm-sent ITEM_ID YOBIRU_ID`：只补记回执，不重复发送。只有确认接收端从未收到、也没有相关效果时，才可追加 `--retry-unsent ITEM_ID`，授权下次运行重试。两种操作都不会自动处理其他消息。
 
+`--list-refused` 列出被隔离的条目（方向、ID 和原因，不含正文）。`--dismiss-refused ITEM_ID` 标记为已审阅，仍不转发、不确认。`--retry-refused ENVELOPE_ID` 忘记一条入站拒绝，下次运行按收件箱中当前的记录重新判断（例如该记录已修复）；这条命令本身不转发任何内容。被拒绝的 Waypost 条目取决于账本固定的路由，同一账本内不能重试。
+
 账本绑定 Waypost 空间、Actor、Consumer 和路由配置。不同桥使用不同私密账本；同一账本不能被两个进程同时用于发送。
 
 ## 关联信息放正文里
@@ -111,8 +113,10 @@ WAYPOST_TEST_BINARY=/path/to/waypost/target/debug/waypost \
   python3 -m unittest discover -s tests -p test_waypost_bridge_e2e.py -v
 ```
 
-2026-10-16 已通过 22 项桥接测试（14 项映射与安全测试、8 项集成场景）和打包检查。完整 `tests/` 最终运行 250 项，其中 35 项跳过、四项失败，均已在未修改的 PR 基线 `1265921` 复现：两项依赖 `/bin/false`，一项比较 `/var` 与 `/private/var`，一项要求连接拒绝而本机实际返回超时。这些既有环境差异与桥接结果分开记录。
+2026-10-16 已通过 22 项桥接测试（14 项映射与安全测试、8 项集成场景）和打包检查。完整 `tests/` 最终运行 250 项，其中 35 项跳过、四项失败，均已在未修改的 PR 基线 `1265921` 复现：两项依赖 `/bin/false`，一项比较 `/var` 与 `/private/var`，一项要求连接拒绝而本机实际返回超时。这些既有环境差异与桥接结果分开记录；积压整合已把这四项测试改为与平台无关，尚未在 macOS 上重跑。
 
-测试启动全新的加密 Waypost 和两台真实 Yobiru HTTP 接收端，并使用真实打包后的 CLI。仅 Tailscale 身份查询和本机网络范围使用 Yobiru 已有测试替身。覆盖双向文本、重启、回执、两侧丢响应、缺少认证和附件拒绝；不连接真实 tailnet、生产数据或外部模型。
+2026-10-21 积压整合期间，在 Linux 上以上游提交 `926601d` 构建的 Waypost 通过全部 28 项桥接测试：上述 22 项、五项无需 Waypost 二进制的隔离测试，以及一项真实 Waypost 场景（无关的收件消息被隔离，桥接不停止）。
+
+测试启动全新的加密 Waypost 和两台真实 Yobiru HTTP 接收端，并使用真实打包后的 CLI。仅 Tailscale 身份查询和本机网络范围使用 Yobiru 已有测试替身。覆盖双向文本、重启、回执、两侧丢响应、缺少认证和附件的拒绝与隔离；不连接真实 tailnet、生产数据或外部模型。
 
 接口依据固定版本的 [Waypost 路由](https://github.com/mainline-org/waypost/blob/926601dce1b5b4bad218c52c75880e6eb48d158d/src/http.rs)、[身份响应](https://github.com/mainline-org/waypost/blob/926601dce1b5b4bad218c52c75880e6eb48d158d/src/service/mod.rs) 与[用户指南](https://github.com/mainline-org/waypost/blob/926601dce1b5b4bad218c52c75880e6eb48d158d/docs/user-guide.md)，Yobiru 身份与信封规则仍以 [SPEC](../SPEC.md) 为准。

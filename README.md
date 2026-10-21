@@ -61,13 +61,13 @@ This is an illustrative workflow. Yobiru does not grant X access, change a provi
 
 ## Keep the work when you switch assistants
 
-Several agents can help with the same project, but their findings often end up in separate conversations. [Waypost](https://waypost.hika.fyi) provides a place to collect their reports and keep context for the next assistant.
+Several agents can help with the same project, but their findings often end up in separate conversations. [Waypost](https://waypost.hika.fyi), a separate open-source project, provides a place to collect their reports and keep context for the next assistant.
 
 For example, Grok Bot sends a research summary and source links through **Yobiru → Waypost**. Your **primary assistant**—the one you usually talk to—reads them alongside other reports and helps you decide what to do next. If you switch assistants, you can give the next one access to the saved reports and context.
 
-Waypost is [open source](https://github.com/mainline-org/waypost) and can be self-hosted. An invite-only hosted trial is also available from its website.
+Waypost is [open source](https://github.com/mainline-org/waypost) and can be self-hosted; its website also describes an invite-only hosted trial. It is not part of Yobiru: text you forward is stored and processed by the Waypost service you choose, under that service's own terms.
 
-The optional [Waypost bridge](docs/WAYPOST_INTEROP.md) forwards **text messages** in both directions on macOS/Linux. Forwarded text is stored in your chosen Waypost service. Files and memory are managed separately in Waypost.
+The optional [Waypost bridge](docs/WAYPOST_INTEROP.md) (`tools/waypost_bridge.py` in a source checkout; the plugin does not include it) forwards **text messages** in both directions on macOS/Linux. Messages it cannot route are quarantined and never forwarded. Files and memory are managed separately in Waypost.
 
 ## How it works
 

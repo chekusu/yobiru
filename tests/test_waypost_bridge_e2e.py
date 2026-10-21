@@ -318,25 +318,47 @@ class BridgeIntegration(unittest.TestCase):
             proxy.server_close()
             thread.join(timeout=5)
 
+    def refusals(self, result):
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return [(row['refused'], row.get('item_id')) for row in map(json.loads, result.stderr.splitlines())
+                if 'refused' in row]
+
     def test_missing_authenticated_peer_and_attachments_do_not_get_partially_forwarded(self):
         mid = self.ysend('Local receipt is authoritative.')
         path = self.home['bravo'] / 'inbox' / (mid + '.json')
         record = json.loads(path.read_text())
         del record['received']['peer']
         path.write_text(json.dumps(record))
-        self.assertNotEqual(self.run_bridge().returncode, 0)
+        self.assertEqual(self.refusals(self.run_bridge()), [('MISSING_AUTHENTICATED_PEER', mid)])
         self.assertEqual(self.inspect('messages'), [])
         record['received']['peer'] = {'node': 'alpha.example.ts.net'}
         record['envelope']['from'] = 'other.example.ts.net'
         path.write_text(json.dumps(record))
-        self.assertNotEqual(self.run_bridge().returncode, 0)
+        self.assertEqual(self.refusals(self.run_bridge()), [('AUTHENTICATED_SENDER_MISMATCH', mid)])
         self.assertEqual(self.inspect('messages'), [])
         path.unlink()
         attachment = self.folder / 'synthetic.txt'
         attachment.write_text('Do not silently omit me.')
-        self.ysend('Has an attachment.', '--file', str(attachment))
-        self.assertNotEqual(self.run_bridge().returncode, 0)
+        with_file = self.ysend('Has an attachment.', '--file', str(attachment))
+        self.assertEqual(self.refusals(self.run_bridge()), [('ATTACHMENTS_UNSUPPORTED', with_file)])
         self.assertEqual(self.inspect('messages'), [])
+
+    def test_an_unrelated_inbox_message_is_quarantined_and_never_halts_the_bridge(self):
+        mapped = self.ysend('Mapped synthetic report.')
+        unrelated = self.ysend('Ordinary unrelated agent report.', '--as', 'unmapped')
+        self.assertEqual(self.refusals(self.run_bridge()), [('UNKNOWN_INCOMING_ROUTE', unrelated)])
+        messages = self.inspect('messages')
+        self.assertEqual(len(messages), 1)
+        self.assertNotIn('unrelated agent report', json.dumps(messages))
+        (self.home['bravo'] / 'inbox' / (unrelated + '.json')).unlink()
+        self.assertEqual(self.refusals(self.run_bridge()), [], 'reported once; removal changes nothing')
+        listed = self.run_bridge('--list-refused')
+        self.assertEqual([{'direction': 'incoming', 'item_id': unrelated, 'state': 'refused',
+                           'error': 'UNKNOWN_INCOMING_ROUTE'}], [json.loads(x) for x in listed.stdout.splitlines()])
+        self.assertEqual(len(self.inspect('messages')), 1)
+        message = self.control.call('POST', self.root + '/inspect',
+                                    {'kind': 'message', 'resource_id': messages[0]['message_id']})
+        self.assertIn(mapped, json.dumps(message))
 
 
 if __name__ == '__main__':

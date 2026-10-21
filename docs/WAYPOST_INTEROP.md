@@ -20,7 +20,7 @@ The bridge runs on a machine the operator trusts with plaintext. It uses an ordi
 - Imports a received Yobiru text record into a configured Waypost recipient's inbox.
 - Sends a Waypost message from an explicitly mapped producer to a configured Yobiru peer/agent as a `notice`, with `wake: none`.
 - Journals payloads and forwarding state locally before side effects. Restarts resume confirmed operations and replay stable Waypost requests/ACKs.
-- Refuses unverified sources, unknown routes, attachments and changes to an existing journal's identity/routing binding. Refusal leaves the item unresolved.
+- Refuses messages from unverified sources, without a route, with attachments or that cannot be read. A refused message is **quarantined**: recorded in the journal with its reason, reported once, never forwarded and never acknowledged in Waypost. It does not stop the bridge. A changed Waypost space, Actor, Consumer or routing configuration for an existing journal is an error that stops it.
 - Reports IDs and counts, without printing message bodies or credentials.
 
 This is a forwarder, not an executor. Received text does not approve an operation. A notification does not prove that a remote assistant read or acted on it.
@@ -85,6 +85,8 @@ Yobiru's ordinary `send` generates a fresh envelope ID each invocation. Therefor
 
 After verifying the exact receiver record, repeat the same connection arguments with `--confirm-sent ITEM_ID YOBIRU_ID` to finish ACKs without resending. Only after verifying that no delivery or effects occurred, `--retry-unsent ITEM_ID` may authorize a later run to retry. Neither operation automatically dispatches other pending messages.
 
+`--list-refused` prints the quarantined items (direction, ID and reason, never content). `--dismiss-refused ITEM_ID` marks one as reviewed; it stays unforwarded and unacknowledged. `--retry-refused ENVELOPE_ID` forgets an incoming refusal so that the next run plans the current inbox record again (for example after that record was repaired); the command itself forwards nothing. Refused Waypost items depend on the journal's fixed routes and cannot be retried in the same journal.
+
 The journal binds the Waypost space, Actor, Consumer and routing configuration. Use separate private journals for separate bridges. A second process cannot dispatch concurrently with the first.
 
 ## Correlation stays inside message bodies
@@ -113,8 +115,10 @@ WAYPOST_TEST_BINARY=/path/to/waypost/target/debug/waypost \
   python3 -m unittest discover -s tests -p test_waypost_bridge_e2e.py -v
 ```
 
-On 2026-10-16, all 22 bridge tests passed (14 mapping/security tests and 8 integration scenarios), along with the packaging check. The final broader `tests/` run executed 250 tests, with 35 skips and four failures on macOS; all four also reproduced on the unmodified PR base `1265921`: two fixtures assume `/bin/false`, one compares `/var` with `/private/var`, and one requires `ConnectionRefusedError` where this host returns a timeout. These are recorded separately from bridge results.
+On 2026-10-16, all 22 bridge tests passed (14 mapping/security tests and 8 integration scenarios), along with the packaging check. The final broader `tests/` run executed 250 tests, with 35 skips and four failures on macOS; all four also reproduced on the unmodified PR base `1265921`: two fixtures assume `/bin/false`, one compares `/var` with `/private/var`, and one requires `ConnectionRefusedError` where this host returns a timeout. These are recorded separately from bridge results; the backlog integration made those four tests platform-neutral, without a macOS re-run.
 
-This starts a fresh encrypted Waypost service and the real packaged Yobiru CLI with two actual HTTP receivers. Only Tailscale identity lookup and the accepted loopback network range use Yobiru's existing test harness. It exercises dry run, bidirectional delivery, restart deduplication, receipts, response loss and rejection paths. It does not contact a real tailnet, use production data or test an external model.
+On 2026-10-21, during the backlog integration on Linux, all 28 bridge tests passed against a Waypost built from upstream commit `926601d`: the 22 above, five quarantine tests that need no Waypost binary, and a real-Waypost scenario in which an unrelated inbox message is quarantined without stopping the bridge.
+
+This starts a fresh encrypted Waypost service and the real packaged Yobiru CLI with two actual HTTP receivers. Only Tailscale identity lookup and the accepted loopback network range use Yobiru's existing test harness. It exercises dry run, bidirectional delivery, restart deduplication, receipts, response loss, and refusal and quarantine paths. It does not contact a real tailnet, use production data or test an external model.
 
 The service contract follows Waypost's [HTTP routes](https://github.com/mainline-org/waypost/blob/926601dce1b5b4bad218c52c75880e6eb48d158d/src/http.rs), [identity response](https://github.com/mainline-org/waypost/blob/926601dce1b5b4bad218c52c75880e6eb48d158d/src/service/mod.rs) and [consumer guide](https://github.com/mainline-org/waypost/blob/926601dce1b5b4bad218c52c75880e6eb48d158d/docs/user-guide.md). Yobiru identity and envelope rules remain those in [SPEC](../SPEC.md).

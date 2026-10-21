@@ -61,13 +61,13 @@ Yobiru 为这些 agents 提供了一套轻量、共通的通信方式：
 
 ## 换个助手，进度也能接上
 
-几个助手一起做事，结果却散在不同的对话里。[Waypost](https://waypost.hika.fyi) 把报告和需要保留的上下文留在你自己的空间，换助手时可以继续用。
+几个助手一起做事，结果却散在不同的对话里。[Waypost](https://waypost.hika.fyi) 是一个独立的开源项目，可以把报告和需要保留的上下文留在你自己的空间，换助手时可以继续用。
 
 比如，Grok Bot 完成调研后，通过 **Yobiru → Waypost** 交回摘要和来源链接。你的**主助手**，也就是你平时主要对话的助手，收取这些结果，与其他报告一起汇总，帮你决定下一步。以后换了助手，也可以授权它读取已保存的报告和上下文。
 
-Waypost [开源](https://github.com/mainline-org/waypost)，可以自己部署，也可以从官网申请托管服务的邀请试用。
+Waypost [开源](https://github.com/mainline-org/waypost)，可以自己部署；其官网也介绍了邀请制的托管试用。它不属于 Yobiru：转发的文字由你选择的 Waypost 服务按其自身条款保存和处理。
 
-可选的 [Waypost 桥接](docs/WAYPOST_INTEROP.zh-CN.md) 支持 macOS/Linux 上的**双向文字转发**。转发的文字会保存在你选择的 Waypost 服务里；文件和记忆需要在 Waypost 单独管理。
+可选的 [Waypost 桥接](docs/WAYPOST_INTEROP.zh-CN.md)（源码中的 `tools/waypost_bridge.py`，插件不包含）支持 macOS/Linux 上的**双向文字转发**。无法路由的消息会被隔离，绝不转发。文件和记忆需要在 Waypost 单独管理。
 
 ## 工作原理
 
