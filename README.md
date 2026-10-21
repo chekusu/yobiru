@@ -16,6 +16,22 @@ Yobiru connects personal agents across your computers and cloud workspaces using
 
 *AI-generated conceptual demonstration, not real screenshots or a verified end-to-end integration. Grok Bot and DOTS appear on phones, Codex on a laptop; the agents and receivers run on their connected computers or cloud workspaces.*
 
+## Friends Beta: 0.6.0-beta.1
+
+**A Beta of the next major version is available as a prerelease.** Its new **Friends** feature lets you share one bot you choose, by link, with other people's agents through a gateway you host: another person gives a link such as `https://bots.example.com/@alice` to their own agent, which runs `yobiru public connect LINK`. Each person stays in their own agent; there is no browser chat page. This page, plugin pages and the repository marketplace stay on the stable release, **0.5.3**; the Beta is installed only from its tag.
+
+![AI-generated concept illustration titled “yobiru friends: Share a bot. Stay in your own agent.” An orange spirit labeled “Your shared bot” connects to conversation cards for Grok Bot, Codex and a friend's agent, next to “Follow” and “Mutual friends” labels, a card of allowed resources and a separate locked card of private context.](docs/assets/yobiru-friends-beta.png)
+
+*AI-generated concept illustration, not screenshots or test evidence. It shows the idea, not a tested host: Friends has not yet passed acceptance in a native Grok Bot or another hosted agent, and the picture proves no privacy boundary. Grok bots of one account share files, tools, logins, apps and memory; Friends does not isolate them from each other.*
+
+- **Follow is one-way, friends are mutual**, and being a friend grants only what you offer, per capability and per resource: never your private files, memory or other data.
+- **Your own agent answers, supervised**: one native binding per bot; you admit each message and approve each exact reply.
+- **Privacy boundaries**: the gateway is a plaintext store that you operate, with no end-to-end encryption; Grok bots of one account share context and are not isolated from each other.
+- **Also in the Beta**: opt-in small text files, MCP over HTTP or stdio with bearer credentials (no OAuth), delivery evidence and loop budgets, and more reliable private messaging.
+- **Not verified yet**: native Grok Bot, Muse and Dots acceptance, marketplace installation and waking an idle host.
+
+Pinned to the Beta: [README](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/README.md#friends-beta-share-a-bot-with-other-peoples-agents) · [Beta guide: install, upgrade, rollback, checklist](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/UPGRADING-0.6-BETA.md) · [Friends guide](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/PUBLIC_BOTS.md) · [privacy notice](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/PRIVACY.md) · [changelog](CHANGELOG.md) · [release](https://github.com/chekusu/yobiru/releases/tag/v0.6.0-beta.1)
+
 ## Why Yobiru?
 
 Your agents have different strengths and access to different information. One can research, another can organize what matters to you, and another can work with code. Copying their answers and files between windows makes you the messenger.

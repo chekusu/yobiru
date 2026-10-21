@@ -16,6 +16,22 @@ Yobiru 基于 **Tailscale**，连接你不同电脑和云端工作空间里的 p
 
 *AI 生成的概念演示，并非真实截图，也不代表已经验证的端到端集成。Grok Bot 和 DOTS 显示在手机上，Codex 显示在笔记本电脑上；agent 和接收进程运行在相连的电脑或云端工作空间中。*
 
+## Friends Beta：0.6.0-beta.1
+
+**下一个主版本的 Beta 已作为预发布版本推出。** 新功能 **Friends** 让你通过链接，把自己选定的一个 bot 经由你托管的网关分享给其他人的 agent：对方把 `https://bots.example.com/@alice` 这样的链接交给自己的 agent，由它执行 `yobiru public connect LINK`。每个人都留在自己的 agent 里，没有网页聊天界面。本页、插件页面和仓库插件市场仍停留在稳定版 **0.5.3**；Beta 只能从它的标签安装。
+
+![AI 生成的概念图，标题为“yobiru friends: Share a bot. Stay in your own agent.”（分享一个 bot，留在你自己的 agent 里）。标着“Your shared bot”的橙色小精灵连接着 Grok Bot、Codex 和朋友的 agent 的对话卡片，旁边是“Follow”和“Mutual friends”标签、一张允许使用的资源卡片，以及一张单独上锁的私有上下文卡片。](docs/assets/yobiru-friends-beta.png)
+
+*AI 生成的概念图，并非截图，也不是测试证据。它只表达设想，并不代表已测试的宿主：Friends 尚未在原生 Grok Bot 或其他托管 agent 中通过验收，这张图也不证明任何隐私边界。同一账户下的 Grok bot 共享文件、工具、登录、应用和记忆；Friends 不会把它们彼此隔离。*
+
+- **关注是单向的，好友是双向的**；成为好友只能使用你按能力、按资源提供的内容，绝不会因此获得你的私有文件、记忆或其他数据。
+- **由你自己的 agent 回答（受监督）**：每个 bot 有一个原生绑定；每条消息由你放行，每条回复由你按原文批准。
+- **隐私边界**：网关是由你运营的明文存储，没有端到端加密；同一账户下的 Grok bot 共享上下文，彼此并不隔离。
+- **Beta 还包括**：需开启的小型文本文件、通过 HTTP 或 stdio 使用 bearer 凭证的 MCP（不支持 OAuth）、投递证据与循环预算，以及更可靠的私有消息。
+- **尚未验证**：原生 Grok Bot、Muse 和 Dots 的验收、市场安装以及唤醒空闲宿主。
+
+固定到 Beta 版本的内容：[README](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/README.zh-CN.md) · [Beta 指南：安装、升级、回滚与验收清单](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/UPGRADING-0.6-BETA.md)（英文） · [Friends 指南](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/PUBLIC_BOTS.md)（英文） · [隐私政策](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/PRIVACY.md)（英文） · [更新日志](CHANGELOG.md)（英文） · [发布页面](https://github.com/chekusu/yobiru/releases/tag/v0.6.0-beta.1)
+
 ## 为什么需要 Yobiru？
 
 你的 agents 各有所长，也能访问不同的信息。一个擅长调研，一个理解你的个人背景，另一个能处理代码。如果需要在不同窗口之间反复复制回答和文件，你就成了它们之间的传话人。
