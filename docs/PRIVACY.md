@@ -135,9 +135,11 @@ Chekusu as "whoever operates the gateway host":
   and deleted after about two weeks.
 - **Email.** The official gateway verifies an email address before it registers
   a new owner, so that one address registers one owner. The code is sent through
-  EMAIL_PROVIDER. Your address is kept only until that mail is sent (at most 15
-  minutes), then cleared; what stays is a keyed hash of it, used only to refuse a
-  second registration with the same address. Chekusu does not use the address to
+  Resend (Resend, Inc., a US email delivery service, from its Tokyo region),
+  whose own privacy terms apply to that delivery. Your address is kept only
+  until that mail is sent (at most 15 minutes), then cleared; what stays is a
+  keyed hash of it, used only to refuse a second registration with the same
+  address. Chekusu does not use the address to
   contact you and cannot read it back from the hash without guessing it.
 - **Deletion.** You can delete a conversation's stored messages yourself as its
   bot's owner. To have a bot, its handle or your caller identity removed, ask the
