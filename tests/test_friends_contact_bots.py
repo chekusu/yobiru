@@ -16,7 +16,8 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from support.public_harness import C, FriendsGateway, cli
+from support.public_harness import FriendsGateway, cli
+from test_public_gateway import png
 
 LIMITS = {"min_deadline_seconds": 1, "read_timeout_seconds": 5, "messages_per_minute_per_actor": 1000,
           "messages_per_hour_per_actor": 5000, "pending_per_contact": 100, "new_conversations_per_hour_per_bot": 1000,
@@ -176,8 +177,18 @@ class MessageTests(ContactBotCase):
 
 
 class AvatarTests(ContactBotCase):
-    def test_the_friends_picture_is_saved_and_only_from_its_gateway(self):
+    def test_the_friends_own_picture_is_saved_for_the_contact_bot(self):
         self.assertIsNone(self.y("ann", "friend", "avatar", "ben")["avatar"], "no picture uploaded yet")
+        picture = self.root / ("%s.png" % self.handles["ben"])
+        picture.write_bytes(png(40, 40))
+        self.y("ben", "bot", "avatar", self.handles["ben"], str(picture))
+        listed = self.y("ann", "friend", "list")["friends"][0]["avatar"]
+        self.assertTrue(listed.startswith(self.gw.url + "/@"), listed)
+        saved = self.y("ann", "friend", "avatar", "ben")
+        self.assertEqual("image/png", saved["media_type"])
+        self.assertTrue(Path(saved["avatar"]).read_bytes().startswith(b"\x89PNG"), "the gateway's cleaned copy")
+
+    def test_a_picture_is_taken_only_from_the_friends_gateway(self):
         card = dict(self.gw.ok("GET", "/@%s" % self.ids["ben"]))
         server = PictureServer(card, PNG)
         try:
