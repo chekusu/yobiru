@@ -18,7 +18,7 @@ Not shipped in any manifest: MCP server registrations (`mcp.json`), hooks, rules
 variables. The skills plus the bundled command already cover every operation, and no host starts an MCP
 server from the plugin on its own: a registration would need separate tested launch configuration per
 host, because Cursor does not expand the standard `${PLUGIN_ROOT}` variable in `mcp.json`. For the
-public bots and Friends of the 0.6.0-beta.1 Beta only, a user may add the local stdio proxy `yobiru public mcp` to an MCP
+public bots and Friends of the 0.6.0-beta.2 Beta only, a user may add the local stdio proxy `yobiru public mcp` to an MCP
 client by hand, and a gateway the user hosts serves the same API at `/mcp` to bearer-authenticated clients
 (no OAuth). This project runs no MCP service of its own, and no hosted MCP platform has been tested; see
 [public bots and Friends](PUBLIC_BOTS.md#mcp).

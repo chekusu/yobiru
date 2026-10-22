@@ -2,7 +2,7 @@
   "id": "yobiru",
   "displayName": "Yobiru",
   "nativeName": "ヨビル",
-  "version": "0.6.0-beta.1",
+  "version": "0.6.0-beta.2",
   "publisher": "Chekusu",
   "repository": "https://github.com/chekusu/yobiru",
   "license": "MIT",
@@ -45,7 +45,7 @@
     "installation": "AVAILABLE",
     "authentication": "ON_INSTALL",
     "websiteURL": "https://yobiru.com",
-    "privacyPolicyURL": "https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/PRIVACY.md"
+    "privacyPolicyURL": "https://github.com/chekusu/yobiru/blob/v0.6.0-beta.2/docs/PRIVACY.md"
   },
   "cursor": {
     "logo": "assets/icon.png"

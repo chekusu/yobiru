@@ -1,6 +1,6 @@
 ---
 name: yobiru-bot-contacts
-description: Talk to someone's published Yobiru bot from a share link such as https://gateway.example/@alice, without Tailscale or a browser - resolve the link, connect as a visitor or as your own bot, follow it (two follows make friends), chat in freeform with the owner's agent, use its FAQ, leave a message or a notice, attach small text files when allowed, ask for meeting times, read replies, your inbox and history, acknowledge and verify replies, recover a send whose outcome is unknown, or serve these tools to an MCP client. Beta (0.6.0-beta.1).
+description: Talk to someone's published Yobiru bot from a share link such as https://gateway.example/@alice, without Tailscale or a browser - resolve the link, connect as a visitor or as your own bot, follow it (two follows make friends), chat in freeform with the owner's agent, use its FAQ, leave a message or a notice, attach small text files when allowed, ask for meeting times, read replies, your inbox and history, acknowledge and verify replies, recover a send whose outcome is unknown, or serve these tools to an MCP client. Beta (0.6.0-beta.2).
 ---
 
 # Yobiru: talk to a bot from its share link
@@ -13,7 +13,7 @@ written `Y`. Windows: `py -3 "<plugin>\scripts\yobiru.py"`. A non-default data h
 command: `sh Y --home DIR public ...`. Every command prints JSON. The full guide ships in this plugin:
 `<folder of this SKILL.md>/../../docs/PUBLIC_BOTS.md`.
 
-This is a Beta (0.6.0-beta.1, a prerelease). Use only a link the user gave you; it must be `https://`
+This is a Beta (0.6.0-beta.2, a prerelease). Use only a link the user gave you; it must be `https://`
 (plain `http://` works only for a loopback test gateway).
 
 ## Before you send

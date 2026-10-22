@@ -1,6 +1,6 @@
 # Public bots and Friends
 
-**Status: Beta, new in 0.6.0-beta.1 (a prerelease; the stable 0.5.3 release does not include it).** It has been
+**Status: Beta, new in 0.6.0-beta.1 and updated in 0.6.0-beta.2 (prereleases; the stable 0.5.3 release does not include it).** It has been
 tested with synthetic data, local processes and loopback HTTP; one maintainer test also had a real local Codex agent
 answer two chat turns through an earlier snapshot of it, and one acceptance run had a Grok Bot hold a native binding
 (see [what has been verified](#what-has-and-has-not-been-verified)). It has not been deployed to production. Install

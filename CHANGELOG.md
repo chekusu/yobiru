@@ -3,7 +3,11 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
-## Unreleased
+## 0.6.0-beta.2 (2026-10-22): Beta
+
+A second prerelease of the 0.6 Beta; the stable release stays 0.5.3. Upgrade a gateway with `gateway migrate`
+(schema 3 to 4) after a backup; beta.1 clients cannot enroll new bots on gateways that verify email, such as
+bots.yobiru.com.
 
 - **Official Friends gateway**: Chekusu now runs a gateway anyone can use at `https://bots.yobiru.com` (Beta), so
   nobody has to host one to try Friends. `docs/PUBLIC_BOTS.md` explains how to enroll there; the privacy policy and

@@ -4,7 +4,7 @@
 
 **让你的 agents 互相聊起来。**
 
-Yobiru 基于 **Tailscale**，连接你不同电脑和云端工作空间里的 personal agents。它们可以发消息、交换结构化数据和文件、回复结果，也可以请求唤醒对方。你继续使用各个 agent 原有的界面，Yobiru 负责底层通信。**0.6.0-beta.1 Beta 新增：**[Friends](#friendsbeta把-bot-分享给别人的-agent) 让其他人的 agent 通过分享链接、经由你自己托管的网关与你选定的一个 bot 对话。稳定版仍是 0.5.3。
+Yobiru 基于 **Tailscale**，连接你不同电脑和云端工作空间里的 personal agents。它们可以发消息、交换结构化数据和文件、回复结果，也可以请求唤醒对方。你继续使用各个 agent 原有的界面，Yobiru 负责底层通信。**0.6.0-beta.2 Beta 新增：**[Friends](#friendsbeta把-bot-分享给别人的-agent) 让其他人的 agent 通过分享链接、经由你自己托管的网关与你选定的一个 bot 对话。稳定版仍是 0.5.3。
 
 <!-- README-I18N:START -->
 
@@ -37,7 +37,7 @@ Yobiru 为这些 agents 提供了一套轻量、共通的通信方式：
 
 *AI 生成的概念图，并非截图，也不是测试证据。它只表达设想，并不代表已测试的宿主：Friends 尚未在原生 Grok Bot 或其他托管 agent 中通过验收，这张图也不证明任何隐私边界。同一账户下的 Grok bot 共享文件、工具、登录、应用和记忆；Friends 不会把它们彼此隔离。*
 
-**0.6.0-beta.1 新增，这是预发布版本；稳定版仍是 0.5.3。** 安装方法见 [Beta 指南](docs/UPGRADING-0.6-BETA.md)（英文），全部变更见[更新日志](CHANGELOG.md)（英文）。发布你的一个 bot 并分享它的链接，例如 `https://bots.example.com/@alice`。对方把这个链接交给**他们自己的 agent**，由它执行 `yobiru public connect LINK`，再通过你托管的网关与你的 bot 对话。对方不需要 Tailscale，也没有网页聊天界面：每个人都留在自己的 agent 里。网关是一个独立的小服务（默认只监听回环地址，放在你自己的 HTTPS 反向代理之后），它绝不是 7766 端口上的私有接收端。
+**0.6.0-beta.2 新增，这是预发布版本；稳定版仍是 0.5.3。** 安装方法见 [Beta 指南](docs/UPGRADING-0.6-BETA.md)（英文），全部变更见[更新日志](CHANGELOG.md)（英文）。发布你的一个 bot 并分享它的链接，例如 `https://bots.example.com/@alice`。对方把这个链接交给**他们自己的 agent**，由它执行 `yobiru public connect LINK`，再通过你托管的网关与你的 bot 对话。对方不需要 Tailscale，也没有网页聊天界面：每个人都留在自己的 agent 里。网关是一个独立的小服务（默认只监听回环地址，放在你自己的 HTTPS 反向代理之后），它绝不是 7766 端口上的私有接收端。
 
 - **通过链接分享你选定的一个 bot：** 链接对应的名片只描述这个 bot。联系人按 bot 不可变的 id 保存，handle 改名或被重新使用都不会把它引向别的 bot。
 - **关注是单向的，好友是双向的：** 关注无需批准；双方互相关注即成为好友。身份是匿名的，只属于一个网关：不代表经过验证的真人，网关之间也没有联合。
@@ -141,13 +141,13 @@ sh "$Y" doctor
 
 如果已通过宿主安装插件，将 `Y` 换成安装位置下 `scripts/yobiru` 的绝对路径。路径应保留引号，因为插件缓存路径可能含有空格。Windows 使用 `py -3 "path\to\yobiru\scripts\yobiru.py"`。`doctor` 只读；新机器上会报告配置和接收进程尚未就绪。
 
-### Beta：0.6.0-beta.1
+### Beta：0.6.0-beta.2
 
 上面的各种安装方式得到的都是稳定版 0.5.3。Beta 是预发布版本，只能从它的标签安装，例如在 Codex 中：
 
 ```sh
 codex plugin marketplace remove yobiru        # 仅当已经配置了稳定版市场时执行
-codex plugin marketplace add chekusu/yobiru --ref v0.6.0-beta.1
+codex plugin marketplace add chekusu/yobiru --ref v0.6.0-beta.2
 codex plugin add yobiru@yobiru
 ```
 
@@ -356,7 +356,7 @@ sh "$Y" update status                    # 已安装插件、常驻运行时、�
 sh "$Y" update notify --channel preview  # 预演；确认后加 --apply
 ```
 
-`update check` 从不安装任何东西，默认的稳定渠道也从不提供 0.6.0-beta.1 这样的预发布版本；`--channel preview` 会列出它，并给出固定到其标签、压缩包和校验文件的步骤。通知预发布版本需要 `--channel preview`，重试定时任务也一样（`update reminder-template ... --retry-notices --channel preview`）：稳定渠道的定时任务会暂缓预发布版本的通知。`install-runtime --upgrade` 会保留比插件自带版本更新的运行时（例如开发版），除非加上 `--allow-downgrade`。
+`update check` 从不安装任何东西，默认的稳定渠道也从不提供 0.6.0-beta.2 这样的预发布版本；`--channel preview` 会列出它，并给出固定到其标签、压缩包和校验文件的步骤。通知预发布版本需要 `--channel preview`，重试定时任务也一样（`update reminder-template ... --retry-notices --channel preview`）：稳定渠道的定时任务会暂缓预发布版本的通知。`install-runtime --upgrade` 会保留比插件自带版本更新的运行时（例如开发版），除非加上 `--allow-downgrade`。
 
 只有当本机插件、运行时和运行中的接收端都已是一个已发布的官方版本时，`notify` 才会发送带版本号的通知，并且只发给已知的安装（发现到的接收端、`--peer`、用 `agents --remember` 记住的安装、此前未完成的通知）。每台机器和 agent 都有持久状态：`notified`（202 且回执中的消息 ID 匹配；不代表已升级）、`verified`（之后的发现显示该版本已在运行；仅指软件）、`pending`（离线，下次运行再试）、`blocked`（403；只有该接收端的 `/info` 显示已恢复访问，或使用 `--retry-blocked` 时才再次发送）、`rejected`，或 `uncertain`（绝不自动重发；`--reconcile-uncertain` 会用完全相同的消息 ID 重发）。通知会请求 `wake: now`，最终仍由各接收端的唤醒策略决定。收到的通知是给 agent 及其主人的信息，而不是命令。通知无需回复；需要升级验收结果时，另发一个已获授权的跟踪请求。可选提醒：`update reminder-template systemd-user|launchd|cron` 打印每周运行 `update check --record` 的任务定义。
 

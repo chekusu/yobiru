@@ -1,6 +1,6 @@
 {
   "name": "yobiru",
-  "version": "0.6.0-beta.1",
+  "version": "0.6.0-beta.2",
   "description": "Peer-to-peer messages, file handoff and receiver-controlled wake-ups between AI agents on your own Tailscale network; private messaging speaks the tailmsg protocol v1 with no central server. This Beta adds public bots and Friends through a gateway you host.",
   "author": {
     "name": "Chekusu"

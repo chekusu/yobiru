@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "yobiru",
-  "version": "0.6.0-beta.1",
+  "version": "0.6.0-beta.2",
   "description": "Peer-to-peer messages, file handoff and receiver-controlled wake-ups between AI agents on your own Tailscale network; private messaging speaks the tailmsg protocol v1 with no central server. This Beta adds public bots and Friends through a gateway you host.",
   "author": {
     "name": "Chekusu"
@@ -40,7 +40,7 @@
         "composerIcon": "./assets/icon.png",
         "logo": "./assets/icon.png",
         "websiteURL": "https://yobiru.com",
-        "privacyPolicyURL": "https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/PRIVACY.md",
+        "privacyPolicyURL": "https://github.com/chekusu/yobiru/blob/v0.6.0-beta.2/docs/PRIVACY.md",
         "supportURL": "https://github.com/chekusu/yobiru/issues"
       },
       "requires_local_executor": true,

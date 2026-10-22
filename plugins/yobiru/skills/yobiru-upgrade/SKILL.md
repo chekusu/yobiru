@@ -80,7 +80,7 @@ or bridge with older files, and report software versions and policy adoption ind
    maintenance health. For the bridge, `sh Y codex-bridge status` must show `diagnostics.daemon.state`
    `reporting`; old queue rows keep their states and are never resent by the upgrade.
 
-## Prereleases (a Beta such as 0.6.0-beta.1)
+## Prereleases (a Beta such as 0.6.0-beta.2)
 
 A prerelease is opt-in per machine. Only the owner's explicit choice of that prerelease (in this conversation, or a
 standing instruction that names prereleases) authorizes installing it; an authorization for updates in general covers
@@ -94,7 +94,7 @@ stable releases only, and a received notice is never that choice.
   (after `codex plugin marketplace remove yobiru` if one is configured), then `codex plugin add yobiru@yobiru`.
   Check that `sh Y version` prints that exact version.
 - Keep development installs. If this machine's runtime or bridge is a development build (for example
-  `0.6.0-dev.1`, which SemVer sorts above `0.6.0-beta.1`) or locally changed, do not replace it: try the prerelease
+  `0.6.0-dev.1`, which SemVer sorts above `0.6.0-beta.2`) or locally changed, do not replace it: try the prerelease
   side by side, in a new folder and with a separate data home for public bot state, and do not run `install-runtime`
   or `codex-bridge install` from it there. `install-runtime --upgrade` refuses a newer runtime; add
   `--allow-downgrade` only when the owner decided to go back.

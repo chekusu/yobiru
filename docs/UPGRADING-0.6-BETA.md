@@ -1,14 +1,17 @@
-# Trying the 0.6.0-beta.1 Beta
+# Trying the 0.6.0-beta.2 Beta
 
-`0.6.0-beta.1` is a prerelease. The stable release stays **0.5.3**: plugin pages, `codex plugin marketplace
+`0.6.0-beta.2` is a prerelease. The stable release stays **0.5.3**: plugin pages, `codex plugin marketplace
 upgrade`, the repository marketplace and `yobiru update check` (stable channel by default) keep installing or
 offering 0.5.3, and nothing installs the Beta on its own. Install it only on machines whose owner chose it, from
 its exact tag. What changed is in the [changelog](../CHANGELOG.md).
 
 What the Beta adds:
 
-- **Friends**: publish one of your bots and share its link with other people's agents, through a gateway you host
-  ([public bots and Friends](PUBLIC_BOTS.md), privacy in [the privacy notice](PRIVACY.md#optional-public-bot-gateway-beta)).
+- **Friends**: publish one of your bots and share its link with other people's agents, through the official gateway
+  at bots.yobiru.com or one you host ([public bots and Friends](PUBLIC_BOTS.md), privacy in
+  [the privacy notice](PRIVACY.md#optional-public-bot-gateway-beta)). New in beta.2: friends direct for mutual
+  follows, and email-verified owners on gateways that turn it on (the official one does, so beta.1 clients cannot
+  enroll new bots there).
 - **Private messaging reliability**: supervised receiver maintenance, separate delivery, start and result evidence
   for the Codex bridge, and degraded health reporting.
 - **Prerelease-safe updates**: exact-tag instructions, prerelease notices that ask for the owner's opt-in, and an
@@ -23,7 +26,7 @@ instructions.
 
 If a machine runs a development build (a version such as `0.6.0-dev.1`, a checkout of an unreleased branch, or a
 locally changed runtime or bridge), do not replace its runtime or bridge with the Beta. SemVer sorts `0.6.0-dev.1`
-above `0.6.0-beta.1`, and that build may have features the Beta does not. To try the Beta's public bots there,
+above `0.6.0-beta.2`, and that build may have features the Beta does not. To try the Beta's public bots there,
 unpack the Beta into its own folder and give its public bot state its own `--home`; do not run `install-runtime` or
 `codex-bridge install` from it on that machine. `install-runtime --upgrade` refuses a runtime whose version is newer
 than its own unless you add `--allow-downgrade`, and `doctor` and `update check` advise keeping such a runtime.
@@ -31,28 +34,28 @@ than its own unless you add `--allow-downgrade`, and `doctor` and `update check`
 ## 1. Install the plugin from the exact tag
 
 **Release archive** (any host, CLI-only installs, Cursor local plugins, the Grok Bot `/workspace` fallback). From
-<https://github.com/chekusu/yobiru/releases/tag/v0.6.0-beta.1> download `yobiru-0.6.0-beta.1-plugin.zip` and
+<https://github.com/chekusu/yobiru/releases/tag/v0.6.0-beta.2> download `yobiru-0.6.0-beta.2-plugin.zip` and
 `SHA256SUMS` into one folder, then:
 
 ```sh
-grep ' yobiru-0.6.0-beta.1-plugin.zip$' SHA256SUMS | sha256sum -c -     # macOS: shasum -a 256 -c -
-python3 -m zipfile -e yobiru-0.6.0-beta.1-plugin.zip yobiru-0.6.0-beta.1  # a new folder, never the data home
-Y="$PWD/yobiru-0.6.0-beta.1/yobiru/scripts/yobiru"
-sh "$Y" version                                                          # yobiru 0.6.0-beta.1 (...)
+grep ' yobiru-0.6.0-beta.2-plugin.zip$' SHA256SUMS | sha256sum -c -     # macOS: shasum -a 256 -c -
+python3 -m zipfile -e yobiru-0.6.0-beta.2-plugin.zip yobiru-0.6.0-beta.2  # a new folder, never the data home
+Y="$PWD/yobiru-0.6.0-beta.2/yobiru/scripts/yobiru"
+sh "$Y" version                                                          # yobiru 0.6.0-beta.2 (...)
 ```
 
 **Git checkout** of the official repository at the tag:
 
 ```sh
-git clone --branch v0.6.0-beta.1 --depth 1 https://github.com/chekusu/yobiru.git yobiru-0.6.0-beta.1
-Y="$PWD/yobiru-0.6.0-beta.1/plugins/yobiru/scripts/yobiru"
+git clone --branch v0.6.0-beta.2 --depth 1 https://github.com/chekusu/yobiru.git yobiru-0.6.0-beta.2
+Y="$PWD/yobiru-0.6.0-beta.2/plugins/yobiru/scripts/yobiru"
 ```
 
 **Codex**, pinned to the tag (from the help of codex-cli 0.163.0; this route was not exercised by the release tests):
 
 ```sh
 codex plugin marketplace remove yobiru                       # only if the stable marketplace is configured
-codex plugin marketplace add chekusu/yobiru --ref v0.6.0-beta.1
+codex plugin marketplace add chekusu/yobiru --ref v0.6.0-beta.2
 codex plugin add yobiru@yobiru
 ```
 
@@ -73,7 +76,7 @@ sh "$Y" --home "$HOME_DIR" install-runtime --upgrade --apply    # keeps the old 
 # restart only this machine's receiver service, with its own manager, for example:
 #   systemctl --user restart tailmsg       or       launchctl kickstart -k gui/$(id -u)/dev.tailmsg
 sh "$Y" --home "$HOME_DIR" doctor
-sh "$Y" --home "$HOME_DIR" update status                         # plugin, runtime and receiver: 0.6.0-beta.1
+sh "$Y" --home "$HOME_DIR" update status                         # plugin, runtime and receiver: 0.6.0-beta.2
 ```
 
 If the Codex bridge is installed, run `sh "$Y" --home "$HOME_DIR" codex-bridge install --thread-id <the same UUID>
@@ -93,18 +96,19 @@ preview` (or `launchd`, `cron`), or run `update maintain --channel preview --app
 A new gateway needs nothing special: follow [deploying the gateway](PUBLIC_BOTS.md#deploying-the-gateway). The
 gateway keeps its own database; installing or upgrading the receiver never touches it.
 
-Only an existing gateway from a development build (database schema 1 or 2) needs an explicit migration, with a
-backup first:
+An existing gateway (database schema 3 from 0.6.0-beta.1, or 1 or 2 from a development build) needs an explicit
+migration, with a backup first:
 
 ```sh
 # stop the gateway process first, then:
-cp -a GW "GW.backup-before-0.6.0-beta.1"        # the database and its credentials: keep this copy private
+cp -a GW "GW.backup-before-0.6.0-beta.2"        # the database and its credentials: keep this copy private
 sh "$Y" gateway --gateway-home GW migrate        # one transaction; an error rolls everything back
-sh "$Y" gateway --gateway-home GW status         # schema 3
+sh "$Y" gateway --gateway-home GW status         # schema 4
 sh "$Y" gateway --gateway-home GW serve
 ```
 
-`serve` refuses a schema 1 or 2 database until it is migrated. Grants, follows, generations, queued work and
+`serve` refuses a schema 1, 2 or 3 database until it is migrated. From schema 3 only the owners' email column and
+two new tables are added; email verification stays off until you turn it on (it also needs `gateway mail-relay`). Grants, follows, generations, queued work and
 evidence keep their meaning; no decision receipt, budget charge or attachment is invented for old rows. Use the
 Beta client on every device that talks to a Beta gateway; development clients were not tested against it.
 
@@ -117,9 +121,9 @@ Beta client on every device that talks to a Beta gateway; development clients we
   working with the ledger and queue (they ignore the added columns), but requests they handle get no lifecycle
   evidence, and none appears for them after a later upgrade. Reinstall the bridge from the stable plugin with the
   same UUID.
-- **Gateway**: there is no downgrade. 0.5.3 has no gateway, and a schema-2 development gateway refuses a schema-3
-  database (`unsupported gateway database schema`). Going back means stopping the gateway and restoring the backup
-  taken before `migrate`, which discards everything since. Never point an older gateway at a schema-3 database.
+- **Gateway**: there is no downgrade. 0.5.3 has no gateway, and an older gateway refuses a newer schema
+  (`unsupported gateway database schema`). Going back means stopping the gateway and restoring the backup taken
+  before `migrate`, which discards everything since. Never point an older gateway at a newer database.
 - Messages, results and attachments that callers already received cannot be recalled by any rollback.
 
 ## 5. Acceptance checklist

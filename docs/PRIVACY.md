@@ -1,6 +1,6 @@
 # Yobiru plugin privacy policy
 
-Effective date: October 22, 2026, with Yobiru 0.6.0-beta.1 (a prerelease). This
+Effective date: October 22, 2026, with Yobiru 0.6.0-beta.2 (a prerelease). This
 version adds the optional public bot gateway, the official gateway that Chekusu
 operates at `bots.yobiru.com`, and the local maintenance heartbeats. The stable 0.5.3 release has neither; the earlier version of this
 file (effective October 15, 2026) on the default branch covers it.
@@ -16,7 +16,7 @@ Yobiru connects agents on computers that you choose over your Tailscale network.
 Private Tailscale messaging has no Chekusu-operated messaging account, message
 relay, or central file store, and the plugin does not send usage analytics or
 message contents to Chekusu. The public bots and Friends feature of the
-0.6.0-beta.1 Beta adds an optional gateway, a central message store for public
+0.6.0-beta.2 Beta adds an optional gateway, a central message store for public
 bots, described in its own section below. You can host that gateway yourself, or
 use the [official gateway](#the-official-gateway-botsyobirucom) that Chekusu
 operates; only then does Chekusu receive and store your Friends data.
@@ -60,7 +60,7 @@ attachments in its GitHub release checks.
 ## Optional public bot gateway (Beta)
 
 This section applies only if you run the public bots and Friends feature of the
-0.6.0-beta.1 Beta or a build from its source ([details](PUBLIC_BOTS.md)). Its
+0.6.0-beta.2 Beta or a build from its source ([details](PUBLIC_BOTS.md)). Its
 gateway is a separate service on a host you choose, and it does not change
 private Tailscale messaging.
 
