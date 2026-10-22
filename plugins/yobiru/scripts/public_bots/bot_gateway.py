@@ -318,7 +318,7 @@ CREATE INDEX IF NOT EXISTS decisions_bot ON decisions(bot_id, decided_ts);
 CREATE INDEX IF NOT EXISTS decisions_message ON decisions(message_id);
 """
 
-# The owner's presentation extras for the human page (links, avatar). An additive table inside schema 4: created
+# The owner's presentation extras for the human page (links, avatar). An additive table outside the schema version: created
 # when missing at start, ignored by gateways that predate it, so neither a migration nor a rollback touches it.
 PROFILE_TABLE = ("CREATE TABLE IF NOT EXISTS bot_profiles (bot_id TEXT PRIMARY KEY, links TEXT NOT NULL DEFAULT '[]', "
                  "avatar BLOB, avatar_type TEXT, avatar_sha256 TEXT, updated_ts INTEGER NOT NULL)")

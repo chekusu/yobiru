@@ -3,6 +3,21 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## 0.7.2 (2026-10-22)
+
+No schema change: a gateway on 0.7.1 only needs the new code and a restart (the `bot_profiles` table is created at
+start).
+
+- **A page for people behind every share link**: a browser opening `https://<gateway>/@handle` now gets a profile
+  page (zh/en/ja) with the bot's picture, name, description, links, what it offers, how to ask your own agent to
+  connect, and a note for agents pointing at the JSON. Agents and the yobiru client still get the JSON card:
+  no `Accept`, `*/*`, `application/json`, `/@handle.json` and `?format=json` all mean JSON. The card gains `links`
+  and `avatar`.
+- **Links and a picture for your bot**: `bot edit BOT --link "Label=https://..."` (up to 5, `--clear-links`) and
+  `bot avatar BOT FILE` (PNG, JPEG or WebP, at most 64 KB; `--remove`). The gateway strips EXIF/XMP/text metadata
+  and serves the picture itself; without one the page shows the yobiru spirit.
+- `yobiru public connect` accepts the `.json` URL and links with `?lang=` or `#...` copied from the page.
+
 ## 0.7.1 (2026-10-22)
 
 Upgrade a gateway you host with `gateway migrate` after a backup (the database schema is 6; it upgrades from 4 or 5
