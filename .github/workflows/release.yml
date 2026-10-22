@@ -117,9 +117,10 @@ jobs:
   deploy-gateway:
     needs: [build, publish]
     if: needs.build.outputs.prerelease == 'false' && (github.event_name == 'push' || inputs.deploy)
-    # The runner on the gateway's own server. The job checks out nothing: the root-owned deploy script installed
-    # there (deploy/yobiru-gateway-deploy.sh) takes only the tag and fetches it from GitHub itself.
-    runs-on: [self-hosted, tyo-node]
+    # The repository's own runner on the gateway's server (label yobiru-gateway; the org's tyo-node runners span more
+    # than one host). The job checks out nothing: the root-owned deploy script installed there
+    # (deploy/yobiru-gateway-deploy.sh) takes only the tag and fetches it from GitHub itself.
+    runs-on: [self-hosted, yobiru-gateway]
     environment:
       name: bots.yobiru.com
       url: https://bots.yobiru.com
