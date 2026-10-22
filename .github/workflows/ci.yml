@@ -1,0 +1,28 @@
+name: CI
+
+# GitHub-hosted only. Never point a job of this workflow at a self-hosted runner: it runs for pull requests from
+# forks, with the fork's copy of this file.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Plugin check
+        run: python3 tools/build_plugin.py check
+      - name: Tests
+        run: |
+          python3 -m unittest discover -s tests
+          python3 -m unittest test_codex_bridge test_codex_queue_client test_codex_resident test_install_codex_bridge test_install_codex_bridge_linux
