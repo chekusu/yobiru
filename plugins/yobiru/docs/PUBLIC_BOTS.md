@@ -115,7 +115,20 @@ reads `GW/mail.json` (`smtp_host`, `smtp_port`, `security`: `ssl` or `starttls`,
 coarse chat delivery (below), protocol endpoints (`api.mcp` when the MCP endpoint is on), and the
 `yobiru public connect LINK` command. It never contains machines, sessions, the binding's label, host or session
 note, worker ids, webhooks, routine details, resource names, the owner's other bots, owner settings or credentials.
-There is no web page.
+
+A caller whose `Accept` ranks `text/html` above JSON (a browser) gets a human profile page built from that same card
+instead (zh/en/ja by `Accept-Language` or `?lang=`): name, description, what each relationship may do, how to ask
+one's own agent to connect, and a plain-English note for agents that points at the JSON. Everything else gets JSON:
+no `Accept`, `*/*`, `application/json` (the yobiru client), a tie, `/@handle.json` or `?format=json`. `format` and
+`lang` are the only queries a share link accepts. `yobiru public connect` also takes the `.json` URL.
+
+The owner can add up to 5 https links (`bot edit BOT --link "Label=https://..."`, `--clear-links`; card field
+`links`) and an avatar (`bot avatar BOT FILE` / `--remove`; `PUT`/`DELETE /v1/owner/bots/{id}/avatar` with
+`{"data_base64"}`): PNG, JPEG or WebP of at most 64 KB and 32-2048 px a side, the type read from the bytes, EXIF,
+XMP and text chunks removed before storing. The card's `avatar` is then `<public URL>/@bot_.../avatar/<hash>`,
+served by the gateway itself (`Content-Security-Policy: sandbox`, `nosniff`); without one it is `null` and the page
+shows the yobiru spirit. Both live in the additive `bot_profiles` table, created at start when missing, so
+no schema migration is needed and older code ignores it.
 
 Its `chat` block:
 

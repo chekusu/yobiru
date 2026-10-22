@@ -4,17 +4,20 @@ Each class runs real bot_gateway.py subprocesses with synthetic homes on ephemer
 Expected failures are asserted together with their durable effect (state, cancellation, budget),
 not only the status code.
 """
+import base64
 import http.client
 import json
 import os
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import zlib
 from pathlib import Path
 
 from support.pkg import snapshot
@@ -167,7 +170,7 @@ class AdministrationTests(GatewayCase):
         self.assertEqual({"ok", "type", "card_version", "issuer", "bot_id", "handle", "address", "id_address",
                           "display_name", "description", "capabilities", "capabilities_note", "accepts_visitors",
                           "accepts_followers", "accepts_contact_requests", "chat", "e2e", "identity", "api",
-                          "connect"},
+                          "connect", "links", "avatar"},
                          set(card))
         self.assertTrue(card["address"].endswith("/@" + self.handle()))
         self.assertEqual(card, self.gw.ok("GET", "/@" + self.handle()), "the share link serves the same card")
@@ -197,6 +200,162 @@ class AdministrationTests(GatewayCase):
             *self.gw.call("GET", "/v1/actors")), "callers cannot be listed")
         health = self.gw.ok("GET", "/v1/health")
         self.assertEqual({"ok", "service", "api"}, set(health))
+
+
+def page(gw, path, headers=None):
+    """(status, headers, body bytes) of a GET, for answers that may be HTML."""
+    conn = http.client.HTTPConnection("127.0.0.1", gw.port, timeout=10)
+    try:
+        conn.request("GET", path, headers=headers or {})
+        resp = conn.getresponse()
+        return resp.status, {k.lower(): v for k, v in resp.getheaders()}, resp.read()
+    finally:
+        conn.close()
+
+
+def png(w, h, extra=b""):
+    """A tiny valid RGB PNG, with optional extra chunks before the image data."""
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+    rows = b"".join(b"\x00" + b"\xff\x5b\x1f" * w for _ in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + extra +
+            chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+BROWSER = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+           "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
+
+
+class ProfilePageTests(GatewayCase):
+    def test_agents_keep_the_json_card_and_browsers_get_a_page(self):
+        bot_id = self.published()
+        h = self.handle()
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id,
+                   {"description": "Hi <script>alert(1)</script> & welcome"}, self.gw.owner_token)
+        card = self.gw.ok("GET", "/@" + h)
+        for headers in ({}, {"Accept": "*/*"}, {"Accept": "application/json"},
+                        {"Accept": "application/json, text/html"}, {"Accept": "text/html;q=0.5, application/json"},
+                        dict(BROWSER, Accept="text/html;q=0")):
+            status, hdrs, body = page(self.gw, "/@" + h, headers)
+            self.assertEqual(200, status, headers)
+            self.assertTrue(hdrs["content-type"].startswith("application/json"), headers)
+            self.assertEqual(card, json.loads(body), headers)
+            self.assertEqual("Accept", hdrs.get("vary"))
+        for path in ("/@%s.json" % h, "/@%s?format=json" % h, "/@%s.json" % bot_id):
+            status, hdrs, body = page(self.gw, path, BROWSER)
+            self.assertEqual((200, card), (status, json.loads(body)), path)
+
+        status, hdrs, body = page(self.gw, "/@" + h, BROWSER)
+        self.assertEqual(200, status)
+        self.assertTrue(hdrs["content-type"].startswith("text/html"))
+        text = body.decode("utf-8")
+        self.assertIn('<html lang="zh-CN">', text)
+        self.assertIn("Synthetic " + h, text)
+        self.assertIn('rel="alternate" type="application/json" href="%s.json"' % card["address"], text)
+        self.assertIn("%s.json" % card["address"], hdrs["link"])
+        self.assertIn("yobiru public connect " + card["address"], text)
+        self.assertNotIn("<script>alert", text, "the description is escaped")
+        self.assertIn("Hi &lt;script&gt;alert(1)&lt;/script&gt; &amp; welcome", text)
+        embedded = text.split('<script type="application/json" id="yobiru-card">', 1)[1].split("</script>", 1)[0]
+        self.assertEqual({k: v for k, v in card.items() if k != "ok"}, json.loads(embedded))
+        nonce = hdrs["content-security-policy"].split("'nonce-", 1)[1].split("'", 1)[0]
+        self.assertEqual(2, text.count('nonce="%s"' % nonce), "only the page's own style and script run")
+        self.assertIn("frame-ancestors 'none'", hdrs["content-security-policy"])
+
+        self.assertIn('<html lang="ja">', page(self.gw, "/@%s?lang=ja" % h, BROWSER)[2].decode("utf-8"))
+        self.assertIn('<html lang="en">', page(self.gw, "/@" + h, {"Accept": "text/html"})[2].decode("utf-8"))
+        self.assertIn('<html lang="en">', page(self.gw, "/@%s?format=html&lang=en" % h)[2].decode("utf-8"))
+        self.assertTrue(page(self.gw, "/@" + bot_id, BROWSER)[1]["content-type"].startswith("text/html"))
+
+    def test_missing_bots_and_odd_queries(self):
+        status, hdrs, body = page(self.gw, "/@nobody-here", BROWSER)
+        self.assertEqual(404, status)
+        self.assertTrue(hdrs["content-type"].startswith("text/html"))
+        self.assertIn("noindex", body.decode("utf-8"))
+        status, hdrs, body = page(self.gw, "/@nobody-here")
+        self.assertEqual((404, "not_found"), (status, json.loads(body)["error"]))
+        h = self.handle()
+        self.published()
+        for q in ("?x=1", "?format=xml", "?lang=zh&lang=en", "?format"):
+            status, _, body = page(self.gw, "/@" + h + q, BROWSER)
+            self.assertEqual((400, "query_not_supported"), (status, json.loads(body)["error"]), q)
+        self.assertEqual(400, page(self.gw, "/v1/health?format=json")[0], "other routes still refuse queries")
+
+    def test_owner_links_and_avatar(self):
+        bot_id, h, owner = self.published(), self.handle(), self.gw.owner_token
+
+        card = self.gw.ok("GET", "/@" + h)
+        self.assertEqual(([], None), (card["links"], card["avatar"]))
+        links = [{"label": "Site", "url": "https://example.com/me"}, {"label": "GitHub", "url": "https://github.com/x"}]
+        self.assertEqual(links, self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"links": links}, owner)["links"])
+        for bad in ([{"label": "x", "url": "http://example.com"}], [{"label": "x", "url": "javascript:alert(1)"}],
+                    [{"label": "x", "url": "https://user:pw@example.com"}], [{"label": "", "url": "https://a.example"}],
+                    [{"label": "x", "url": "https://a.example", "more": 1}], [links[0]] * 6, "https://a.example"):
+            status, obj = self.gw.call("PATCH", "/v1/owner/bots/%s" % bot_id, {"links": bad}, owner)
+            self.assertEqual((400, "invalid_links"), (status, obj.get("error")), bad)
+        self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"], "a refused edit changes nothing")
+
+        image = png(64, 64, extra=struct.pack(">I", 14) + b"tEXt" + b"GPS\x0035.6,139.7" + b"\x00\x00\x00\x00")
+        obj = self.gw.ok("PUT", "/v1/owner/bots/%s/avatar" % bot_id,
+                         {"data_base64": base64.b64encode(image).decode()}, owner)
+        self.assertEqual("image/png", obj["avatar_type"])
+        card = self.gw.ok("GET", "/@" + h)
+        self.assertTrue(card["avatar"].startswith("%s/@%s/avatar/" % (self.gw.url, bot_id)), card["avatar"])
+        path = card["avatar"][len(self.gw.url):]
+        status, hdrs, body = page(self.gw, path)
+        self.assertEqual((200, "image/png"), (status, hdrs["content-type"]))
+        self.assertNotIn(b"GPS", body, "text chunks are removed")
+        self.assertIn("sandbox", hdrs["content-security-policy"])
+        self.assertEqual(200, page(self.gw, "/@%s/avatar" % h)[0])
+        self.assertEqual(404, page(self.gw, "/@%s/avatar/%s" % (bot_id, "0" * 16))[0])
+        text = page(self.gw, "/@" + h, BROWSER)[2].decode("utf-8")
+        self.assertIn('<img class="avatar" src="%s"' % card["avatar"], text)
+        self.assertIn('href="https://github.com/x" rel="noopener nofollow ugc me">GitHub</a>', text)
+
+        for bad in (b"<svg xmlns='http://www.w3.org/2000/svg'/>", b"GIF89a" + b"\x00" * 40, png(8, 8),
+                    png(64, 64) + b"\x00" * 70000, b"\x89PNG\r\n\x1a\n"):
+            status, obj = self.gw.call("PUT", "/v1/owner/bots/%s/avatar" % bot_id,
+                                       {"data_base64": base64.b64encode(bad).decode()}, owner)
+            self.assertIn(status, (400, 413), bad[:10])
+        self.assertEqual(card["avatar"], self.gw.ok("GET", "/@" + h)["avatar"])
+        _, stranger = self.gw.actor()
+        self.assertEqual(401, self.gw.call("PUT", "/v1/owner/bots/%s/avatar" % bot_id,
+                                           {"data_base64": base64.b64encode(image).decode()}, stranger)[0])
+        self.gw.ok("DELETE", "/v1/owner/bots/%s/avatar" % bot_id, None, owner)
+        self.assertIsNone(self.gw.ok("GET", "/@" + h)["avatar"])
+        self.assertEqual(404, page(self.gw, path)[0])
+        self.gw.ok("POST", "/v1/owner/bots/%s/unpublish" % bot_id, {}, owner)
+        self.gw.ok("PUT", "/v1/owner/bots/%s/avatar" % bot_id, {"data_base64": base64.b64encode(image).decode()}, owner)
+        self.assertEqual(404, page(self.gw, "/@%s/avatar" % bot_id)[0], "an unpublished bot shows no avatar")
+
+    def test_cli_sets_links_and_avatar(self):
+        from support.public_harness import cli
+        h = self.handle()
+        self.published()
+        home = self.root / ("cli-%s" % h)
+        img = self.root / ("%s.png" % h)
+        img.write_bytes(png(120, 120))
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        code, out, err = cli(home, "bot", "edit", "@" + h, "--link", "Site=https://example.com",
+                             "--link", "X=https://x.com/me")
+        self.assertEqual(0, code, err)
+        self.assertEqual(["Site", "X"], [l["label"] for l in out["links"]])
+        code, out, err = cli(home, "bot", "avatar", "@" + h, str(img))
+        self.assertEqual((0, "image/png"), (code, out.get("avatar_type")), err)
+        self.assertTrue(self.gw.ok("GET", "/@" + h)["avatar"])
+        self.assertEqual(0, cli(home, "bot", "edit", "@" + h, "--clear-links")[0])
+        self.assertEqual(0, cli(home, "bot", "avatar", "@" + h, "--remove")[0])
+        card = self.gw.ok("GET", "/@" + h)
+        self.assertEqual(([], None), (card["links"], card["avatar"]))
+        self.assertNotEqual(0, cli(home, "bot", "edit", "@" + h, "--link", "nope")[0])
+
+    def test_share_links_from_the_page_still_parse(self):
+        for link in ("https://gw.example/@guoyu.json", "https://gw.example/@guoyu?lang=zh",
+                     "https://gw.example/@guoyu#for-agents"):
+            self.assertEqual(("https://gw.example", "@guoyu"), C.parse_address(link), link)
+        self.assertEqual(("https://gw.example", "bot_aaaaaaaaaaaaaaaa"),
+                         C.parse_address("https://gw.example/@bot_aaaaaaaaaaaaaaaa.json"))
 
 
 class IsolationTests(GatewayCase):

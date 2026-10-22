@@ -4,7 +4,7 @@
   "files": {
     "scripts/tailmsg.py": {
       "source": "tailmsg.py",
-      "sha256": "6311afb6a7643714227b16c2605b8d1e06d074f67f23bdc507f6a7b00ab4c862"
+      "sha256": "e01094e061ddf8471afd9c4417c628ed84beca7e404ad7a6c8148c24629db4ac"
     },
     "scripts/codex_bridge/CODEX_DISPATCHER.md": {
       "source": "CODEX_DISPATCHER.md",
@@ -36,7 +36,7 @@
     },
     "docs/PUBLIC_BOTS.md": {
       "source": "docs/PUBLIC_BOTS.md",
-      "sha256": "8209e9cb89dc345051c2467bfa6767b49def9f7cf903b8c90d5d53df4ea8a62c"
+      "sha256": "5e9946f0e9cd68dcddcd637646cc1274aee926e86bd4a46801b2d2066098e947"
     },
     "scripts/public_bots/bot_calendar.py": {
       "source": "public_bots/bot_calendar.py",
@@ -44,11 +44,11 @@
     },
     "scripts/public_bots/bot_client.py": {
       "source": "public_bots/bot_client.py",
-      "sha256": "f1befefd8d96a85e2c6676cc039414366f785042147ac5e0fadc8f8d9345f5d5"
+      "sha256": "07f1332658b6aaf6e4e328882d42b0f301a502773a96df74354447db726e58cd"
     },
     "scripts/public_bots/bot_common.py": {
       "source": "public_bots/bot_common.py",
-      "sha256": "639906a714f7dd28318a5d75dc172f4107184d8cdfe03af08cb8fcc4f95a52b9"
+      "sha256": "4791239474ea5755a22c90702b0663a6a983441c1752884ab1d9182c55e4e07a"
     },
     "scripts/public_bots/bot_e2e.py": {
       "source": "public_bots/bot_e2e.py",
@@ -56,11 +56,15 @@
     },
     "scripts/public_bots/bot_gateway.py": {
       "source": "public_bots/bot_gateway.py",
-      "sha256": "f27216bf068eae699da9be8585a576915526b318831d077a2a08867cc80afdc4"
+      "sha256": "af10df87ac0978ad277078828bcc988a89a0c197b951c41c37a2b5bf4726bb29"
     },
     "scripts/public_bots/bot_mcp.py": {
       "source": "public_bots/bot_mcp.py",
       "sha256": "7a504549a7c6b69da73f02795ddd3741800c3c59138b5d8bc9b9c742533075e1"
+    },
+    "scripts/public_bots/bot_profile.py": {
+      "source": "public_bots/bot_profile.py",
+      "sha256": "f17bf32c1086ca16b6364c509964cd162331e9306585fc5f6e6fd3ee6d55eace"
     },
     "scripts/public_bots/bot_resources.py": {
       "source": "public_bots/bot_resources.py",

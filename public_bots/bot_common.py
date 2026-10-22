@@ -425,12 +425,16 @@ def parse_bot_ref(text):
 
 def parse_address(text):
     """'https://gw.example/@handle' or '.../@bot_...' (a share link) -> (base_url, '@handle' or bot id);
-    a bare '@handle' or bot id -> (None, ref). The last path segment must start with '@'."""
+    a bare '@handle' or bot id -> (None, ref). The last path segment must start with '@'; a '.json' suffix, query or
+    fragment on it (the human page's links) is ignored."""
     if not isinstance(text, str) or not text:
         raise ValueError("invalid bot address")
     if "://" not in text:
         return None, parse_bot_ref(text)
     head, sep, tail = text.rpartition("/")
+    tail = tail.split("?", 1)[0].split("#", 1)[0]
+    if tail.endswith(".json"):              # the card's own URL, as the human page links it
+        tail = tail[:-5]
     if not sep or not tail.startswith("@"):
         raise ValueError("a share link ends with /@handle or /@bot_...")
     ref = tail[1:] if tail[1:].startswith("bot_") else tail

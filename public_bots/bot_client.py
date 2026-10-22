@@ -2147,6 +2147,14 @@ def register_source(st, base, token, bot_id, handle, label):
     return {"bot_id": bot_id, "credential_id": obj["credential_id"], "stored": True}
 
 
+def link_arg(value):
+    """'Label=https://...' from --link."""
+    label, sep, url = value.partition("=")
+    if not sep or not label.strip() or not url.startswith("https://"):
+        die("--link: use 'Label=https://example.com/...'")
+    return {"label": label.strip(), "url": url.strip()}
+
+
 def cmd_bot(st, a):
     base, token = owner_session(st, a)
     if a.bot_cmd == "create":
@@ -2193,6 +2201,21 @@ def cmd_bot(st, a):
         out(call(base, "GET", "/v1/owner/bots/%s/sources" % bot_id, None, token))
     elif a.bot_cmd == "source-revoke":
         out(call(base, "POST", "/v1/owner/bots/%s/sources/%s/revoke" % (bot_id, a.credential_id), {}, token))
+    elif a.bot_cmd == "avatar":
+        if a.remove == bool(a.file):
+            die("give an image file (PNG, JPEG or WebP, at most 64 KB) or --remove")
+        if a.remove:
+            out(call(base, "DELETE", "/v1/owner/bots/%s/avatar" % bot_id, None, token))
+            return
+        try:
+            data = Path(a.file).expanduser().read_bytes()
+        except OSError as e:
+            die("cannot read %s: %s" % (a.file, e.strerror or e))
+        if len(data) > 65536:
+            die("%s is %d bytes; the avatar limit is 65536: resize it (for example to 512x512 JPEG or WebP)"
+                % (a.file, len(data)))
+        out(call(base, "PUT", "/v1/owner/bots/%s/avatar" % bot_id,
+                 {"data_base64": base64.b64encode(data).decode("ascii")}, token))
     elif a.bot_cmd == "edit":
         body, policy = {}, {}
         for key, flag in (("handle", a.handle), ("display_name", a.name), ("description", a.description)):
@@ -2211,6 +2234,8 @@ def cmd_bot(st, a):
                 policy[key] = flag == "on"
         if policy:
             body["policy"] = policy
+        if a.clear_links or a.link:
+            body["links"] = [link_arg(v) for v in a.link or []]
         if not body:
             die("nothing to change")
         out(call(base, "PATCH", "/v1/owner/bots/%s" % bot_id, body, token))
@@ -3420,6 +3445,14 @@ def main(argv=None):
     p.add_argument("--contact-requests", choices=("on", "off"))
     p.add_argument("--require-e2e", choices=("on", "off"),
                    help="refuse messages that are not end-to-end encrypted (MCP clients without a key cannot write)")
+    p.add_argument("--link", action="append", metavar="LABEL=URL",
+                   help="a link button on the bot's page (https, up to 5; replaces the current list)")
+    p.add_argument("--clear-links", action="store_true", help="remove every link from the bot's page")
+    p.add_argument("--gateway")
+    p = bs.add_parser("avatar", help="set the picture on the bot's page (PNG, JPEG or WebP, at most 64 KB) or --remove")
+    p.add_argument("bot")
+    p.add_argument("file", nargs="?")
+    p.add_argument("--remove", action="store_true")
     p.add_argument("--gateway")
 
     pw = sp.add_parser("worker", help="per-bot workers: the deterministic responder, or the native agent binding")
