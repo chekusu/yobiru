@@ -29,10 +29,10 @@ class ReviewTargetTests(FriendsClientCase):
         self.assertEqual("revoked", self.y("owner", "review", "block", "alice", job)["status"])
         self.y("caller", "chat", "alice", "Blocked follow-up", expect=2)
 
-    def test_accept_and_block_check_selected_bot_before_changing_contact(self):
+    def test_accept_block_and_ignore_check_selected_bot_before_changing_request(self):
         _, job = self.request()
         other = self.y("owner", "bot", "create", "--handle", "other", "--name", "Synthetic other bot")["bot_id"]
-        for action in ("accept", "block"):
+        for action in ("accept", "block", "ignore"):
             with self.subTest(action=action):
                 code, _, error = cli(self.homes["owner"], "review", action, "other", job)
                 self.assertEqual(2, code)

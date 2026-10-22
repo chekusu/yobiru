@@ -2678,9 +2678,12 @@ class Api(object):
         """Final responses and owner notices for this caller, newest first, from conversations it can read now
         (current grant epoch, published bot). Released ones are recorded as served; acknowledge them separately."""
         pid, now, out = r.subject["id"], r.now, []
+        # Read receipts remain visible on the message and conversation, but have no response to acknowledge.
+        # Exclude them before the candidate limit so they cannot hide an older answer advertised by reply wakes.
         rows = db.execute("SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE "
                           "m.actor_id=? AND c.deleted_ts IS NULL AND ((m.author='caller' AND m.state IN "
                           "('completed','declined','failed','expired','cancelled')) OR m.author='owner') "
+                          "AND NOT (m.state='completed' AND COALESCE(m.code,'')='read' AND m.result IS NULL) "
                           "ORDER BY COALESCE(m.finished_ts, m.created_ts) DESC, m.rowid DESC LIMIT 200",
                           (pid,)).fetchall()
         readable = {}

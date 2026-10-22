@@ -2293,7 +2293,23 @@ def cmd_verifier(st, a):
 
 
 def owner_message_context(base, token, bot_id, mid):
-    obj = call(base, "GET", "/v1/owner/messages/%s" % mid, None, token)
+    try:
+        _, obj = C.api_ok(base, "GET", "/v1/owner/messages/%s" % mid, None, token)
+    except C.ApiError as e:
+        if e.status != 404 or e.code != "not_found":
+            fail(e)
+        # Older gateways expose review metadata only in the selected bot's queue. Keep their existing
+        # approve/decline commands working, without hiding authentication, transport or server errors.
+        reviews = owner_reviews(base, token, bot_id)
+        item = next((x for key in ("inbound", "replies", "uncertain") for x in reviews[key]
+                     if x["job_id"] == mid), None)
+        if item is None:
+            fail(e)
+        sender = item.get("from") or {}
+        obj = {"bot_id": reviews["bot_id"], "message_id": mid, "actor_id": sender.get("principal_id"),
+               "actor_e2e_key": sender.get("e2e_key"), "request_hash": item.get("request_hash")}
+    except ValueError as e:
+        die(str(e))
     if obj["bot_id"] != bot_id:
         die("%s is not a message of %s" % (mid, bot_id))
     return obj
@@ -2364,6 +2380,8 @@ def cmd_review(st, a):
     if action == "approve_inbound":
         bot_id = owner_bot(base, token, a.bot)
         body["request_hash"] = owner_message_context(base, token, bot_id, a.job)["request_hash"]
+    elif action == "ignore":
+        owner_message_context(base, token, owner_bot(base, token, a.bot), a.job)
     elif action == "approve_reply":
         bot_id = owner_bot(base, token, a.bot)
         if has_native_worker(st, base, bot_id) and not a.allow_agent_credential_here:
