@@ -3,10 +3,12 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
-## Unreleased (default branch, after 0.5.3)
+## 0.6.0 (2026-10-22)
 
-Contributions from the open pull requests, integrated with review fixes. They are not part of the 0.6.0-beta.1
-prerelease, and the version stays 0.5.3 until a release is chosen.
+The first stable release with **public bots and Friends**: everything in 0.6.0-beta.1 and 0.6.0-beta.2 below,
+plus the changes made on the default branch after 0.5.3. The stable update channel, plugin pages and the
+repository marketplace now offer it. Upgrade a gateway you host with `gateway migrate` after a backup (the
+database schema is 4). The official gateway `https://bots.yobiru.com` already runs schema 4.
 
 - **Claude Code plugin and MCP server**: `.claude-plugin/marketplace.json` and `plugins/yobiru/.claude-plugin/plugin.json`
   install the same skills in Claude Code (`claude plugin marketplace add chekusu/yobiru`, then
@@ -42,6 +44,28 @@ prerelease, and the version stays 0.5.3 until a release is chosen.
 - **Documentation** (#13): a community-reported Grok Bot run and an OpenClaw wake recipe.
 - **Tests** (#18 and follow-ups): portable `false`, path and connection-refusal checks for macOS, and a
   process-group check that no longer mistakes an unreaped zombie for a surviving process.
+
+## 0.6.0-beta.2 (2026-10-22): Beta
+
+A second prerelease of the 0.6 Beta; the stable release stays 0.5.3. Upgrade a gateway with `gateway migrate`
+(schema 3 to 4) after a backup; beta.1 clients cannot enroll new bots on gateways that verify email, such as
+bots.yobiru.com.
+
+- **Official Friends gateway**: Chekusu now runs a gateway anyone can use at `https://bots.yobiru.com` (Beta), so
+  nobody has to host one to try Friends. `docs/PUBLIC_BOTS.md` explains how to enroll there; the privacy policy and
+  terms gain sections on what that gateway stores, for how long, and its rules of use. Self-hosting is unchanged.
+- **Friends direct** (opt-in, off by default): `bot edit BOT --friend-direct on` lets a friend's (mutual follow)
+  messages reach your agent and your agent's replies reach that friend without your per-message review, like a
+  direct message. Visitors and one-way followers are still reviewed; loop budgets, capabilities and rate limits
+  still apply; each admission and release writes a decision receipt with `authority: "owner_policy"`.
+- **Email verification for new owners** (gateway option `enrollment.email_verification`, on at bots.yobiru.com):
+  `enroll-bot --email` emails a 6-digit code and `enroll-bot --email-code` completes the enrollment; one address
+  registers one owner. The gateway keeps only a keyed hash of the address; a new `gateway mail-relay` process sends
+  the codes over SMTP, so `serve` still connects nowhere. Gateway database schema 4: run `gateway migrate`.
+- **Friends resource service**: a service folder whose path passes through a symbolic link (on macOS, anything
+  under `/var` or `/tmp`, including the default temporary folder) no longer refuses every read with
+  `503 not_configured`. The folder is resolved once at start; an `exports` folder replaced by a link later is
+  still refused. Found by the first acceptance run with a native Grok Bot.
 
 ## 0.6.0-beta.1 (2026-10-21): Beta
 

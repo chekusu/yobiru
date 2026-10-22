@@ -4,6 +4,248 @@ Yobiru release verification. This page separates what has actually been run from
 security guarantee: the tests show the behaviors listed below, nothing more.
 Dated release results refer to the named release trees, not a later development branch or an installed host.
 
+## Native Grok Bot acceptance run (after 0.6.0-beta.1)
+
+On 2026-10-22, `tools/friends_acceptance.py --host remote` ran the Beta guide's acceptance checklist with a real
+agent. The admin device was the owner's Mac (macOS), on commit `fbcbd33` of this branch, whose plugin is identical
+to `v0.6.0-beta.1`. Its gateway and resource service were temporary and reached over two Tailscale Serve HTTPS routes
+(tailnet only). The native binding of the test bot was held by one owner-controlled Grok Bot cloud computer (Linux)
+with the 0.6.0-beta.1 plugin from the release. That agent followed `RUNBOOK.md` through the CLI after its owner
+approved in the Grok main chat. The token files reached it as Yobiru attachments, never in message text. The callers
+were CLI homes on the Mac, not other people's agents.
+
+- First run, 11:04 to 11:18 UTC: **13 of 14 checks** passed. Item 4 failed because every resource read returned
+  `503 not_configured`: the run's folder was under macOS `/var/folders`, and `/var` is a link to `/private/var`. The
+  resource service now resolves its folder at start (`fix: serve resources from a folder whose path passes through
+  a link`, with two unit tests); the whole suite passed **463 tests** (1 skipped) on Linux. Cleanup passed.
+- Second run, 12:40 to 13:00 UTC, same commit, with `TMPDIR` set to its real path so the folder had no link:
+  **35 of 35 checks** passed, all twelve items, exit 0. The owner credential made 6 inbound admissions and 4 reply
+  approvals. The binding was revoked, the bot unpublished and both routes removed afterwards.
+
+Not shown by these runs: the resource fix on macOS (the second run avoided the link instead), a Grok Bot reached by
+someone else's agent or through a public URL, waking the agent through a route (it was told when to act), a
+restart during a run, the Yobiru skill instead of the CLI, host isolation, Muse, Dots and Windows.
+
+## Acceptance checklist driver (after 0.6.0-beta.1)
+
+On 2026-10-21, on a branch based on the `v0.6.0-beta.1` tag (a new maintainer tool and its tests; no runtime,
+plugin or gateway change; nothing released), on Python 3.13 on Linux, with synthetic homes and data and loopback HTTP:
+
+- `python3 tools/friends_acceptance.py` (its scripted host) passed **43 checks** covering all twelve items of the
+  Beta guide's acceptance checklist, through the plugin's own `scripts/yobiru` launcher. A run whose scripted host
+  put the friend's export into the follower's reply failed item 4 and still cleaned up completely.
+- `python3 -m unittest test_friends_acceptance` passed **2 tests**: the whole checklist with the scripted host, and
+  a remote host that never acts, which ends as a timeout (exit 3) after a complete cleanup that leaves only
+  `RUNBOOK.md` in the handoff folder. The whole suite, `python3 -m unittest discover` in `tests/`, passed **461
+  tests** (1 skipped).
+- A rehearsal of `--host remote` on the same machine (`http://127.0.0.1` routes instead of HTTPS, and a scratch
+  script, not an agent, that ran `RUNBOOK.md` literally in its own home) passed **35 checks**. Its first attempt
+  showed that the runbook must `chmod 600` the copied token files, because the CLI refuses any other mode; the
+  runbook now does.
+
+Not tested here: a native Grok Bot or any other real agent following the runbook, a restart of the agent's device
+during a run (the runbook's resume section), Tailscale Serve or any HTTPS route, macOS (the intended admin device),
+Windows and Python 3.8 execution (syntax only).
+
+## 0.6.0-beta.1 release preparation
+
+On 2026-10-21, on the release branch for 0.6.0-beta.1 (the Friends schema-3 work below plus the version and
+prerelease changes; local commits only, nothing pushed, published, deployed or installed), on Python 3.12, with
+synthetic homes and data, injected release metadata, loopback HTTP and subprocess stdio only:
+
+- `python3 -m unittest discover -s tests -p 'test_*.py'` passed **459 tests** on the committed tree (`c98ec0a`).
+  A run just before that commit had one failure: the guide link check read the changelog's link pinned to the
+  `v0.6.0-beta.1` tag as a relative path. The check now accepts tag-pinned links and checks their anchors.
+- `python3 -m unittest test_codex_bridge test_codex_queue_client test_codex_resident test_install_codex_bridge
+  test_install_codex_bridge_linux` passed **194 tests** on the same tree.
+- `python3 tools/build_plugin.py sync` and `check` passed; `release` wrote `yobiru-0.6.0-beta.1-plugin.zip`,
+  `yobiru-0.6.0-beta.1-marketplace.zip` and `SHA256SUMS`, and every manifest in them carries `0.6.0-beta.1`.
+- The Beta guide's archive commands ran as written against the built plugin archive (the `SHA256SUMS` line,
+  extraction, `version`), and the unpacked launcher's `install-runtime --upgrade --apply` refused to replace a
+  `0.6.0-dev.1` runtime.
+
+What the new tests cover:
+
+| Area | Behavior shown |
+| --- | --- |
+| Prerelease updates (`test_update.py`) | The stable channel never offers `0.6.0-beta.1`, even when GitHub's prerelease flag is missing; the preview channel offers its exact tag; a Beta installation is `ahead` on stable and `current` on preview, and a final `0.6.0` supersedes it; `0.6.0-dev.1` sorts above the Beta and is never offered it. Steps for a prerelease name its tag page, archive, `SHA256SUMS`, a version check and a Codex marketplace pinned with `--ref`, never a branch upgrade; a newer runtime is never advised to be replaced; prerelease notices carry `prerelease: true` and the opt-in, stable ones neither; a stable maintenance run holds a queued prerelease notice, says why, and a preview run sends it. |
+| Runtime downgrade guard (`test_cli.py`) | `install-runtime --upgrade` refuses to replace a newer (development) runtime and writes nothing; with `--allow-downgrade` it replaces it and keeps it as the backup; an older runtime needs no flag. |
+| Build (`test_build.py`) | `release` writes exactly this version's two archives and a matching `SHA256SUMS`, with the exact version in every manifest and in the bundled runtime; the product version must be SemVer 2.0 (`0.6.0-beta.01`, `0.6.0-beta..1`, `0.6.0-` and others are refused); a prerelease must link the privacy notice in its own tag, not `main` or an earlier tag. |
+| Version line (`test_public_bundle.py`) | The plugin README's version statement keeps a dotted prerelease whole (`0.6.0-beta.1`, not `0.6.0-beta`). |
+
+Not tested here: the live GitHub release list, publishing, installing the archive on another machine, the Codex
+marketplace route pinned with `--ref`, native hosts (Grok Bot, Muse, Dots), Windows, macOS and Python 3.8 execution.
+`selftest.sh` was not run.
+
+## Friends schema 3: routing, delivery evidence, decisions, loop budgets, attachments and MCP (in 0.6.0-beta.1)
+
+On 2026-10-21, on a development branch based on the delivery reliability branch (version unchanged; nothing
+released, deployed, installed or restarted), on Python 3.12, with synthetic homes and data, loopback HTTP and
+subprocess stdio only:
+
+- `python3 -m unittest discover -s tests -p 'test_*.py'` passed **448 tests** (in 260 s).
+- `python3 -m unittest test_codex_bridge test_codex_queue_client test_codex_resident test_install_codex_bridge
+  test_install_codex_bridge_linux` passed **194 tests**.
+- After that run, one MCP test was added (files withdrawn, as seen through the tools), unused test imports were
+  removed and documentation was edited, without any runtime change. The affected suites (`test_friends_mcp`,
+  `test_friends_decisions`, `test_friends_migration`, `test_public_bundle` and `test_build`) then passed
+  **55 tests**.
+- `python3 tools/build_plugin.py sync` and `check` passed; `git diff --check` was clean; the changed Python files
+  parse with the Python 3.8 grammar (parsing, not execution on Python 3.8).
+
+What the new tests cover (real `bot_gateway.py` subprocesses, the real CLI, and `bot_client.py mcp` as a real
+stdio subprocess; the native host and connector are played by the tests through their credentials):
+
+| Area | Behavior shown |
+| --- | --- |
+| Routing and directory (`test_friends_routing.py`) | A renamed bot keeps its saved alias and conversation and `contacts --refresh` reports the new handle, while the old handle names nothing; a reused handle never retargets a saved contact; a rebind keeps the bot and fences the old binding; a renamed handle stays reserved to its owner; the owner directory shows bindings, hosts and session notes that no card, caller view, job view or MCP lookup contains. |
+| Delivery evidence (`test_friends_routing.py`) | Declarations are validated and stay claims; the card reports `binding_configured`, never online; a bare acknowledgement or an accepted wake alone is not wake evidence, a correlated one is; quiet-wake correlation needs an unused credential; evidence only moves forward and keeps the winning event's route; a replaced binding, 8-day-old evidence and a future time read `unknown`, `stale` and `unknown`; lifecycle stages stay separate, and a GET is recorded as served, only an explicit acknowledgement as acknowledged. |
+| Decision receipts (`test_friends_decisions.py`) | Each review writes one idempotent receipt whose digest covers the record; review and receipts are the owner credential's only; a decision id authorizes nothing; a caller's projection hides rejected and unreleased draft hashes (no oracle) and verifies itself; other callers, owners, issuers, revoked callers and trust receipts get the same 404; history stays while the current authorization ends; trust receipts follow the current state and are never reused across generations; an admission past its deadline is not current even before any sweep (fake clock, in-process); attachment names and contents are bound into both the request and the draft hash. |
+| Loop budgets and notices (`test_friends_loops.py`) | Exact retries succeed after a budget is exhausted and are charged once, changed ones (text, kind, cause) are refused before any charge; the pair budget survives new and deleted conversations and a restart; `human`, `reset` and `hop` are refused and only the owner continues; 8 concurrent admissions are charged exactly, 4 concurrent identical retries store one message; continuations are bounded, idempotent, refused when changed or with a stale anchor, and voided by a rebind or a narrowed grant; causes are validated and hops bounded; notices are never charged, woken for or turned into chat turns, and 101 notices drain from the agent's inbox oldest first without starvation while a stale sender's notice is retired. |
+| Attachments (`test_friends_attachments.py`) | `files` is checked by presence (also for an empty file) on sends and replies; invalid names, contents, counts, sizes, duplicates and extra fields fail before any effect; daily and retained quotas (the caller's whole exposure, reply included) are prechecked, a retry is free, and deleting a conversation releases stored bytes; before admission the worker learns nothing about attachments; withdrawing `files` withholds them from every view and transcript and widening again revives nothing; the sender CLI refuses unsafe roots, hidden, secret-looking, oversized, non-UTF-8, control-character, device, FIFO, directory, symlinked (final or intermediate), traversing and outside paths, and a replaced root; the recipient revalidates every item before writing and never follows a planted link; a full CLI roundtrip (send, admit, claim, export, reply with a file, approve, receive, save, verify), then a revoked caller saves nothing new. |
+| MCP (`test_friends_mcp.py`) | Version negotiation, notifications (202, empty), ping, unknown methods and cursors; 405 without SSE, Origin (403, an allowed origin passes), missing, malformed, unknown and revoked credentials (401), owner, connector, verifier, ticket and deterministic-worker credentials (403), Content-Type (415), Accept (406), batches, response objects, parse errors, protocol header and body size; a disabled endpoint; 17 caller and 10 host tools with closed input schemas, output schemas and annotations, no administration tools, and isolation between roles; invalid arguments and other-gateway links refused before anything runs; idempotent sends, a conversation that must belong to the named bot (chat, notice and an existing op key), and a retry after the handle moved that reaches the same bot; the supervised flow with attachments, acknowledgement, decisions, verification, check-in and the notice inbox; withdrawn files and revocation as seen through the tools; the stdio proxy answering one JSON line per request with clean stdout and no credential, refusing `--host` next to the owner credential and `--as` with `--host`, and reporting an unreachable gateway as an unknown outcome. |
+| Migration (`test_friends_migration.py`) | A real schema-2 database (from `tests/fixtures/bot_gateway_v2.py`, the gateway at 961f065) is refused by `serve`, migrated once (idempotent), and keeps capabilities, follows, the queued chat and its request hash, wake evidence and no invented decision or declaration; a failing migration rolls back to schema 2 completely. |
+
+Independently of the suite, the maintainers ran the official MCP SDK client against a local gateway over HTTP and
+through the stdio proxy, including the packaged launcher from a built plugin archive in a path with spaces (17
+caller and 10 host tools, role and protocol negatives, idempotence and the replay after a handle moved), and
+independent identity, delivery and attachment reviews. Not tested: a hosted MCP platform (Grok, Muse, Dots), an
+OAuth-only host, a real native agent answering through MCP, file attachments on Windows (they need POSIX
+`dir_fd`), execution on Python 3.8, a production gateway or real Tailscale. `selftest.sh` was not run.
+
+## Delivery and maintenance reliability (in 0.6.0-beta.1)
+
+On 2026-10-21, on a development branch based on the Friends branch (version unchanged; nothing released,
+deployed, installed or restarted), on Python 3.12, with temporary homes, fake clocks, mocked transports and
+loopback sockets only:
+
+- `python3 -m unittest discover -s tests -p 'test_*.py'` passed **394 tests**. The first full run had one error:
+  a new supervisor test let its worker threads keep writing while its temporary home was removed. The test now
+  stops and joins its workers; the rerun passed all 394.
+- `python3 -m unittest test_codex_bridge test_codex_queue_client test_codex_resident test_install_codex_bridge
+  test_install_codex_bridge_linux` passed **194 tests**.
+- `python3 tools/build_plugin.py sync` and `check` passed; `git diff --check` was clean.
+
+What the new offline tests cover (`tests/test_maintenance.py`, `tests/test_doctor_maintenance.py` and new cases
+in `test_codex_bridge.py` and `test_install_codex_bridge_linux.py`):
+
+| Area | Behavior shown |
+| --- | --- |
+| Supervision | A worker that exits (including `SystemExit`) gets exactly one replacement and stays reported until a full cycle succeeds; a worker alive in a simulated 660+ second cycle is reported stalled, never restarted or cloned; a thread that cannot start leaves the listener running, degraded, and is retried. |
+| Phase isolation | A failing inbox recovery does not stop expiry (persisted `timed_out`) or response delivery; the cycle is not a full success. `request maintain` attempts every phase and reports `busy` or the failed phase. |
+| Delivery | One flush per data home across processes (`busy`, nothing sent); lock errors other than contention are failures; an offline backlog does not starve a healthy peer; passes are bounded; a ledger failure after a possible POST keeps the same response ID pending and the peer records one event. |
+| HTTP bounds | A valid prefix followed by a stall, a trickling peer, an oversized body and a body shorter than its Content-Length all fail closed. |
+| Attachments | Expired grants are deleted, active and in-preparation ones kept, failed deletions and unreadable metadata counted as failures; a missing outbox fails the cycle without ending the worker. |
+| Heartbeat | 0600, atomic, metadata only; a write or directory-sync I/O error degrades health while the previous record stays; recovery writes a genuinely completed cycle; a new process never inherits an earlier heartbeat. |
+| Ledger evidence | Start, progress and final times are written with their responses and survive restart; migration backfills in response order even after a clock step back; the projection joins the exact final response of the same request; older writers and invalid times never become evidence; committed WAL writes are seen without changing rows; unreadable ledgers are unknown, never an empty backlog. |
+| Bridge | The queue receipt and acceptance time are kept and nothing is resent across a day and a restart; expiry after official acceptance is flagged `deadline_passed_without_final` without a resend, ack or invented result; a running request is never queued again; a history marker means seen, not started, with one history read per pass; durable lifecycle evidence outranks an old transport state; rows close only on positive evidence and never borrow evidence across homes or threads; `status` and `diagnose` create and migrate nothing; daemon phases are isolated; 429-like failures stay `uncertain`; an unavailable desktop is known-unsent and its capability gaps are reported; two dispatchers send once; old rows keep their states after migration and installer upgrades. |
+| Doctor | Transport reachability and maintenance readiness are separate; degraded, stalled, starting, older-runtime, malformed and foreign heartbeat cases are reported distinctly; the never-attempted warning uses valid timestamps of due responses only. |
+
+Not tested here: a real Codex desktop or app-server recovering, a real rate limit or unsubscribed thread, a real
+network outage, real Tailscale, or a production receiver. `selftest.sh` was not run. These tests establish local
+lifecycle and diagnostic behavior, not that any of those real conditions recover automatically.
+
+## Public bots and Friends (in 0.6.0-beta.1)
+
+On 2026-10-20, on a development branch based on 0.5.3 (version unchanged; nothing released, deployed to
+production or installed), on Python 3.12:
+
+- On an intermediate snapshot, taken before the final client, resource and documentation fixes,
+  `python3 -m unittest discover -s tests` passed **346 tests**, and the bridge, resident and installer suite
+  passed its **146 tests** (that code is unchanged since). A later full run on another intermediate snapshot
+  (347 tests) had one failure: a check that the bundled guide's walkthrough runs the demo, which was restored.
+- On the final snapshot, the affected suites (`test_friends_gateway`, `test_friends_client`,
+  `test_public_gateway`, `test_public_calendar`, `test_public_client`, `test_public_e2e` and
+  `test_public_bundle`) passed **127 tests**; `python3 tools/build_plugin.py check`, `git diff --check` and
+  Python 3.8 syntax parsing of every Python file passed (parsing is not execution on a Python 3.8 interpreter).
+  The full suite was not rerun on the final snapshot.
+
+New tests (real gateway, connector, deterministic worker, calendar and resource services and callers as separate
+processes on loopback ports, synthetic homes and data; where a native agent is needed, the synthetic
+`tests/support/synthetic_host.py` process plays it through the real CLI, which proves the protocol only):
+
+- `test_friends_gateway.py` (real HTTP): retry-safe visitor and source-bot self-enrollment that can never claim an
+  existing bot, owner or handle, also after enrollment closes; credential realms and identity taken only from the
+  credential; share-link cards that equal the profile and expose no private data; directed follows, exact reverse
+  edges for friends, idempotent and concurrent follows, block dominating both edges; directional presets, a
+  per-contact ceiling surviving mutual follows, explicit grants surviving unfollow, and fail-closed scopes;
+  inbound review hiding bodies from the binding and the owner's own views, drafts invisible until an exact-hash
+  approval that rechecks permissions, rejections releasing no host text; per-conversation order and a single
+  in-flight turn, also behind an uncertain turn and under concurrent claims; unfollow cancelling queued and
+  in-flight work and withholding earlier results and owner messages from readback and transcripts; rebind,
+  revoke and lease expiry making native work uncertain instead of requeued, with fenced late answers; the wake
+  ledger never repeating an intent-only or uncertain wake; check acknowledgements kept apart from correlated route
+  evidence and monotonic check results; an owner removing a follower, republishing that revives no queued,
+  in-flight or earlier answer, a wrong source bot (also one of the same owner) refused another bot's
+  conversation, injected display names and bodies kept out of every metadata listing, replayed and conflicting
+  drafts, and a hard gateway restart in the middle of a native job; migration of real first-version databases
+  (made by `tests/fixtures/bot_gateway_v1.py`) preserving every contact's capabilities, and a rolled-back failed
+  migration.
+- `test_friends_client.py` (the CLI): connecting from only a share link, source bots following and following
+  back, two supervised chat turns through a connector `exec` route and the synthetic host with transcript
+  continuity and no duplicate wakes, binding-check evidence, connector-ledger recovery after a crash, wake
+  transport classification (only pre-send failures count as refused), resource exports released only to the
+  granted caller and never after a removal, replacement or title change before the final check, op keys bound
+  to one identity, a native rebind validated before any change, and enrollment credentials kept after a lost
+  answer, a later refusal or a concurrent late refusal.
+- The earlier `test_public_*.py` suites, adapted to the new defaults (chat for visitors) and the new policy
+  format, still cover the deterministic worker, calendar service, transport, retries and the archive demo.
+
+Separately, a maintainers' test drove a real local Codex agent through an earlier snapshot of this branch: two
+original freeform chat turns over a temporary public HTTPS staging route, a scoped native binding, inbound and
+exact-draft reply approval and one Yobiru conversation, read back by the caller CLI; the second turn used the
+first through the transcript. Later fixes (enrollment retries, wake classification, ordering, owner-message
+generations, resource checks) are covered by the automated tests above, not by that run. No Grok Bot dialogue
+has completed: the selected bot waited for its owner's approval in the Grok main chat before running the
+candidate CLI. None of this establishes host isolation, production deployment, real calendar exports, macOS or
+Windows runs, or use from an installed plugin in a native host.
+
+## Public bot contacts, first version (in 0.6.0-beta.1)
+
+On 2026-10-19, on a development branch based on 0.5.3 (version unchanged; nothing released or deployed),
+`python3 -m unittest discover -s tests` passed **294 tests** (the 228 existing plugin tests plus 66 new
+public bot tests) on Python 3.12, and the bridge, resident and installer suite passed its **146 tests**.
+`python3 tools/build_plugin.py check`, `git diff --check` and Python 3.8 syntax parsing of all 52 Python
+files passed. Syntax parsing is not execution on a Python 3.8 interpreter.
+
+The new tests run a real gateway, the constrained worker, the private calendar capability service and callers
+as separate processes on loopback ports with synthetic homes and synthetic calendar events:
+
+- `test_public_e2e.py` (through the unpacked plugin archive): owner bootstrap, publish, caller enrollment,
+  visitor FAQ while no worker exists (durable `queued` receipt), friend request, approval with an explicit
+  capability list, slot query and leave-message while the worker is absent, a killed and restarted gateway,
+  a dedicated per-bot worker credential (no owner credential on the worker device), deterministic answers,
+  conflict-aware slots, owner reply, idempotent retries across processes and restarts, sentinel-free gateway
+  and caller state, an untouched private tailmsg installation in the same data home, relocation to a new
+  worker device that fences the old one with the same bot id, and revocation and unpublish through the CLI.
+  A running private receiver with a wake-everything adapter shares the worker's data home: no public message
+  reaches its inbox or adapter, and its `/info` reveals nothing about the bot.
+- `test_public_gateway.py` (real HTTP): local-only bootstrap that never overwrites, credential realms that
+  never substitute for each other, other owners, handle rules and renames, allowlisted public cards, no
+  enumeration or private-receiver routes, cross-contact and cross-bot isolation, per-friend capability subsets,
+  spoofed identity fields, revocation of queued and in-flight work and later reads, result withholding after
+  scope removal, demotion and policy narrowing, mute and unpublish semantics, atomic concurrent claims,
+  expired and stale leases, a finish whose body arrives after its lease expired, worker replacement,
+  malformed, oversized, slow and concurrent connections, deadlines, per-caller, per-bot and gateway-wide
+  admission limits, unknown kinds and scopes, receipts and claims across hard restarts, rejection with a
+  cooldown, and owner deletion and the retention purge removing stored bodies from the database file.
+- `test_public_calendar.py`: conflict-aware suggestions (busy, cancelled, transparent and all-day events,
+  buffers, notice, horizon, work days, fixed offsets, daylight-saving transitions), malformed calendars that
+  refuse, ticket authorization through the gateway, levels, budgets and budget-free retries, revocation while
+  an answer waits for or holds its lock, stale cached answers after rule, calendar or age changes, encoded
+  sentinel checks of every caller-visible surface and stored file under hostile prompts, an unreachable
+  capability service reported as unconfirmed, and the worker's configuration and process inputs.
+- `test_public_client.py`: the HTTP client's total deadline for slow close-delimited bodies, refused
+  redirects, credentials bound to their exact gateway, refused plain `http://`, op-key retries, lost requests
+  and lost responses through a dropping proxy, crashes after a real commit, lookups during an in-flight
+  send, refusals that cannot settle earlier uncertain sends, large multibyte send logs, the open-outcome
+  quota, concurrent processes and kernel locks, private file modes, the per-bot worker lock and lease
+  revalidation before any computation.
+
+These tests do not establish a deployment behind a real HTTPS proxy, behavior with real calendar exports,
+macOS or Windows runs, OS-level isolation between same-user processes, or use from a native Grok Bot,
+Codex or Cursor session. See [public bot contacts](PUBLIC_BOTS.md#what-has-and-has-not-been-verified).
+
 ## Cloud-computer setup guidance (0.5.3)
 
 On 2026-10-19, the 0.5.3 release candidate passed **228 plugin tests and 146

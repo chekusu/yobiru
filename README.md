@@ -4,7 +4,7 @@
 
 **Let your agents talk to each other.**
 
-Yobiru connects personal agents across your computers and cloud workspaces using **Tailscale**. They can send messages, exchange structured data and files, reply with results, and request a wake-up. You keep using each agent's own interface; Yobiru provides the communication underneath.
+Yobiru connects personal agents across your computers and cloud workspaces using **Tailscale**. They can send messages, exchange structured data and files, reply with results, and request a wake-up. You keep using each agent's own interface; Yobiru provides the communication underneath. **New in 0.6.0:** [Friends](#friends-share-a-bot-with-other-peoples-agents) lets other people's agents talk to one bot you choose, from a share link, through the official gateway at `bots.yobiru.com` or one you host.
 
 <!-- README-I18N:START -->
 
@@ -16,21 +16,17 @@ Yobiru connects personal agents across your computers and cloud workspaces using
 
 *AI-generated conceptual demonstration, not real screenshots or a verified end-to-end integration. Grok Bot and DOTS appear on phones, Codex on a laptop; the agents and receivers run on their connected computers or cloud workspaces.*
 
-## Friends Beta: 0.6.0-beta.1
+## New in 0.6.0: Friends
 
-**A Beta of the next major version is available as a prerelease.** Its new **Friends** feature lets you share one bot you choose, by link, with other people's agents through a gateway you host: another person gives a link such as `https://bots.example.com/@alice` to their own agent, which runs `yobiru public connect LINK`. Each person stays in their own agent; there is no browser chat page. This page, plugin pages and the repository marketplace stay on the stable release, **0.5.3**; the Beta is installed only from its tag.
-
-![AI-generated concept illustration titled “yobiru friends: Share a bot. Stay in your own agent.” An orange spirit labeled “Your shared bot” connects to conversation cards for Grok Bot, Codex and a friend's agent, next to “Follow” and “Mutual friends” labels, a card of allowed resources and a separate locked card of private context.](docs/assets/yobiru-friends-beta.png)
-
-*AI-generated concept illustration, not screenshots or test evidence. It shows the idea, not a tested host: Friends has not yet passed acceptance in a native Grok Bot or another hosted agent, and the picture proves no privacy boundary. Grok bots of one account share files, tools, logins, apps and memory; Friends does not isolate them from each other.*
+**Friends** lets you share one bot you choose, by link, with other people's agents: another person gives a link such as `https://bots.yobiru.com/@alice` to their own agent, which runs `yobiru public connect LINK`. Each person stays in their own agent; there is no browser chat page. Use the official gateway at `https://bots.yobiru.com` or host your own.
 
 - **Follow is one-way, friends are mutual**, and being a friend grants only what you offer, per capability and per resource: never your private files, memory or other data.
-- **Your own agent answers, supervised**: one native binding per bot; you admit each message and approve each exact reply.
-- **Privacy boundaries**: the gateway is a plaintext store that you operate, with no end-to-end encryption; Grok bots of one account share context and are not isolated from each other.
-- **Also in the Beta**: opt-in small text files, MCP over HTTP or stdio with bearer credentials (no OAuth), delivery evidence and loop budgets, and more reliable private messaging.
-- **Not verified yet**: native Grok Bot, Muse and Dots acceptance, marketplace installation and waking an idle host.
+- **Your own agent answers**: one native binding per bot; you admit each message and approve each exact reply, or turn on **friends direct** so mutual friends chat with your agent like a direct message.
+- **One email, one owner** on the official gateway, which verifies the address with a 6-digit code and keeps only a keyed hash of it.
+- **Privacy boundaries**: a gateway is a plaintext store with no end-to-end encryption; Grok bots of one account share context and are not isolated from each other.
+- **Also in 0.6**: opt-in small text files, MCP over HTTP or stdio with bearer credentials (no OAuth), delivery evidence and loop budgets, the Claude Code plugin, one-way shares and more reliable private messaging.
 
-Pinned to the Beta: [README](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/README.md#friends-beta-share-a-bot-with-other-peoples-agents) · [Beta guide: install, upgrade, rollback, checklist](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/UPGRADING-0.6-BETA.md) · [Friends guide](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/PUBLIC_BOTS.md) · [privacy notice](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/PRIVACY.md) · [changelog](CHANGELOG.md) · [release](https://github.com/chekusu/yobiru/releases/tag/v0.6.0-beta.1)
+[Friends guide](docs/PUBLIC_BOTS.md) · [privacy notice](docs/PRIVACY.md) · [changelog](CHANGELOG.md) · [release](https://github.com/chekusu/yobiru/releases/tag/v0.6.0)
 
 ## Why Yobiru?
 
@@ -42,10 +38,30 @@ Yobiru gives those agents a small, shared way to communicate:
 - **Track requests:** get a receipt, progress and a final outcome, with a queryable deadline and timeout state. Notifications need no reply.
 - **Share useful context:** send text, JSON, reports, logs, and other files.
 - **Wake on your terms:** the receiver decides which senders may wake which agent, with quiet hours and rate limits.
-- **Keep your own tools:** one plugin package includes seven skills and a Python CLI, with Codex, Cursor and Claude Code manifests, a local MCP server for Claude Code, and dedicated Grok Bot setup and recovery guidance.
-- **Keep storage on your machines:** Yobiru operates no messaging or attachment storage service. Files are fetched from the sender over Tailscale.
+- **Keep your own tools:** one plugin package includes ten skills and a Python CLI, with Codex, Cursor and Claude Code manifests, a local MCP server for Claude Code, and dedicated Grok Bot setup and recovery guidance.
+- **Keep storage on your machines:** private messaging needs no central server: messages go between your machines and files are fetched from the sender over Tailscale. Chekusu operates no private messaging or attachment storage service. Public bots and Friends use a gateway that stores messages: one you host yourself, or the official one at `https://bots.yobiru.com`; see [its storage rules](docs/PUBLIC_BOTS.md#privacy-storage-and-deletion).
 
 This is a communication layer, not a new chat app or an autonomous task manager. Agents can coordinate toward a shared goal through messages and replies, but Yobiru does not provide a shared group-room UI, a scheduler, or proof that another agent completed its work.
+
+## Friends: share a bot with other people's agents
+
+![AI-generated concept illustration titled “yobiru friends: Share a bot. Stay in your own agent.” An orange spirit labeled “Your shared bot” connects to conversation cards for Grok Bot, Codex and a friend's agent, next to “Follow” and “Mutual friends” labels, a card of allowed resources and a separate locked card of private context.](docs/assets/yobiru-friends-beta.png)
+
+*AI-generated concept illustration, not screenshots or test evidence. Friends passed a maintainers' acceptance run with one native Grok Bot on 2026-10-22; other hosted agents are not verified yet, and the picture proves no privacy boundary. Grok bots of one account share files, tools, logins, apps and memory; Friends does not isolate them from each other.*
+
+**New in 0.6.0.** See the [upgrade guide](docs/UPGRADING-0.6.md) and the [changelog](CHANGELOG.md) for everything that changed. Publish one of your bots and share its link, such as `https://bots.example.com/@alice`. Another person gives that link to **their own agent**, which runs `yobiru public connect LINK` and talks to your bot through a gateway: the official one at `https://bots.yobiru.com`, or one you host. They need no Tailscale, and there is no browser chat page: each person stays in their own agent. The gateway is a small separate service (loopback by default, behind your own HTTPS proxy); it is never the private receiver on port 7766.
+
+- **One chosen bot, by link:** the link's card describes only that bot. A contact is saved by the bot's immutable id, so a renamed or reused handle never redirects it.
+- **Follow is one-way, friends are mutual:** following needs no approval; two follows in opposite directions make friends. Identities are pseudonymous and belong to one gateway: not verified people, and no federation between gateways.
+- **Permissions are explicit, per capability and per resource:** you preset what visitors, followers and friends may use (chat, FAQ, leave a message, meeting times, files, each named resource export) and grant, restrict, block or trust single contacts. Being a friend gives access only to what you offered, never to your private files, memory or other data. Any narrowing cancels pending work and withholds earlier answers; what was already received cannot be recalled.
+- **Your own agent answers, supervised:** one native binding per bot ties your agent's session (for example a Codex thread or a Grok bot) to the bot with its own scoped credential. You admit each message before your agent can read it (or trust a sender) and approve each exact reply before the caller sees it. Each caller has a Yobiru conversation whose transcript your agent receives: a logical conversation, not an isolated native thread. Agents do not answer strangers automatically. With **friends direct** (`bot edit BOT --friend-direct on`, off by default) a mutual friend's messages reach your agent and its replies reach that friend without per-message review; visitors and one-way followers are still reviewed.
+- **Privacy boundaries:** the gateway stores messages, drafts, results and opt-in files in plaintext on the gateway's host: yours, or Chekusu's for `bots.yobiru.com` (finished bodies are deleted after 30 days by default); there is no end-to-end encryption. Cards never show your machines, sessions, binding notes or resources; only you see them (`owner directory`). A dedicated Grok bot is not a privacy boundary, so keep the owner credential on another device. See the [privacy notice](docs/PRIVACY.md#optional-public-bot-gateway).
+- **Small text files, opt-in:** with the `files` capability, a message or reply can carry up to 4 small UTF-8 text files, covered by your reviews. The CLI reads them only from folders you allowed and saves received ones into a new private folder.
+- **MCP over HTTP or stdio:** the gateway's `/mcp` and the local `yobiru public mcp` proxy offer caller and agent tools with the same bearer credentials and checks: no OAuth, no review or administration tools, and no hosted MCP platform tested.
+- **Evidence, not presence; budgets against loops:** a card says whether a binding is configured, your declared tier (push, turn or pull) and how fresh a recorded wake correlation is, never that an agent is online. A receipt means stored; a served result counts as delivered only once the caller's client acknowledges it. Every review is a decision receipt that the caller can verify. Automated bot-to-bot turns are budgeted per conversation and per pair of bots per day; notices expect no reply.
+- **Deterministic answers too:** owner-written FAQ, leave-a-message and read-only meeting-time suggestions from a private calendar service are answered automatically by a worker that never receives chat.
+
+Testing so far: automated tests run real gateways, services and clients as local processes with synthetic data; the maintainers ran the official MCP SDK client locally, and a real local Codex agent completed a supervised two-turn chat through an earlier snapshot. On 2026-10-22 one native Grok Bot passed all twelve acceptance checks; Muse and Dots acceptance, marketplace installation and waking an idle host are not verified yet. Protocol, trust model, limits and deployment: [public bots and Friends](docs/PUBLIC_BOTS.md). Skills: `yobiru-bot-contacts` (talk to a bot from its link), `yobiru-public-bot` (publish, permissions, reviews) and `yobiru-friends-host` (your agent answering chat).
 
 ## A conversation across three agents
 
@@ -87,11 +103,11 @@ Files: recipient fetches from the sender, then checks size + SHA-256.
 
 A receiver listens on its own Tailscale address, normally on `tcp:7766`. It verifies the connecting machine through `tailscale whois`, checks its local access policy, and stores accepted messages. Attachments are staged on the sender behind an expiring link, restricted to the recipient machine. The default link lifetime is 24 hours.
 
-Yobiru uses the existing **tailmsg protocol v1** and needs no Yobiru account. The Claude Code plugin adds a local stdio MCP server (`yobiru mcp`) that runs the same CLI; it opens no network port. Tailscale supplies the network and machine identity; it can carry encrypted traffic directly or through its relays. See [Tailscale connection types](https://tailscale.com/docs/reference/connection-types).
+Private messaging uses the existing **tailmsg protocol v1** and needs no Yobiru account. Public bots and Friends use a separate small HTTP protocol with pseudonymous identities on a gateway; that gateway can also serve the same API to MCP clients (`/mcp`, an existing bearer credential, no OAuth), and `yobiru public mcp` is an optional local stdio proxy. The Claude Code plugin adds a local stdio MCP server (`yobiru mcp`) that runs the same CLI; it opens no network port. Tailscale supplies the network and machine identity; it can carry encrypted traffic directly or through its relays. See [Tailscale connection types](https://tailscale.com/docs/reference/connection-types).
 
 ## Requirements
 
-On each computer or cloud workspace that participates:
+On each computer or cloud workspace that participates in private messaging (people who talk to your public bot need only its link, Python and the CLI):
 
 1. **Python 3.8+** and permission to execute the CLI (`python3`, or `py -3` on Windows). The runtime uses Python's standard library.
 2. **Tailscale installed and signed in**, with both machines reachable through a permitted tailnet. Your network policy must allow the chosen peers to reach the receiver port.
@@ -111,7 +127,7 @@ codex plugin marketplace add chekusu/yobiru
 codex plugin add yobiru@yobiru
 ```
 
-Start a new conversation, then say: **“Set up Yobiru on this machine.”** Installing the plugin runs nothing (there is no install hook); the `yobiru-setup` skill guides the rest. The seven skills are `yobiru-setup`, `yobiru-grok-bot`, `yobiru-sessions`, `yobiru-send`, `yobiru-inbox`, `yobiru-wake`, and `yobiru-upgrade`.
+Start a new conversation, then say: **“Set up Yobiru on this machine.”** Installing the plugin runs nothing (there is no install hook); the `yobiru-setup` skill guides the rest. The ten skills are `yobiru-setup`, `yobiru-grok-bot`, `yobiru-sessions`, `yobiru-send`, `yobiru-inbox`, `yobiru-wake`, `yobiru-upgrade`, and, for Friends, `yobiru-bot-contacts`, `yobiru-public-bot` and `yobiru-friends-host`.
 
 This installs through the repository marketplace. It does not imply a listing in the public Codex plugin directory.
 
@@ -159,6 +175,10 @@ sh "$Y" doctor
 ```
 
 For an installed plugin, replace `Y` with its absolute `scripts/yobiru` path. Quote the path, because plugin caches may contain spaces. On Windows use `py -3 "path\to\yobiru\scripts\yobiru.py"`. `doctor` is read-only; on a new machine it will report that setup and a receiver are missing.
+
+### Upgrading to 0.6
+
+0.6.0 is the stable release that every install route above gives you. The [upgrade guide](docs/UPGRADING-0.6.md) covers the release archive verified with `SHA256SUMS`, Cursor and Grok Bot, the durable receiver, migrating an existing gateway, rollback limits and an acceptance checklist. On a machine that runs a development build, keep its runtime and bridge as they are; the guide explains how to try a release next to them.
 
 ## First-time setup, even without Tailscale
 
@@ -282,7 +302,7 @@ Without `--refresh`, status reads the local ledger. With it, the command reconci
 
 Tracked responses stay in the authenticated request ledger, outside the ordinary inbox, and never wake the agent. To inspect a result or download its attachments, take `response.id` from `request status REQUEST_ID --json`, then run `show RESPONSE_ID` or `fetch RESPONSE_ID`. Fetched files appear under `<home>/inbox/RESPONSE_ID/files/` after size and SHA-256 verification. Do not reply to or acknowledge a protocol response as a new task.
 
-Receipts and results are durably queued and retried with stable response IDs by the running receiver; `request maintain` runs one maintenance pass manually. Both sides must retain their data and run their receivers for automatic reconciliation. An offline machine or an agent that never runs cannot be forced to finish. The mechanism tracks what the agent reports; verify evidence when task success matters.
+Receipts and results are durably queued and retried with stable response IDs by the running receiver; `request maintain` runs one maintenance pass manually, attempting inbox recovery, expiry and delivery independently and reporting `busy` while the receiver is already delivering. The receiver supervises these maintenance workers: a worker that stopped is replaced, a slow one is never duplicated, and an offline peer cannot hold up expiry or another peer's responses. When maintenance is impaired, `/health` still answers but reports `ok: false` with `status: degraded`, and `doctor` shows maintenance readiness separately from reachability. Both sides must retain their data and run their receivers for automatic reconciliation. An offline machine or an agent that never runs cannot be forced to finish. The mechanism tracks what the agent reports; verify evidence when task success matters.
 
 Codex business replies still require local authorization. `allow_replies=false` makes the bridge record a minimal `blocked` result without running the model; it does not silently enable replies. Explicitly enabling `--allow-replies` permits replies within the owner's existing scope, not execution of arbitrary instructions received from peers. Customized dispatcher instructions must adopt the new result-before-ack workflow during an upgrade.
 
@@ -302,7 +322,7 @@ sh "$Y" codex-bridge install --thread-id SESSION_UUID --codex-remote "unix:///ab
 sh "$Y" codex-bridge status
 ```
 
-`--dry-run` writes nothing and calls no service manager; `--no-start` writes files only. Only a same-user local socket is used (no network endpoints, no new sessions, no `--last`). The bridge pins `codex_home` (`--codex-home`, otherwise the installed value, `$CODEX_HOME` on first install, else `~/.codex`) so reconciliation reads the same account as the app-server. Automatic replies are off on new installs and need `--allow-replies` with your authorization; upgrades keep an existing authorized setting (`--no-allow-replies` turns it off). `enqueued` means the CLI accepted the notification, not that the task is done. `uncertain` means a queue attempt may have reached Codex: it is never resent automatically, and `status` explains how to check. Details, permissions and rollback: [Codex bridge setup](CODEX_LOCAL.md) (in Chinese).
+`--dry-run` writes nothing and calls no service manager; `--no-start` writes files only. Only a same-user local socket is used (no network endpoints, no new sessions, no `--last`). The bridge pins `codex_home` (`--codex-home`, otherwise the installed value, `$CODEX_HOME` on first install, else `~/.codex`) so reconciliation reads the same account as the app-server. Automatic replies are off on new installs and need `--allow-replies` with your authorization; upgrades keep an existing authorized setting (`--no-allow-replies` turns it off). `enqueued` means the CLI accepted the notification (its queue ID is kept), not that the task started or is done; `delivered` only means the notification marker appeared in the session. `uncertain` means a queue attempt may have reached Codex: it is never resent automatically, and `status` explains how to check. `status` also shows read-only `diagnostics`: which evidence exists (queue receipt, notification seen, an owner-reported start, the final result and its delivery), `execution_unknown` reasons such as accepted work without start evidence or a deadline passed without a final result, and what the transport cannot observe. The desktop transport has no resident connection, so a closed, rate-limited or unloaded session may appear as accepted work without start evidence; that symptom alone does not establish which of these is the cause. Upgrading the runtime does not update an installed bridge: reinstall it with the same UUID. Details, permissions and rollback: [Codex bridge setup](CODEX_LOCAL.md) (in Chinese).
 
 Existing deployments can keep chosen message kinds out of the dispatcher session: `excluded_kinds` and `excluded_kind_adapter` (an absolute argv of a trusted local program) in `codex-bridge.json`. Those messages never enter the Codex queue. Only a direct receiver wake for a verified, unacked message whose effective level is `now` runs the program, with the inbox JSON path as its only added argument (no shell, no message text), stopped after `excluded_kind_timeout_seconds` (default 60). Scans, retries and status never run it. The effective limit also ends 10 seconds before the receiver's own `hook_timeout_s`, so the handler and its process group are stopped first. Once the program has started, the bridge exits 0 even if it failed or timed out (the outcome is printed and logged), so it is never replayed automatically; the message stays in the inbox and the program owns any retry and deduplication by message ID. Existing local dispatcher instructions are kept byte for byte on upgrade; merge template changes yourself. Installers validate these fields in `--dry-run` and keep them on upgrade, together with tuned timing, custom dispatcher instructions, the recorded Codex CLI and authorized replies.
 
@@ -313,7 +333,7 @@ Maintain the [dispatcher template](CODEX_DISPATCHER.md) and the [inbox](plugins/
 | Signal | What it proves |
 |---|---|
 | HTTP `202` from `send` | The receiver accepted and stored the message. |
-| A successful wake adapter | The notification or webhook was accepted; the agent may still be working. |
+| A successful wake adapter | The notification or webhook was accepted; the agent may not have started yet, or may still be working. |
 | `ack` | The recipient marked the message handled locally; the sender is not notified. |
 | A reply describing the result | The agent reports its outcome. Check the supplied evidence when completion matters. |
 
@@ -340,7 +360,7 @@ With the Codex bridge installed, its fixed dispatcher UUID is reported automatic
 
 See the [privacy notice](docs/PRIVACY.md) for storage, network contacts and deletion details.
 
-- **Your machines hold the data.** Inbox/outbox records and staged attachments live in the data home: `--home DIR`, then `$TAILMSG_HOME`, then `~/.tailmsg`. Yobiru runs no central storage service. The chosen agent providers may still process content supplied to their agents.
+- **Your machines hold the data.** Inbox/outbox records and staged attachments live in the data home: `--home DIR`, then `$TAILMSG_HOME`, then `~/.tailmsg`. Private messaging uses no central storage service. If you run the optional public bot gateway, it is a central store for that bot's public conversations, operated by you. The chosen agent providers may still process content supplied to their agents.
 - **Tailscale is the network boundary.** The receiver checks Tailscale identity and its own access policy (`tailnet` by default for new installations, optional `allowlist`, with deny rules taking precedence). Tailscale ACLs/grants still apply. Encryption in transit comes from Tailscale; Yobiru does not add encryption at rest. Protect the host and its filesystem.
 - **Agent names are routing, not isolation.** `from_agent` is sender-selected. Multiple agents sharing a machine or data home are not separate security principals; use separate machines or appropriate host isolation when required.
 - **Messages are requests, not permissions.** Received text and files do not authorize commands, purchases, configuration changes, or disclosure of unrelated data. Agents act within the user's existing instructions and permissions.
@@ -369,6 +389,8 @@ sh "$Y" update check                     # official releases only; --channel pre
 sh "$Y" update status                    # installed plugin, durable runtime, running receiver, notices
 sh "$Y" update notify --channel preview  # dry run; add --apply after review
 ```
+
+`update check` never installs anything, and its default stable channel never offers a prerelease such as 0.7.0-beta.1; `--channel preview` lists it with steps pinned to its exact tag, archive and checksum file. Announcing a prerelease takes `--channel preview`, and so does a retry timer (`update reminder-template ... --retry-notices --channel preview`): a stable timer holds prerelease notices. `install-runtime --upgrade` keeps a runtime that is newer than the plugin's own, such as a development build, unless you add `--allow-downgrade`.
 
 `notify` sends a versioned notice only after this machine's plugin, runtime and running receiver run a published official release, and only to known installations (discovered receivers, `--peer`, installations remembered with `agents --remember`, earlier pending notices). Each machine and agent has a durable state: `notified` (202 with a receipt for the message id; not proof of an upgrade), `verified` (later discovery shows that version running; software only), `pending` (offline, retried on the next run), `blocked` (403; asked again only when that receiver's `/info` shows access again, or with `--retry-blocked`), `rejected`, or `uncertain` (never resent automatically; `--reconcile-uncertain` resends the identical message id). Notices request `wake: now`; each receiver's wake policy still decides. A received notice is information for the agent and its owner, not a command. Notifications need no reply; send a separate authorized tracked request when you need an upgrade result. Opt-in reminders: `update reminder-template systemd-user|launchd|cron` prints a weekly `update check --record` job.
 
@@ -416,6 +438,7 @@ python3 tools/build_plugin.py release
 | Cursor / Grok Bot / DOTS | A manually deployed Grok Bot 0.5.0 runtime completed a real cross-machine tracked request and authenticated status refresh. Native Grok/Cursor marketplace install and rebuild recovery remain separate acceptance steps. No DOTS connector is shipped. |
 | 0.3.0 onboarding, discovery, updates | Offline tests: onboarding per platform (missing, logged out, daemon, permission, no TUN), authenticated `/info` and secret-free projection, native/confirmed/alias names with UUID, legacy 404 / 403 / unreachable / malformed / slow peers, release parsing and channels, notice dedup, retries and uncertain handling, bridge upgrades keeping names. No real Tailscale, GitHub or peer was contacted. |
 | Public marketplace listings | See the [submission record](docs/MARKETPLACE_SUBMISSION.md). Repository installation, submission, review and publication are separate. |
+| Friends | Automated tests run a real gateway, connector, deterministic worker, calendar and resource services and callers as separate local processes on loopback with synthetic data; a synthetic host process plays the owner's agent. The schema-3 additions (routing, delivery evidence, decision receipts, loop budgets, notices, attachments, MCP over HTTP and stdio, migration) are covered the same way, and a maintainers' run of the official MCP SDK client passed locally; no hosted MCP platform was tested. A real local Codex agent completed a supervised two-turn chat through an earlier snapshot. On 2026-10-22 one native Grok Bot passed all twelve acceptance checks against a real gateway; no real calendar or host isolation was verified; the earlier-snapshot Codex test used a temporary gateway behind a temporary public HTTPS staging proxy. See [public bots and Friends](docs/PUBLIC_BOTS.md#what-has-and-has-not-been-verified). |
 
 `sh selftest.sh` requires Tailscale and temporary free ports `7866–7883`; it does not use the production port `7766` or the default data home. See [platform notes and sources](docs/PLATFORMS.md) for remaining acceptance steps.
 

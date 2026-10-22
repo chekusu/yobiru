@@ -3,7 +3,9 @@
 Yobiru uses one plugin directory, `plugins/yobiru`, for Grok Bot, Cursor, Codex
 and compatible ChatGPT desktop execution. The portable manifest and host
 overlays are generated from `packaging/product.json`. There is no separate
-hosted MCP service, hosted messaging account, or duplicate ChatGPT codebase.
+hosted MCP service, hosted messaging account, or duplicate ChatGPT codebase. The
+plugin registers no MCP server; the optional `/mcp` endpoint of the public bots
+(0.6.0) runs only on a gateway: one the user hosts, or the official bots.yobiru.com.
 
 Official submission routes checked on October 15, 2026:
 
@@ -69,8 +71,9 @@ portable OpenAI extension is present, it takes precedence over that legacy file.
 
 Submit the ordinary plugin ZIP through the
 [desktop-only route](https://developers.openai.com/plugins/deploy/desktop-only).
-Do not invent a remote MCP URL or mark Yobiru as working in a cloud conversation
-that cannot run Python and join the user's tailnet. Directory review, publisher
+Do not invent a remote MCP URL (a self-hosted public bot gateway's `/mcp` is the
+user's own, part of a prerelease and not of a submission) or mark Yobiru as working in a
+cloud conversation that cannot run Python and join the user's tailnet. Directory review, publisher
 business verification and portal permissions are managed by OpenAI. Local
 installation does not grant publishing access.
 

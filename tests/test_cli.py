@@ -348,6 +348,27 @@ class RuntimeAndServiceTests(Base):
         self.assertEqual(PKG.core.read_bytes(), target.read_bytes())
         self.assertEqual("# a different running receiver\n", Path(res["backup"]).read_text())
 
+    def test_install_runtime_keeps_a_newer_runtime_unless_a_downgrade_is_allowed(self):
+        """A development or later runtime (by SemVer) is never replaced by an older bundled copy by --upgrade
+        alone: a beta plugin installed next to a development receiver must not silently downgrade it."""
+        self.write_config({"allow": ["peer"]})
+        target = self.home / "tailmsg.py"
+        newer = 'PRODUCT_VERSION = "99.0.0-dev.1"\n# a development runtime with its own features\n'
+        target.write_text(newer)
+        r, res = PKG.run_json(["install-runtime", "--upgrade", "--apply", "--json"], self.user)
+        self.assertEqual((1, "refused", False), (r.returncode, res["action"], res["written"]))
+        self.assertEqual(("99.0.0-dev.1", PKG.product["version"]), (res["existing_version"], res["bundled_version"]))
+        self.assertIn("--allow-downgrade", res["error"])
+        self.assertEqual(newer, target.read_text())
+        self.assertEqual([], sorted(p.name for p in self.home.glob("tailmsg.py.bak-*")), "nothing was written")
+        r, res = PKG.run_json(["install-runtime", "--upgrade", "--allow-downgrade", "--apply", "--json"], self.user)
+        self.assertEqual((0, "upgrade", True), (r.returncode, res["action"], res["written"]))
+        self.assertEqual(PKG.core.read_bytes(), target.read_bytes())
+        self.assertEqual(newer, Path(res["backup"]).read_text(), "the newer runtime is kept as the backup")
+        target.write_text('PRODUCT_VERSION = "0.0.1"\n')                     # an older runtime needs no flag
+        r, res = PKG.run_json(["install-runtime", "--upgrade", "--apply", "--json"], self.user)
+        self.assertEqual((0, "upgrade", "0.0.1"), (r.returncode, res["action"], res["existing_version"]))
+
     def test_launchd_template_is_a_valid_plist(self):
         home = self.user / "data home"
         r = self.yobiru("--home", str(home), "service-template", "launchd")
@@ -473,6 +494,10 @@ class LinuxCodexBridgeTests(Base):
         r, res = PKG.run_json(["--home", str(self.home), "codex-bridge", "status"], self.user, extra=self.extra)
         self.assertEqual(("unix_socket", "listening", True, False),
                          (res["transport"], res["socket"], res["codex_path_ok"], res["allow_replies"]))
+        # A files-only install is not an active bridge: no daemon heartbeat, so nothing is reported healthy.
+        self.assertEqual("unix_socket", res["diagnostics"]["capabilities"]["transport"])
+        self.assertIn("daemon_not_confirmed", res["diagnostics"]["reasons"])
+        self.assertTrue(any("daemon" in hint for hint in res["hints"]))
         self.listener.close()
         r, res = PKG.run_json(["--home", str(self.home), "codex-bridge", "status"], self.user, extra=self.extra)
         self.assertEqual("socket_stale", res["socket"])

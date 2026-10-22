@@ -83,6 +83,12 @@ CLI and loopback-only receivers. No test reads or writes `~/.tailmsg`, calls the
 port 7766, or contacts another machine. The Codex bridge tests use temporary AF_UNIX sockets and fake `codex` and
 `systemctl` executables; they never reach a real app-server or the user's systemd manager.
 
+`tests/test_public_*.py` and `tests/test_friends_*.py` cover the public bots and Friends: a real
+gateway, connector, deterministic worker, calendar and resource services and callers as separate processes on
+loopback ports, with synthetic homes and data; `tests/support/synthetic_host.py` plays the owner's agent (a
+protocol fixture, not an agent). `tests/fixtures/bot_gateway_v1.py` builds real first-version databases for the
+migration tests.
+
 `sh selftest.sh` is the upstream end-to-end check. It needs Tailscale on the machine and runs
 temporary receivers on the machine's own Tailscale address, ports 7866-7883 (and a stub webhook on
 127.0.0.1:7879); confirm those ports are free first. It never uses port 7766 or `~/.tailmsg`. The
@@ -93,7 +99,26 @@ protocol v1 release from before @agent addressing. Its runtime files go to `test
 
 Change `version` in `packaging/product.json` and `PRODUCT_VERSION` in the canonical `tailmsg.py`,
 run `sync`, `check`, the relevant tests and `release`, then commit
-the regenerated files. Codex reinstalls a local plugin when its version changes.
+the regenerated files. Codex reinstalls a local plugin when its version changes. Update the version line of the
+plugin README (a test reads it) and add a `CHANGELOG.md` entry. `check` accepts only a SemVer 2.0 version: dot-separated
+prerelease identifiers, none empty, numeric ones without leading zeros.
+
+### Prereleases
+
+A prerelease such as `0.6.0-beta.1` is published so that no stable installation picks it up by itself:
+
+- Point `codex.privacyPolicyURL` in `packaging/product.json` into the prerelease's own tag
+  (`.../blob/v<version>/docs/PRIVACY.md`); `check` refuses a prerelease that links another branch's or tag's notice.
+- Publish a release branch and the tag `v<version>` only. Keep the default branch on the stable release: the
+  repository marketplace (`codex plugin marketplace add|upgrade`) and plugin pages install what the default branch
+  holds, whatever GitHub release flags say.
+- Mark the GitHub release as a prerelease and not as the latest release, and attach the `release` output
+  (`yobiru-<version>-plugin.zip`, `yobiru-<version>-marketplace.zip`, `SHA256SUMS`).
+- The stable update channel never offers it; `update check --channel preview` names its tag, archive and checksum
+  file. Announce it with `update notify --channel preview`; its notices carry `prerelease: true` and ask the receiving
+  owner to opt in.
+- In the `CHANGELOG.md` entry, link files that exist only in the prerelease by absolute URLs pinned to its tag, so the
+  same entry also reads correctly on the default branch.
 
 ## Marketplace submissions
 

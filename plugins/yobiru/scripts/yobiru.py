@@ -45,6 +45,7 @@ HERE = Path(__file__).resolve().parent
 PLUGIN_ROOT = HERE.parent
 CORE = HERE / "tailmsg.py"
 BRIDGE = HERE / "codex_bridge"
+PUBLIC_BOTS = HERE / "public_bots"   # separate public gateway, its clients and the private calendar capability
 CORE_COMMANDS = ("serve", "send", "reply", "request", "inbox", "show", "fetch", "ack", "wake")
 LEVELS = ("none", "batch", "now")
 SERVICE_LABEL = "dev.tailmsg"    # receiver service names stay tailmsg's, matching existing installs
@@ -77,8 +78,9 @@ Check and set up (read-only unless --apply):
                              installations (notify is a dry run unless --apply)
   setup ... [--apply]        create or extend config.json; new installs trust authenticated tailnet peers
   wake-config ... [--apply]  receiver-side wake policy and per-agent wake adapters
-  install-runtime [--upgrade] [--apply]
+  install-runtime [--upgrade [--allow-downgrade]] [--apply]
                              copy the bundled tailmsg.py into the data home for a durable `serve`
+                             (a newer runtime, such as a development build, is kept unless --allow-downgrade)
   service-template {{systemd,systemd-user,launchd,windows}}
                              print a reviewable service definition (never installs it)
   codex-bridge {{status,install,rollback}} ...
@@ -87,6 +89,22 @@ Check and set up (read-only unless --apply):
   mcp [--agent NAME]         local MCP server on stdio with the messaging commands as tools (the Claude Code
                              plugin registers it; other MCP clients can run it the same way)
   version
+
+Public bots and Friends (a separate gateway, never the receiver on 7766;
+see docs/PUBLIC_BOTS.md):
+  gateway {{init,owner,migrate,serve,status}} [--gateway-home DIR]
+                             the public mailbox: local-only owner bootstrap, loopback HTTP by default
+                             (also serves /mcp to MCP clients with the same bearer credentials)
+  public ...                 callers: connect LINK, enroll, enroll-bot, follow, unfollow, chat, status, history,
+                             inbox, ack, verify, attachments; mcp (a local stdio MCP server)
+                             owners: owner (directory, continue, decisions), bot (create/share/edit/publish),
+                             review, worker bind, binding describe, connector bind
+                             your own agent (native binding): job list/claim/reply/notices; connector run;
+                             worker run
+  calendar-service {{init,serve,check,preview}} --dir DIR
+                             private read-only meeting-slot capability for one published bot
+  resource-service {{init,add,remove,list,serve}} --dir DIR
+                             private owner-approved text exports, released per caller through the gateway
 
 Messaging (passed unchanged to the bundled tailmsg.py):
   request send PEER[/AGENT] TEXT [--transport push|pull] [--file F] [--timeout-seconds 900]
@@ -234,13 +252,18 @@ def run_tailscale(cmd, args, timeout=10):
     return p.stdout, None
 
 
+HEALTH_KEYS = ("ok", "v", "node", "receiver_alive", "status", "maintenance")
+
+
 def probe_health(host, port, timeout=2.0, peer=None):
+    """GET /health: transport reachability, plus the receiver's own maintenance summary when it reports one
+    (kept as given, so doctor can tell a reachable but degraded receiver from a healthy one)."""
     c = None
     try:
         c = http.client.HTTPConnection(host, int(port), timeout=timeout)
         c.request("GET", "/health")
         r = c.getresponse()
-        body = r.read(4096)
+        body = r.read(16384)
     except (OSError, http.client.HTTPException, ValueError) as e:
         return {"url": "http://%s:%s/health" % (host, port), "reachable": False, "error": type(e).__name__,
                 "detail": core().transport_diagnostic(peer or host, host, port, "GET /health", e)}
@@ -251,10 +274,69 @@ def probe_health(host, port, timeout=2.0, peer=None):
     try:
         j = json.loads(body.decode("utf-8"))
         if isinstance(j, dict):
-            out.update({k: j[k] for k in ("ok", "v", "node") if k in j})
+            out.update({k: j[k] for k in HEALTH_KEYS if k in j})
+            if not isinstance(out.get("maintenance"), dict):
+                out.pop("maintenance", None)
     except ValueError:
         pass
     return out
+
+
+MAINTENANCE_FILE = "maintenance.json"
+MAINTENANCE_WORKER_KEYS = ("status", "alive", "restarts", "cycles", "phase", "in_cycle_seconds", "last_cycle_at",
+                           "last_outcomes", "last_counts", "last_full_success_at", "last_full_success_age_seconds",
+                           "failure", "consecutive_failures", "last_exit", "stale_after_seconds")
+
+
+def maintenance_record(home, live_instance=None):
+    """The receiver's metadata heartbeat (<home>/maintenance.json), read without changing anything.
+
+    The file only says what a receiver process reported when it wrote it. It describes the running receiver
+    only when its instance matches the one the live /health reports; otherwise it is history (an earlier or
+    stopped process), never evidence that workers are alive now."""
+    raw, err = core().read_small_json(home / MAINTENANCE_FILE)
+    if raw is None:
+        return {"present": False} if err is None else {"present": True, "error": err}
+    if not isinstance(raw, dict) or raw.get("schema") != 1 or not isinstance(raw.get("workers"), dict):
+        return {"present": True, "error": "malformed"}
+    try:
+        age = int((dt.datetime.now(dt.timezone.utc) - core().parse_iso(raw.get("written_at"))).total_seconds())
+    except (TypeError, ValueError):
+        age = None
+    workers = {}
+    for name, worker in list(raw["workers"].items())[:8]:
+        if isinstance(name, str) and isinstance(worker, dict):
+            workers[name[:32]] = {k: worker.get(k) for k in MAINTENANCE_WORKER_KEYS}
+    return {"present": True, "current": live_instance is not None and raw.get("instance") == live_instance,
+            "instance": raw.get("instance"), "written_at": raw.get("written_at"), "age_seconds": age,
+            "status": raw.get("status"), "reasons": raw.get("reasons"), "workers": workers,
+            "heartbeat": raw.get("heartbeat")}
+
+
+_bridge_module = None
+
+
+def bridge_module():
+    """The bundled codex_bridge.py, for its read-only status projection (POSIX only; no bytecode written)."""
+    global _bridge_module
+    if _bridge_module is None:
+        spec = importlib.util.spec_from_file_location("yobiru_bundled_codex_bridge", str(BRIDGE / "codex_bridge.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _bridge_module = mod
+    return _bridge_module
+
+
+def dispatcher_diagnostics(home, cfg=None):
+    """Read-only delivery/execution evidence of an installed Codex bridge (the projection `codex-bridge status`
+    shows), or {"state": "unknown", "error": ...} when it cannot be computed. Never creates or repairs state."""
+    try:
+        if cfg is None:
+            cfg = json.loads((home / "codex-bridge.json").read_text(encoding="utf-8"))
+        module = bridge_module()
+        return module.diagnostics(module.validate_config(dict(cfg)))
+    except Exception as e:      # a diagnostic reports, it does not crash
+        return {"state": "unknown", "error": type(e).__name__}
 
 
 def agent_names(cfg, agents):
@@ -401,6 +483,12 @@ def gather(home, home_source, probe=True):
     if runtime.is_file() and CORE.is_file():
         f["runtime"]["same_as_bundled"] = sha256_file(runtime) == sha256_file(CORE)
     f["codex_bridge_installed"] = (home / "codex-bridge.json").is_file()
+    if cfg is not None:
+        live = ((f.get("receiver") or {}).get("maintenance") or {}).get("instance")
+        f["maintenance_record"] = maintenance_record(home, live)
+        f["request_backlog"] = core().request_backlog(home)
+    if f["codex_bridge_installed"]:
+        f["dispatcher"] = dispatcher_diagnostics(home)
     f["runtime_version"] = runtime_version(home)[0]
     f["update"] = recorded_update(home) if home.is_dir() else None
     if cfg is not None:
@@ -518,7 +606,8 @@ def doctor_checks(f):
             add("info", "shields-up", "could not read Tailscale prefs; check `tailscale debug prefs` yourself")
     if "receiver" in f:
         r = f["receiver"]
-        if r.get("reachable") and r.get("ok"):
+        if r.get("reachable") and r.get("http_status") == 200 and r.get("v") == 1 and r.get("node"):
+            # Transport only: a reachable receiver can still have impaired maintenance (next check).
             add("ok", "receiver", "serving tailmsg v%s as %s at %s" % (r.get("v"), r.get("node"), r["url"]))
         elif r.get("reachable"):
             add("warn", "receiver", "something answered %s with HTTP %s" % (r["url"], r.get("http_status")))
@@ -527,6 +616,9 @@ def doctor_checks(f):
                 (r.get("url", "-"), r.get("error")),
                 "to receive messages run the receiver as a service: `%s install-runtime`, then install "
                 "the definition printed by `%s service-template ...`" % (PRODUCT, PRODUCT))
+    maintenance_check(f, add)
+    backlog_check(f, add)
+    dispatcher_check(f, add)
     rt = f["runtime"]
     if rt["present"] and rt.get("same_as_bundled") is False:
         add("info", "runtime", "%s differs from the bundled tailmsg.py" % rt["path"],
@@ -558,7 +650,7 @@ def doctor_checks(f):
     rt_version = f.get("runtime_version")
     if rt_version and rt_version != f["plugin_version"]:
         add("info", "versions", "plugin %s, durable runtime %s" % (f["plugin_version"], rt_version),
-            "`%s install-runtime --upgrade --apply`, then restart the receiver" % PRODUCT)
+            runtime_step(f["plugin_version"], rt_version))
     up = f.get("update")
     if up and up["status"] == "update_available":
         add("info", "update", "Yobiru %s is available (checked %s, %s channel)" % (up["latest"], up["checked_at"],
@@ -570,6 +662,127 @@ def doctor_checks(f):
     if any(c["status"] == "error" for c in checks):
         add("info", "next", "for a step-by-step plan run `%s onboard`" % PRODUCT)
     return checks
+
+
+MAINTENANCE_FIXES = {
+    "worker_dead": "a maintenance worker stopped; the receiver starts one replacement automatically (with "
+                   "backoff). If it keeps stopping, read the receiver log",
+    "worker_restarted": "a maintenance worker stopped and was replaced; it stays reported until a full cycle "
+                        "succeeds",
+    "cycle_failed": "a maintenance phase keeps failing (`doctor --json` names the phase and error type): check "
+                    "disk space and permissions of the data home",
+    "no_completed_cycle": "a worker is alive but has not finished a cycle (a slow peer or a stuck operation); live "
+                          "workers are never restarted or duplicated automatically",
+    "heartbeat_write_failed": "the maintenance heartbeat cannot be written (disk full or permissions); messages "
+                              "are still accepted",
+}
+MAINTENANCE_FIXES["no_recent_full_cycle"] = MAINTENANCE_FIXES["no_completed_cycle"]
+SEVERE_MAINTENANCE = ("worker_dead", "worker_restarted", "cycle_failed", "heartbeat_write_failed")
+
+
+def maintenance_check(f, add):
+    """Maintenance readiness, separate from transport reachability: from the live /health summary, with the
+    metadata heartbeat file used for detail only when it belongs to the same running receiver."""
+    r, record = f.get("receiver"), f.get("maintenance_record") or {}
+    if r is None or not r.get("reachable"):
+        if record.get("error"):
+            add("warn", "maintenance", "maintenance.json is unreadable (%s); maintenance state unknown"
+                % record["error"])
+        elif record.get("present"):
+            add("info", "maintenance", "last maintenance record written %s by a receiver process that was not "
+                "checked live; it is history, not proof that maintenance runs now" % record.get("written_at"))
+        return
+    m = r.get("maintenance")
+    if not isinstance(m, dict) or m.get("supported") is not True:
+        add("warn", "maintenance", "this receiver does not report maintenance health (an older runtime), so "
+            "response delivery, expiry and attachment cleanup cannot be checked",
+            "`%s install-runtime --upgrade --apply`, then restart the receiver" % PRODUCT)
+        return
+    components = m.get("components") if isinstance(m.get("components"), dict) else {}
+    reasons = [x for x in m.get("reasons") or [] if isinstance(x, str)]
+    detail = "%s (%s)" % (m.get("status"), ", ".join("%s %s" % kv for kv in sorted(components.items())))
+    if reasons:
+        detail += "; reasons: " + ", ".join(reasons)
+    if record.get("current"):
+        ages = ["%s %ss ago" % (name, w.get("last_full_success_age_seconds")) for name, w in
+                sorted((record.get("workers") or {}).items()) if w.get("last_full_success_age_seconds") is not None]
+        if ages:
+            detail += "; last full cycle as of the heartbeat (%ss old): %s" % (record.get("age_seconds"),
+                                                                            ", ".join(ages))
+    elif record.get("error"):
+        detail += "; maintenance.json is unreadable (%s), so no timing detail is known" % record["error"]
+    elif record.get("present"):
+        detail += "; maintenance.json was written by another receiver process (history only)"
+    if m.get("status") == "healthy":
+        status = "ok"
+    elif m.get("status") == "starting":
+        status = "info"
+    else:
+        status = "error" if any(x in SEVERE_MAINTENANCE for x in reasons) or not reasons else "warn"
+    add(status, "maintenance", detail, "; ".join(MAINTENANCE_FIXES[x] for x in reasons if x in MAINTENANCE_FIXES)
+        or None)
+
+
+def backlog_check(f, add):
+    """Request ledger counts and ages (read-only). A ledger that cannot be read is never an empty backlog."""
+    b = f.get("request_backlog")
+    if not b:
+        return
+    if not b.get("available"):
+        if b.get("reason") != "ledger_absent":
+            add("warn", "requests", "the request ledger cannot be read (%s); backlog unknown" % b.get("reason"),
+                "no application data was changed; check permissions of %s" % (Path(f["home"]) / "requests"))
+        return
+    inc, resp, out = b["incoming"], b["responses"], b["outgoing"]
+    parts, status, fixes = [], "ok", []
+    if inc["unstarted"] or inc["running"] or inc["timed_out"]:
+        parts.append("incoming: %d without a start report, %d running, %d timed out (outcome unknown)"
+                     % (inc["unstarted"], inc["running"], inc["timed_out"]))
+        status = "info"
+    if inc["overdue_not_persisted"]:
+        parts.append("%d past the deadline without a recorded timeout" % inc["overdue_not_persisted"])
+        status = "warn"
+        fixes.append("a running receiver records timeouts within seconds; see the maintenance check")
+    if inc.get("final_response_pending") or inc.get("final_response_unknown"):
+        parts.append("%d final result(s) saved but not yet delivered to the sender" %
+                     (inc.get("final_response_pending", 0) + inc.get("final_response_unknown", 0)))
+        status = "info" if status == "ok" else status
+    if resp["pending"]:
+        parts.append("responses: %d waiting for delivery (%d due, %d never attempted, oldest %ss, up to %d attempts)"
+                     % (resp["pending"], resp["due"], resp["never_attempted"], resp.get("oldest_pending_age_seconds"),
+                        resp["max_attempts"]))
+        status = "info" if status == "ok" else status
+        if resp.get("unreadable_timestamps"):
+            parts.append("%d with an unreadable timestamp (age unknown)" % resp["unreadable_timestamps"])
+        if resp.get("age_scan_truncated"):
+            parts.append("ages from the first %d pending responses only (partial)" % core().AGE_SCAN_LIMIT)
+        if (resp.get("oldest_unattempted_due_age_seconds") or 0) > 300:
+            status = "warn"
+            fixes.append("responses are waiting without any delivery attempt: the receiver's delivery worker may not "
+                         "run (see the maintenance check); retries reuse the same response IDs")
+    if out["awaiting_result"]:
+        parts.append("outgoing: %d awaiting a result (%d with an unknown submission, %d past the deadline)"
+                     % (out["awaiting_result"], out["submission_unknown"], out["overdue"]))
+        status = "info" if status == "ok" else status
+    add(status, "requests", "; ".join(parts) or "no pending request work", "; ".join(fixes) or None)
+
+
+def dispatcher_check(f, add):
+    """The Codex bridge's own delivery/execution evidence and capabilities (read-only)."""
+    d = f.get("dispatcher")
+    if d is None:
+        return
+    caps = d.get("capabilities") or {}
+    detail = "%s via %s (resident connection: %s)" % (d.get("state"), caps.get("transport", "?"),
+                                                     caps.get("resident", "?"))
+    if d.get("reasons"):
+        detail += "; " + ", ".join(d["reasons"])
+    oldest = (d.get("execution") or {}).get("oldest_without_start")
+    if oldest:
+        detail += "; oldest without start evidence: %ss (%s)" % (oldest.get("age_seconds"), oldest.get("phase"))
+    add({"ok": "ok", "degraded": "warn"}.get(d.get("state"), "info"), "dispatcher", detail,
+        "`%s codex-bridge status` lists the evidence and hints; never resend or delete the queue" % PRODUCT
+        if d.get("reasons") else None)
 
 
 def cmd_doctor(home, home_source, argv):
@@ -603,7 +816,7 @@ def cmd_doctor(home, home_source, argv):
         print(json.dumps({"ok": errors == 0, "errors": errors, "warnings": warns, "home": f["home"],
                           "checks": checks, "changed": False}, indent=2, ensure_ascii=True))
     else:
-        print("%s doctor (read-only, nothing is changed)" % DISPLAY)
+        print("%s doctor (read-only: no application data, config, schema or queue is changed)" % DISPLAY)
         for c in checks:
             print("  %-6s %-14s %s" % (c["status"], c["check"], c["detail"]))
             if c["fix"]:
@@ -622,7 +835,8 @@ def cmd_status(home, home_source, argv):
                                  "config_error", "port", "access_policy", "allow", "deny", "legacy_allowlist",
                                  "self_agent", "default_agent", "wake_policy",
                                  "quiet_hours", "wake_rate", "receiver", "runtime", "inbox",
-                                 "codex_bridge_installed") if k in f}
+                                 "codex_bridge_installed", "maintenance_record", "request_backlog", "dispatcher")
+           if k in f}
     ts = f["tailscale"]
     out["tailscale"] = {k: ts.get(k) for k in ("backend", "node", "ips", "shields_up", "error") if k in ts}
     out["agents"] = [{"agent": x["agent"], "default": x["default"], "wake_max": x["wake_max"],
@@ -652,7 +866,16 @@ def cmd_status(home, home_source, argv):
                 x["wake_adapter"], " max %s" % x["wake_max"] if x["wake_max"] else "",
                 x["session_id"] or "not bound"))
         r = f.get("receiver") or {}
-        print("  receiver  %s" % ("serving v%s" % r.get("v") if r.get("ok") else "not reachable"))
+        m = r.get("maintenance") if isinstance(r.get("maintenance"), dict) else {}
+        print("  receiver  %s" % ("serving v%s, maintenance %s" % (r.get("v"), m.get("status") or "not reported")
+                                  if r.get("reachable") and r.get("v") == 1 else "not reachable"))
+        b = f.get("request_backlog") or {}
+        if b.get("available"):
+            print("  requests  %d incoming without a start report, %d running, %d responses waiting for delivery" % (
+                b["incoming"]["unstarted"], b["incoming"]["running"], b["responses"]["pending"]))
+        if f.get("dispatcher"):
+            print("  bridge    %s (%s)" % (f["dispatcher"].get("state"),
+                                         ", ".join(f["dispatcher"].get("reasons") or []) or "no findings"))
         i = f["inbox"]
         print("  inbox     %d messages, %d pending %s" % (i["messages"], i["pending"],
                                                          json.dumps(i["by_agent"], ensure_ascii=False)))
@@ -1292,6 +1515,8 @@ def cmd_install_runtime(home, home_source, argv):
                     "path that plugin updates and uninstalls do not move. Dry run unless --apply. Never replaces "
                     "a different existing copy without --upgrade, and never restarts anything.")
     ap.add_argument("--upgrade", action="store_true", help="replace a different existing copy (kept as a backup)")
+    ap.add_argument("--allow-downgrade", action="store_true",
+                    help="with --upgrade: also replace a copy whose version is newer than the bundled one")
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
@@ -1305,7 +1530,8 @@ def cmd_install_runtime(home, home_source, argv):
         die("request state path must be a real directory: %s" % request_dir, 2)
     new_hash = sha256_file(CORE)
     res = {"command": "install-runtime", "target": str(target), "bundled_sha256": new_hash, "dry_run": not a.apply,
-           "written": False, "backup": None, "request_state_dir": str(request_dir)}
+           "written": False, "backup": None, "request_state_dir": str(request_dir),
+           "bundled_version": file_product_version(CORE)[0], "existing_version": runtime_version(home)[0]}
     if target.is_file():
         old_hash = sha256_file(target)
         res["existing_sha256"] = old_hash
@@ -1315,6 +1541,13 @@ def cmd_install_runtime(home, home_source, argv):
             res["action"] = "refused"
             res["error"] = ("%s already exists and differs from the bundled copy; it may be a running receiver. "
                             "Re-run with --upgrade (and --apply) to replace it with a backup." % target)
+        elif compare_versions(res["existing_version"], res["bundled_version"]) == 1 and not a.allow_downgrade:
+            # SemVer order: a development build such as 0.6.0-dev.1 also sorts above 0.6.0-beta.1. Replacing a newer
+            # runtime can drop features and data handling it has, so it takes an explicit decision.
+            res["action"] = "refused"
+            res["error"] = ("%s is version %s, newer than the bundled %s; replacing it would downgrade the receiver "
+                            "runtime. Keep it, or re-run with --upgrade --allow-downgrade (and --apply) if you "
+                            "decided to go back." % (target, res["existing_version"], res["bundled_version"]))
         else:
             res["action"] = "upgrade"
     else:
@@ -1340,6 +1573,7 @@ def cmd_install_runtime(home, home_source, argv):
         print("%s install-runtime: %s %s%s" % (PRODUCT, verb[res["action"]], target,
                                                "" if res["written"] or res["action"] in ("none", "refused")
                                                else " (dry run; add --apply)"))
+        print("  versions: existing %s, bundled %s" % (res["existing_version"] or "-", res["bundled_version"] or "-"))
         for k in ("error", "backup", "next"):
             if res.get(k):
                 print("  %s: %s" % (k, res[k]))
@@ -1530,6 +1764,26 @@ BRIDGE_HINTS = {
 }
 
 
+DIAGNOSTIC_HINTS = {
+    "daemon_not_confirmed": "the bridge daemon has not reported recently (or never): check its service; without it "
+                            "nothing is dispatched or observed. A stale heartbeat means busy or stopped, not running",
+    "daemon_cycle_failed": "the bridge daemon's last cycle had a failing phase (diagnostics.daemon names it and the "
+                           "error type)",
+    "dispatch_blocked": "some notifications were not sent and wait for an automatic retry (known not sent)",
+    "dispatch_stalled": "notifications are due but were not dispatched for minutes: check that the bridge daemon runs",
+    "accepted_without_start": "accepted notifications show no start evidence past the threshold: the dispatcher "
+                              "session may be closed, waiting for an approval, rate-limited or unloaded, and this "
+                              "transport cannot tell which. Check the session; never resend or delete the queue",
+    "deadline_passed_without_final": "a request passed its deadline without a final result: its outcome is unknown, "
+                                     "not failed, and it must not be repeated automatically. After checking the actual "
+                                     "effect, its owner may still record the real outcome with `request respond`",
+    "running_without_recent_progress": "a request reported running without progress for longer than the threshold; "
+                                       "that alone does not mean it failed or stopped",
+}
+DESKTOP_GAP = ("the desktop transport has no resident connection: the bridge cannot keep the session loaded, see rate "
+               "limits or restart its consumer. Open the Codex desktop app and the dispatcher session yourself")
+
+
 def bridge_status(home):
     cfg_path = home / "codex-bridge.json"
     out = {"installed": cfg_path.is_file(), "config": str(cfg_path)}
@@ -1578,18 +1832,18 @@ def bridge_status(home):
                 hints.append("the fixed dispatcher is not confirmed resident; start/restart "
                              "tailmsg-codex-bridge.service and inspect its journal. A listening socket or "
                              "an enqueued receipt alone does not mean a turn can run")
-        if db is not None and db.is_file():
-            try:
-                con = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=2)
-                try:
-                    out["queue"] = dict(con.execute("SELECT state, COUNT(*) FROM messages GROUP BY state").fetchall())
-                    out["reasons"] = {"%s:%s" % row[:2]: row[2] for row in con.execute(
-                        "SELECT state, error, COUNT(*) FROM messages WHERE state IN ('retry','uncertain') "
-                        "GROUP BY state, error").fetchall()}
-                finally:
-                    con.close()
-            except sqlite3.Error as e:
-                out["queue_error"] = str(e)
+        # The same read-only projection as the bridge's own `diagnose`: queue counts, execution evidence from the
+        # request ledger, the daemon heartbeat and what this transport cannot observe.
+        diag = dispatcher_diagnostics(home, cfg) if isinstance(cfg, dict) and cfg and db is not None else \
+            {"state": "unknown", "error": "config_unreadable"}
+        out["diagnostics"] = diag
+        queue = diag.get("queue") or {}
+        if queue.get("available"):
+            out["queue"] = queue.get("states") or {}
+            out["reasons"] = dict([("retry:%s" % k, n) for k, n in (queue.get("retry_reasons") or {}).items()] +
+                                  [("uncertain:%s" % k, n) for k, n in (queue.get("uncertain_reasons") or {}).items()])
+        elif queue.get("reason") not in (None, "queue_absent"):
+            out["queue_error"] = queue["reason"]
         for reason in out.get("reasons", {}):
             state, error = reason.split(":", 1)
             if state == "retry" and error in BRIDGE_HINTS and BRIDGE_HINTS[error] not in hints:
@@ -1599,13 +1853,20 @@ def bridge_status(home):
                          "The bridge keeps checking the dispatcher session (in its configured Codex home) for the "
                          "[TAILMSG:<id>] marker. If it never appears, handle that message by hand "
                          "(`inbox --pending`); do not delete the queue to force a resend")
+        for reason in diag.get("reasons") or []:
+            hint = DIAGNOSTIC_HINTS.get(reason)
+            if hint and hint not in hints:
+                hints.append(hint)
+        if "accepted_without_start" in (diag.get("reasons") or []) and not remote:
+            hints.append(DESKTOP_GAP)
         out["hints"] = hints
     print(json.dumps(out, indent=2, ensure_ascii=True))
     return 0
 
 
 # ---------------------------------------------------------------- shared helpers for 0.3 commands
-OFFICIAL_REPO_URL = "https://github.com/chekusu/yobiru"
+OFFICIAL_REPO = "chekusu/yobiru"
+OFFICIAL_REPO_URL = "https://github.com/" + OFFICIAL_REPO
 RELEASES_HOST = "api.github.com"
 RELEASES_PATH = "/repos/chekusu/yobiru/releases?per_page=30"   # the list: works when every release is a prerelease
 RELEASE_URL_PREFIX = OFFICIAL_REPO_URL + "/releases/"
@@ -1732,7 +1993,11 @@ class StateLock(object):
 
 def runtime_version(home):
     """Version of the durable <home>/tailmsg.py, read as text (never executed). -> (version or None, how)."""
-    path = home / "tailmsg.py"
+    return file_product_version(home / "tailmsg.py")
+
+
+def file_product_version(path):
+    """PRODUCT_VERSION of a tailmsg.py, read as text (never executed). -> (version or None, how)."""
     if not path.is_file():
         return None, "absent"
     try:
@@ -2562,20 +2827,50 @@ def local_versions(home, f):
     return out
 
 
-def upgrade_steps(f, target=None):
-    steps = ["update the plugin from the official repository (Codex: `codex plugin marketplace upgrade yobiru` "
-             "then `codex plugin add yobiru@yobiru`; Cursor/Grok Bot: update it from the plugin page), then "
-             "start a new conversation",
-             "`%s install-runtime --upgrade` (review), then `--apply`: a plugin update never changes the durable "
-             "receiver runtime" % PRODUCT,
-             "restart the receiver service so the running receiver loads the new runtime",
-             "`%s doctor` and `%s update status`: plugin, runtime and running receiver should all show %s"
-             % (PRODUCT, PRODUCT, target or "the new version"),
-             "`%s update notify` (dry run), then `--apply`, to tell your other installations" % PRODUCT]
+def is_prerelease(version):
+    v = parse_semver(version)
+    return bool(v and v[3])
+
+
+def runtime_step(plugin, runtime):
+    """What to do when the durable runtime differs from this plugin; never advises a downgrade."""
+    if compare_versions(runtime, plugin) == 1:
+        return ("keep the durable runtime: it is newer than this plugin (a development build or a later release), "
+                "and `%s install-runtime` refuses to replace it with an older one unless --allow-downgrade" % PRODUCT)
+    return "`%s install-runtime --upgrade --apply`, then restart the receiver" % PRODUCT
+
+
+def upgrade_steps(f, target=None, release=None):
+    if is_prerelease(target):
+        # Plugin pages and the repository marketplace follow the stable default branch: a prerelease is installed
+        # only from its own tag, and only by an owner who chose it.
+        tag = (release or {}).get("tag") or "v" + target
+        steps = ["%s is a prerelease: plugin updates (Codex `codex plugin marketplace upgrade`, Cursor and Grok Bot "
+                 "plugin pages) follow the stable default branch and never install it. Install exactly %s only "
+                 "if the owner chose this prerelease" % (target, tag),
+                 "from %s download `%s-%s-plugin.zip` and `SHA256SUMS`, compare the archive's SHA-256 with its "
+                 "line in SHA256SUMS, extract it into a new folder (never the data home) and check that `sh "
+                 "<folder>/%s/scripts/%s version` prints %s. Codex: `codex plugin marketplace remove %s` if one "
+                 "is configured, then `codex plugin marketplace add %s --ref %s` and `codex plugin add %s@%s`. "
+                 "Then start a new conversation"
+                 % ((release or {}).get("url") or RELEASE_URL_PREFIX + "tag/" + urllib.parse.quote(tag, safe=""),
+                    PRODUCT, target, PRODUCT, PRODUCT, target, PRODUCT, OFFICIAL_REPO, tag, PRODUCT, PRODUCT)]
+    else:
+        steps = ["update the plugin from the official repository (Codex: `codex plugin marketplace upgrade yobiru` "
+                 "then `codex plugin add yobiru@yobiru`; Cursor/Grok Bot: update it from the plugin page), then "
+                 "start a new conversation"]
+    steps += ["`%s install-runtime --upgrade` (review), then `--apply`: a plugin update never changes the durable "
+              "receiver runtime" % PRODUCT,
+              "restart the receiver service so the running receiver loads the new runtime",
+              "`%s doctor` and `%s update status`: plugin, runtime and running receiver should all show %s"
+              % (PRODUCT, PRODUCT, target or "the new version"),
+              "`%s update notify%s` (dry run), then `--apply`, to tell your other installations"
+              % (PRODUCT, " --channel preview" if is_prerelease(target) else "")]
+    bridge_at = len(steps) - 2
     if f.get("codex_bridge_installed"):
-        steps.insert(3, "if the Codex bridge is installed: `%s codex-bridge install --thread-id <the same UUID> "
-                        "... --dry-run`, then without --dry-run (keeps the session, names and dispatcher "
-                        "instructions)" % PRODUCT)
+        steps.insert(bridge_at, "if the Codex bridge is installed: `%s codex-bridge install --thread-id <the same "
+                                "UUID> ... --dry-run`, then without --dry-run (keeps the session, names and "
+                                "dispatcher instructions)" % PRODUCT)
     return steps
 
 
@@ -2656,16 +2951,20 @@ def update_check(home, home_source, a):
         res.update(channel=a.channel, status="error", error=e.code, latest=None, latest_preview=None)
     nxt = []
     if res["status"] == "update_available":
-        nxt = upgrade_steps(f, res["latest"]["version"])
+        nxt = upgrade_steps(f, res["latest"]["version"], res["latest"])
     elif res["status"] == "no_stable_release" and res.get("latest_preview"):
         nxt = ["no stable release yet; the latest preview is %s: `%s update check --channel preview`"
                % (res["latest_preview"]["version"], PRODUCT)]
+    elif res["status"] == "ahead" and a.channel == "stable" and is_prerelease(versions["plugin"]):
+        nxt = ["this machine runs the prerelease %s and the stable channel lists stable releases only: "
+               "`%s update check --channel preview` also shows newer prereleases" % (versions["plugin"], PRODUCT)]
     elif res["status"] == "error":
         nxt = ["could not reach the official release list (%s); nothing changed, try again later" % res["error"]]
     if versions["runtime"] and versions["runtime"] != versions["plugin"] or versions["runtime_note"] and \
             "older" in versions["runtime_note"]:
-        nxt.append("the durable runtime is %s but the plugin is %s: `%s install-runtime --upgrade --apply`, then "
-                   "restart the receiver" % (versions["runtime"] or "older", versions["plugin"], PRODUCT))
+        nxt.append("the durable runtime is %s but the plugin is %s: %s"
+                   % (versions["runtime"] or "older", versions["plugin"],
+                      runtime_step(versions["plugin"], versions["runtime"])))
     elif versions["receiver"] and versions["receiver"] != versions["runtime"]:
         nxt.append("the running receiver is %s: restart it to load %s" % (versions["receiver"], versions["runtime"]))
     elif versions["receiver_note"] and "older" in versions["receiver_note"]:
@@ -2836,6 +3135,11 @@ def notice_text(me, version, release=None):
                 "updates, follow the yobiru-upgrade skill using only the official repository, keep this "
                 "machine's data, sessions, permissions and custom instructions, and report your status. "
                 "Do not forward this notice."}
+    if is_prerelease(version):
+        notice["prerelease"] = True
+        notice["opt_in"] = ("%s is a prerelease. Install it only if your owner chose this exact prerelease for this "
+                            "machine: an authorization for stable updates does not cover it, and plugin updates never "
+                            "install it. Keep a newer, development or locally modified runtime or bridge." % version)
     if compare_versions(version, "0.4.0") in (0, 1):
         notice["migration"] = {
             "topic": "access-policy-0.4", "new_install_default": "tailnet",
@@ -3284,17 +3588,22 @@ def maintain_once(home, home_source, a):
         plan = [p for p in notice_plan(state, items, probes, target, False) if p["key"] in keys]
         rel = next((r for r in releases or [] if r["version"] == target), None)
         can_send = local_ok and compare_versions(versions["plugin"], target) in (0, 1) and rel is not None
+        held = None
         if rel and rel["prerelease"] and a.channel != "preview":
+            # A stable timer never delivers prerelease notices: an owner who announced a prerelease runs (or
+            # installs a reminder template for) `update maintain --channel preview`.
             can_send = False
+            held = ("%s is a prerelease and this run uses the stable channel: run `%s update maintain --channel "
+                    "preview` (a reminder template made with --channel preview does)" % (target, PRODUCT))
         if a.apply and can_send:
             res["results"].extend(apply_notices(home, me, target, items, probes, False, release=rel,
                                                  notice_keys=keys))
         elif a.apply and plan:
-            res["errors"].append("%s: retry held; need matching local plugin/runtime/receiver at this version "
-                                 "or newer and its official release on the selected channel" % target)
+            res["errors"].append("%s: retry held; %s" % (target, held or "need matching local plugin/runtime/"
+                                 "receiver at this version or newer and its official release on the selected channel"))
         for p in plan:
             p.pop("ip", None)
-        res["plans"].append({"version": target, "ready": can_send, "plan": plan})
+        res["plans"].append({"version": target, "ready": can_send, "held": held, "plan": plan})
     return res
 
 
@@ -3317,6 +3626,8 @@ def update_maintain(home, home_source, a):
         if res["check"]:
             print("  release check: %s" % res["check"]["status"])
         for group in res["plans"]:
+            if group.get("held"):
+                print("  held: %s" % group["held"])
             for p in group["plan"]:
                 print("  %-46s %-15s %s" % (p["key"][:46], p["action"], p["why"]))
         for r in res["results"]:
@@ -3668,6 +3979,40 @@ def run_core(home, cmd, rest):
     return subprocess.call(argv)
 
 
+def run_public(script, args):
+    """Public bot contacts run as their own processes from the bundled public_bots/ folder: they never
+    load tailmsg.py, read config.json or touch the inbox, so legacy private messaging is unaffected."""
+    path = PUBLIC_BOTS / script
+    if not path.is_file():
+        die("bundled %s is missing; reinstall the plugin" % script, 2)
+    python = os.environ.get(PYTHON_ENV) or sys.executable
+    argv = [python, str(path)] + list(args)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    if os.name == "posix":
+        try:
+            os.execvp(python, argv)
+        except OSError as e:
+            die("cannot run %s: %s" % (python, e), 127)
+    return subprocess.call(argv)
+
+
+def cmd_gateway(home, home_source, argv):
+    return run_public("bot_gateway.py", argv)
+
+
+def cmd_public(home, home_source, argv):
+    return run_public("bot_client.py", ["--home", str(home)] + list(argv))
+
+
+def cmd_calendar_service(home, home_source, argv):
+    return run_public("bot_calendar.py", argv)
+
+
+def cmd_resource_service(home, home_source, argv):
+    return run_public("bot_resources.py", argv)
+
+
 def cmd_mcp(home, home_source, argv):
     """Local stdio MCP server over the messaging commands (yobiru_mcp.py next to this file)."""
     sys.path.insert(0, str(HERE))
@@ -3680,6 +4025,8 @@ PLUGIN_COMMANDS = {"paths": cmd_paths, "doctor": cmd_doctor, "status": cmd_statu
                    "wake-config": cmd_wake_config, "install-runtime": cmd_install_runtime,
                    "service-template": cmd_service_template, "codex-bridge": cmd_codex_bridge,
                    "onboard": cmd_onboard, "agents": cmd_agents, "peers": cmd_agents, "session": cmd_session, "update": cmd_update,
+                   "gateway": cmd_gateway, "public": cmd_public, "calendar-service": cmd_calendar_service,
+                   "resource-service": cmd_resource_service,
                    "mcp": cmd_mcp}
 
 

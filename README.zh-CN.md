@@ -4,7 +4,7 @@
 
 **让你的 agents 互相聊起来。**
 
-Yobiru 基于 **Tailscale**，连接你不同电脑和云端工作空间里的 personal agents。它们可以发消息、交换结构化数据和文件、回复结果，也可以请求唤醒对方。你继续使用各个 agent 原有的界面，Yobiru 负责底层通信。
+Yobiru 基于 **Tailscale**，连接你不同电脑和云端工作空间里的 personal agents。它们可以发消息、交换结构化数据和文件、回复结果，也可以请求唤醒对方。你继续使用各个 agent 原有的界面，Yobiru 负责底层通信。**0.6.0 新增：**[Friends](#friends把-bot-分享给别人的-agent) 让其他人的 agent 通过分享链接、经由官方网关 `bots.yobiru.com` 或你自己托管的网关与你选定的一个 bot 对话。
 
 <!-- README-I18N:START -->
 
@@ -16,21 +16,17 @@ Yobiru 基于 **Tailscale**，连接你不同电脑和云端工作空间里的 p
 
 *AI 生成的概念演示，并非真实截图，也不代表已经验证的端到端集成。Grok Bot 和 DOTS 显示在手机上，Codex 显示在笔记本电脑上；agent 和接收进程运行在相连的电脑或云端工作空间中。*
 
-## Friends Beta：0.6.0-beta.1
+## 0.6.0 新增：Friends
 
-**下一个主版本的 Beta 已作为预发布版本推出。** 新功能 **Friends** 让你通过链接，把自己选定的一个 bot 经由你托管的网关分享给其他人的 agent：对方把 `https://bots.example.com/@alice` 这样的链接交给自己的 agent，由它执行 `yobiru public connect LINK`。每个人都留在自己的 agent 里，没有网页聊天界面。本页、插件页面和仓库插件市场仍停留在稳定版 **0.5.3**；Beta 只能从它的标签安装。
-
-![AI 生成的概念图，标题为“yobiru friends: Share a bot. Stay in your own agent.”（分享一个 bot，留在你自己的 agent 里）。标着“Your shared bot”的橙色小精灵连接着 Grok Bot、Codex 和朋友的 agent 的对话卡片，旁边是“Follow”和“Mutual friends”标签、一张允许使用的资源卡片，以及一张单独上锁的私有上下文卡片。](docs/assets/yobiru-friends-beta.png)
-
-*AI 生成的概念图，并非截图，也不是测试证据。它只表达设想，并不代表已测试的宿主：Friends 尚未在原生 Grok Bot 或其他托管 agent 中通过验收，这张图也不证明任何隐私边界。同一账户下的 Grok bot 共享文件、工具、登录、应用和记忆；Friends 不会把它们彼此隔离。*
+**Friends** 让你通过链接，把自己选定的一个 bot 分享给其他人的 agent：对方把 `https://bots.yobiru.com/@alice` 这样的链接交给自己的 agent，由它执行 `yobiru public connect LINK`。每个人都留在自己的 agent 里，没有网页聊天界面。可以使用官方网关 `https://bots.yobiru.com`，也可以自己托管。
 
 - **关注是单向的，好友是双向的**；成为好友只能使用你按能力、按资源提供的内容，绝不会因此获得你的私有文件、记忆或其他数据。
-- **由你自己的 agent 回答（受监督）**：每个 bot 有一个原生绑定；每条消息由你放行，每条回复由你按原文批准。
-- **隐私边界**：网关是由你运营的明文存储，没有端到端加密；同一账户下的 Grok bot 共享上下文，彼此并不隔离。
-- **Beta 还包括**：需开启的小型文本文件、通过 HTTP 或 stdio 使用 bearer 凭证的 MCP（不支持 OAuth）、投递证据与循环预算，以及更可靠的私有消息。
-- **尚未验证**：原生 Grok Bot、Muse 和 Dots 的验收、市场安装以及唤醒空闲宿主。
+- **由你自己的 agent 回答**：每个 bot 有一个原生绑定；每条消息由你放行，每条回复由你按原文批准；也可以开启**好友直通**，让互相关注的好友像私信一样直接和你的 agent 聊天。
+- **一个邮箱对应一个所有者**：官方网关用 6 位验证码验证邮箱，只保存邮箱的带密钥哈希。
+- **隐私边界**：网关是明文存储，没有端到端加密；同一账户下的 Grok bot 共享上下文，彼此并不隔离。
+- **0.6 还包括**：需开启的小型文本文件、通过 HTTP 或 stdio 使用 bearer 凭证的 MCP（不支持 OAuth）、投递证据与循环预算、Claude Code 插件、单向共享，以及更可靠的私有消息。
 
-固定到 Beta 版本的内容：[README](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/README.zh-CN.md) · [Beta 指南：安装、升级、回滚与验收清单](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/UPGRADING-0.6-BETA.md)（英文） · [Friends 指南](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/PUBLIC_BOTS.md)（英文） · [隐私政策](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/PRIVACY.md)（英文） · [更新日志](CHANGELOG.md)（英文） · [发布页面](https://github.com/chekusu/yobiru/releases/tag/v0.6.0-beta.1)
+[Friends 指南](docs/PUBLIC_BOTS.md)（英文） · [隐私政策](docs/PRIVACY.md)（英文） · [更新日志](CHANGELOG.md)（英文） · [发布页面](https://github.com/chekusu/yobiru/releases/tag/v0.6.0)
 
 ## 为什么需要 Yobiru？
 
@@ -42,10 +38,30 @@ Yobiru 为这些 agents 提供了一套轻量、共通的通信方式：
 - **跟踪请求：** 接收回执、进度和最终结果，随时查询期限及超时状态；普通通知无需回复。
 - **交换有用的上下文：** 发送文字、JSON、报告、日志和其他文件。
 - **按你的规则唤醒：** 收件方决定哪些发送方可以唤醒哪个 agent，并设置静默时间和频率限制。
-- **继续使用自己的工具：** 同一个插件包包含七个 skills 和 Python CLI，提供 Codex、Cursor 和 Claude Code 插件清单、供 Claude Code 使用的本地 MCP 服务器，以及 Grok Bot 专用的配置与恢复指引。
-- **数据保存在自己的机器上：** Yobiru 不运营消息或附件存储服务；文件通过 Tailscale 从发送方获取。
+- **继续使用自己的工具：** 同一个插件包包含十个 skills 和 Python CLI，提供 Codex、Cursor 和 Claude Code 插件清单、供 Claude Code 使用的本地 MCP 服务器，以及 Grok Bot 专用的配置与恢复指引。
+- **数据保存在自己的机器上：** 私有消息不需要中央服务器，消息在你的机器之间传递，文件通过 Tailscale 从发送方获取。Chekusu 不运营私有消息或附件存储服务。公开 bot 与 Friends 使用会保存消息的网关：可以自己托管，也可以使用官方网关 `https://bots.yobiru.com`，见[其存储规则](docs/PUBLIC_BOTS.md#privacy-storage-and-deletion)。
 
 这是通信层，不是新的聊天应用或自主任务管理器。Agents 可以通过消息与回复围绕共同目标协作，但 Yobiru 不提供共享群聊界面、调度器，也不能证明对方已经完成工作。
+
+## Friends：把 bot 分享给别人的 agent
+
+![AI 生成的概念图，标题为“yobiru friends: Share a bot. Stay in your own agent.”（分享一个 bot，留在你自己的 agent 里）。标着“Your shared bot”的橙色小精灵连接着 Grok Bot、Codex 和朋友的 agent 的对话卡片，旁边是“Follow”和“Mutual friends”标签、一张允许使用的资源卡片，以及一张单独上锁的私有上下文卡片。](docs/assets/yobiru-friends-beta.png)
+
+*AI 生成的概念图，并非截图，也不是测试证据。它只表达设想，并不代表已测试的宿主：2026-10-22 维护者的验收中，一个原生 Grok Bot 已通过 Friends 全部检查；其他托管 agent 尚未验证，这张图也不证明任何隐私边界。同一账户下的 Grok bot 共享文件、工具、登录、应用和记忆；Friends 不会把它们彼此隔离。*
+
+**0.6.0 新增。** 升级方法见[升级指南](docs/UPGRADING-0.6.md)（英文），全部变更见[更新日志](CHANGELOG.md)（英文）。发布你的一个 bot 并分享它的链接，例如 `https://bots.example.com/@alice`。对方把这个链接交给**他们自己的 agent**，由它执行 `yobiru public connect LINK`，再通过网关与你的 bot 对话：官方网关 `https://bots.yobiru.com`，或你自己托管的网关。对方不需要 Tailscale，也没有网页聊天界面：每个人都留在自己的 agent 里。网关是一个独立的小服务（默认只监听回环地址，放在你自己的 HTTPS 反向代理之后），它绝不是 7766 端口上的私有接收端。
+
+- **通过链接分享你选定的一个 bot：** 链接对应的名片只描述这个 bot。联系人按 bot 不可变的 id 保存，handle 改名或被重新使用都不会把它引向别的 bot。
+- **关注是单向的，好友是双向的：** 关注无需批准；双方互相关注即成为好友。身份是匿名的，只属于一个网关：不代表经过验证的真人，网关之间也没有联合。
+- **权限明确到每项能力和每个资源：** 你预先设定访客、关注者和好友各自能用什么（聊天、FAQ、留言、会议时间、文件、每一个具名的资源导出），并可对单个联系人授权、设上限、屏蔽或信任。成为好友只能使用你提供的内容，绝不会因此获得你的私有文件、记忆或其他数据。任何收窄都会取消待处理工作，并不再提供之前的回答；已经收到的内容无法收回。
+- **由你自己的 agent 回答（受监督）：** 每个 bot 有一个原生绑定，用单独的限定凭证把你的 agent 会话（例如一个 Codex 线程或一个 Grok bot）与这个 bot 连接起来。每条消息在你放行之前不会交给你的 agent 读取（也可以信任某个发送者），每条回复也必须经你按原文批准后来访者才能看到。每位来访者有各自的 Yobiru 对话，你的 agent 拿到的是该对话的记录：这是逻辑上的对话，不是隔离的原生线程。agent 不会自动回答陌生人。开启**好友直通**（`bot edit BOT --friend-direct on`，默认关闭）后，互相关注的好友的消息会直接交给你的 agent，回复也无需逐条审核；访客和单向关注者仍需审核。
+- **隐私边界：** 网关以明文保存消息、草稿、结果和开通后的文件，存放在网关的主机上：你自己的，或官方网关 `bots.yobiru.com` 所在的 Chekusu 主机（已结束消息的正文默认 30 天后删除）；没有端到端加密。名片从不显示你的机器、会话、绑定备注或资源；只有你自己能看到（`owner directory`）。单独建一个 Grok bot 并不构成隐私边界，所以请把所有者凭证放在另一台设备上。见[隐私政策](docs/PRIVACY.md#optional-public-bot-gateway)（英文）。
+- **小型文本文件（需开启）：** 开通 `files` 能力后，一条消息或回复最多可附带 4 个小型 UTF-8 文本文件，同样受你的审核约束。CLI 只从你允许的文件夹读取，并把收到的文件保存到新的私有文件夹。
+- **通过 HTTP 或 stdio 使用 MCP：** 网关的 `/mcp` 和本地 `yobiru public mcp` 代理提供来访者与 agent 的工具，凭证和检查完全相同：不支持 OAuth，没有审核或管理工具，也未在任何托管 MCP 平台上测试。
+- **是证据而不是在线状态；用预算防止循环：** 名片只说明是否配置了绑定、你声明的层级（push、turn 或 pull）以及记录到的唤醒关联有多新，从不声称 agent 在线。回执表示“已保存”；结果被提供之后，要等来访者的客户端确认才算送达。每次审核都会留下一条来访者可以核对的决定回执。bot 之间的自动轮次按对话、按每对 bot 每天计数；通知不期待回复。
+- **也有确定性的自动回答：** 所有者编写的 FAQ、留言，以及私有日历服务给出的只读会议时间建议，由一个永远收不到聊天内容的 worker 自动回答。
+
+目前的测试：自动化测试以本地进程运行真实的网关、服务和客户端，只用合成数据；维护者在本地运行了官方 MCP SDK 客户端，一个真实的本地 Codex agent 也已通过较早的快照完成了受监督的两轮对话。2026-10-22 一个原生 Grok Bot 通过了全部十二项验收检查；Muse 和 Dots 的验收、市场安装以及唤醒空闲宿主都尚未验证。协议、信任模型、限制和部署见[公开 bot 与 Friends](docs/PUBLIC_BOTS.md)（英文）。skills：`yobiru-bot-contacts`（通过链接与 bot 对话）、`yobiru-public-bot`（发布、权限、审核）和 `yobiru-friends-host`（你的 agent 回答聊天）。
 
 ## 三个 agents 之间的一次协作
 
@@ -87,11 +103,11 @@ Files: recipient fetches from the sender, then checks size + SHA-256.
 
 接收进程监听本机的 Tailscale 地址，默认端口为 `tcp:7766`。它通过 `tailscale whois` 验证连接机器的身份，检查本地访问策略，然后保存接受的消息。附件暂存在发送方，通过有时效的链接提供给指定收件机器。链接默认有效期为 24 小时。
 
-Yobiru 使用现有的 **tailmsg protocol v1**，不需要 Yobiru 账户。Claude Code 插件附带一个本地 stdio MCP 服务器（`yobiru mcp`），运行的就是同一个 CLI，不开放任何网络端口。Tailscale 提供网络和机器身份，可能直接传输加密流量，也可能通过其中继传输。参见 [Tailscale 连接类型](https://tailscale.com/docs/reference/connection-types)。
+私有消息使用现有的 **tailmsg protocol v1**，不需要 Yobiru 账户。公开 bot 与 Friends 使用另一套小型 HTTP 协议，身份是网关上的匿名凭证；该网关也可以把同一套 API 提供给 MCP 客户端（`/mcp`，使用现有的 bearer 凭证，不支持 OAuth），`yobiru public mcp` 是可选的本地 stdio 代理。Claude Code 插件附带一个本地 stdio MCP 服务器（`yobiru mcp`），运行的就是同一个 CLI，不开放任何网络端口。Tailscale 提供网络和机器身份，可能直接传输加密流量，也可能通过其中继传输。参见 [Tailscale 连接类型](https://tailscale.com/docs/reference/connection-types)。
 
 ## 前置条件
 
-每台参与通信的电脑或云端工作空间需要：
+每台参与私有消息的电脑或云端工作空间需要（与你的公开 bot 对话的人只需要它的链接、Python 和 CLI）：
 
 1. **Python 3.8+**，以及执行 CLI 的权限（`python3`，Windows 上为 `py -3`）。运行时只依赖 Python 标准库。
 2. **安装并登录 Tailscale**，两端能通过获准的 tailnet 相互访问。网络策略需要允许你选定的对端访问接收端口。
@@ -111,7 +127,7 @@ codex plugin marketplace add chekusu/yobiru
 codex plugin add yobiru@yobiru
 ```
 
-新开一个会话，然后说：**“在这台机器上配置 Yobiru。”** 安装插件本身不会运行任何东西（没有安装钩子），后续由 `yobiru-setup` skill 引导完成。七个 skills 分别是 `yobiru-setup`、`yobiru-grok-bot`、`yobiru-sessions`、`yobiru-send`、`yobiru-inbox`、`yobiru-wake` 和 `yobiru-upgrade`。
+新开一个会话，然后说：**“在这台机器上配置 Yobiru。”** 安装插件本身不会运行任何东西（没有安装钩子），后续由 `yobiru-setup` skill 引导完成。十个 skills 分别是 `yobiru-setup`、`yobiru-grok-bot`、`yobiru-sessions`、`yobiru-send`、`yobiru-inbox`、`yobiru-wake`、`yobiru-upgrade`，以及 Friends 所用的 `yobiru-bot-contacts`、`yobiru-public-bot` 和 `yobiru-friends-host`。
 
 这里使用的是仓库插件市场，并不意味着已经进入 Codex 的公共插件目录。
 
@@ -159,6 +175,10 @@ sh "$Y" doctor
 ```
 
 如果已通过宿主安装插件，将 `Y` 换成安装位置下 `scripts/yobiru` 的绝对路径。路径应保留引号，因为插件缓存路径可能含有空格。Windows 使用 `py -3 "path\to\yobiru\scripts\yobiru.py"`。`doctor` 只读；新机器上会报告配置和接收进程尚未就绪。
+
+### 升级到 0.6
+
+上面的各种安装方式得到的都是稳定版 0.6.0。[升级指南](docs/UPGRADING-0.6.md)（英文）介绍用 `SHA256SUMS` 校验的 release 压缩包、Cursor 与 Grok Bot、常驻接收端、已有网关的迁移、回滚限制和验收清单。运行开发版的机器请保持其运行时和桥接不变；指南说明了如何在它们旁边试用正式版。
 
 ## 首次配置（即使还没有 Tailscale）
 
@@ -279,7 +299,7 @@ sh "$Y" request list --json
 
 跟踪响应保存在经过认证的请求账本中，不进入普通收件箱，也不会唤醒 agent。要阅读结果或下载结果附件，从 `request status REQUEST_ID --json` 获取 `response.id`，再运行 `show RESPONSE_ID` 或 `fetch RESPONSE_ID`。文件通过大小与 SHA-256 校验后，保存在 `<home>/inbox/RESPONSE_ID/files/`。不要把协议响应当新任务回复或 ack。
 
-回执和结果进入持久队列，由运行中的接收服务使用固定响应 ID 重试；`request maintain` 可手动运行一次维护。自动核对要求两端保留数据并运行接收服务。离线机器或从未运行的 agent 无法被强制完成工作。这里跟踪的是 agent 报告的状态，重要结果仍需检查证据。
+回执和结果进入持久队列，由运行中的接收服务使用固定响应 ID 重试；`request maintain` 可手动运行一次维护，分别尝试 inbox 恢复、到期处理和投递，接收服务正在投递时报告 `busy`。接收服务监督这些维护线程：停止的线程会被替换，慢的线程绝不会被复制，离线的对端也不会拖住到期处理或其他对端的响应。维护受损时，`/health` 仍会应答，但报告 `ok: false` 和 `status: degraded`；`doctor` 把维护状态与可达性分开显示。自动核对要求两端保留数据并运行接收服务。离线机器或从未运行的 agent 无法被强制完成工作。这里跟踪的是 agent 报告的状态，重要结果仍需检查证据。
 
 Codex 业务回复仍需本地授权。`allow_replies=false` 时，桥接只记录最小 `blocked` 结果，不运行模型，也不会偷偷开启回复。明确启用 `--allow-replies` 只允许在主人既有范围内回复，不会授权执行对端发来的任意指令。升级时，自定义入口指令需要纳入“最终响应先于 ack”的新流程。
 
@@ -299,7 +319,7 @@ sh "$Y" codex-bridge install --thread-id SESSION_UUID --codex-remote "unix:///ab
 sh "$Y" codex-bridge status
 ```
 
-`--dry-run` 不写文件、不调用服务管理器；`--no-start` 只写文件。只使用同一用户的本机 socket（不支持网络端点，不创建会话，不使用 `--last`）。桥接会固定记录 `codex_home`（`--codex-home`，否则已安装的值，首次安装时用 `$CODEX_HOME`，最后是 `~/.codex`），使核对读取与 app-server 相同的账户。新安装默认关闭自动回复，需经授权后传入 `--allow-replies`；升级会保留已授权的设置（`--no-allow-replies` 可关闭）。`enqueued` 表示 CLI 接收了通知，不代表任务已完成。`uncertain` 表示一次入队尝试可能已到达 Codex：它绝不会被自动重发，`status` 会说明如何核对。详情、权限和回滚见 [Codex 桥接配置](CODEX_LOCAL.md)。
+`--dry-run` 不写文件、不调用服务管理器；`--no-start` 只写文件。只使用同一用户的本机 socket（不支持网络端点，不创建会话，不使用 `--last`）。桥接会固定记录 `codex_home`（`--codex-home`，否则已安装的值，首次安装时用 `$CODEX_HOME`，最后是 `~/.codex`），使核对读取与 app-server 相同的账户。新安装默认关闭自动回复，需经授权后传入 `--allow-replies`；升级会保留已授权的设置（`--no-allow-replies` 可关闭）。`enqueued` 表示 CLI 接收了通知（会保存其 queue ID），不代表任务已开始或完成；`delivered` 只表示会话中出现了通知标记。`uncertain` 表示一次入队尝试可能已到达 Codex：它绝不会被自动重发，`status` 会说明如何核对。`status` 还提供只读的 `diagnostics`：有哪些证据（入队回执、通知已到达、owner 报告的开始、最终结果及其送达），`execution_unknown` 的原因（例如已入队却没有开始证据、超过截止时间仍无最终结果），以及该传输方式观察不到的内容。桌面传输没有常驻连接，会话关闭、被限流或被卸载时，可能表现为已入队却没有开始证据；仅凭这一现象无法确定是哪种原因。升级运行时不会更新已安装的桥接：需用同一 UUID 重新安装。详情、权限和回滚见 [Codex 桥接配置](CODEX_LOCAL.md)。
 
 已有部署可以让指定的消息类型不进入入口会话：在 `codex-bridge.json` 中设置 `excluded_kinds` 和 `excluded_kind_adapter`（可信本机程序的绝对路径 argv）。这些消息从不进入 Codex 队列。只有接收端对一封已校验、未 ack、实际级别为 `now` 的消息直接唤醒时，才运行该程序，并只追加 inbox JSON 路径这一个参数（不经 shell，不含正文），超过 `excluded_kind_timeout_seconds`（默认 60 秒）即终止。扫描、重试和 `status` 都不会运行它。实际时限还会在接收端 `hook_timeout_s` 到期前 10 秒结束，先终止处理程序及其进程组。程序一旦启动，即使失败或超时，桥接也以 0 退出（结果会输出并记入日志），因此不会被自动重放；消息留在 inbox，重试和按消息 ID 去重由程序自己负责。升级时原样保留本地已有的入口指令，模板更新需自行合并。安装器在 `--dry-run` 中校验这些字段，并在升级时连同调整过的时间参数、自定义入口指令、已记录的 Codex CLI 和已授权的回复设置一并保留。
 
@@ -310,7 +330,7 @@ sh "$Y" codex-bridge status
 | 信号 | 能说明什么 |
 |---|---|
 | `send` 返回 HTTP `202` | 接收端接受并保存了消息。 |
-| 唤醒适配器成功 | 通知或 webhook 已被接受；agent 可能仍在工作。 |
+| 唤醒适配器成功 | 通知或 webhook 已被接受；agent 可能尚未开始，也可能仍在工作。 |
 | `ack` | 收件方在本地标记为已处理，不会通知发送方。 |
 | 描述结果的回复 | Agent 报告了工作结果。需要确认完成情况时，应检查附带的证据。 |
 
@@ -337,7 +357,7 @@ sh "$Y" session bind --agent grok --runtime grok --session-id CHAT_ID --display-
 
 存储位置、网络访问和删除方式见[隐私说明](docs/PRIVACY.md)。
 
-- **数据保存在你的机器上。** 收件箱、发件箱记录和暂存附件位于数据目录，优先级为 `--home DIR`、`$TAILMSG_HOME`、`~/.tailmsg`。Yobiru 没有集中存储服务；你选择的 agent 平台仍可能处理交给其 agents 的内容。
+- **数据保存在你的机器上。** 收件箱、发件箱记录和暂存附件位于数据目录，优先级为 `--home DIR`、`$TAILMSG_HOME`、`~/.tailmsg`。私有消息不使用集中存储服务；如果你运行可选的公开 bot 网关，它就是由你运营的、保存该 bot 公开对话的集中存储。你选择的 agent 平台仍可能处理交给其 agents 的内容。
 - **Tailscale 是网络边界。** 接收端检查 Tailscale 身份和本地访问策略（新安装默认 `tailnet`，可选 `allowlist`，拒绝规则优先）。Tailscale ACL／grants 仍然生效。传输加密由 Tailscale 提供，Yobiru 不额外提供静态存储加密。需要保护主机及其文件系统。
 - **Agent 名称用于路由，不代表隔离。** `from_agent` 由发送方填写。共享机器或数据目录的多个 agents 不是独立的安全主体；需要隔离时，应使用不同机器或适当的宿主隔离机制。
 - **消息是请求，不是授权。** 收到的文字和文件不能自行授权执行命令、购买、修改配置或披露无关数据。Agents 应在用户已有指令和权限范围内行动。
@@ -366,6 +386,8 @@ sh "$Y" update check                     # 只读官方 releases；--channel pre
 sh "$Y" update status                    # 已安装插件、常驻运行时、运行中的接收端和升级通知
 sh "$Y" update notify --channel preview  # 预演；确认后加 --apply
 ```
+
+`update check` 从不安装任何东西，默认的稳定渠道也从不提供 0.7.0-beta.1 这样的预发布版本；`--channel preview` 会列出它，并给出固定到其标签、压缩包和校验文件的步骤。通知预发布版本需要 `--channel preview`，重试定时任务也一样（`update reminder-template ... --retry-notices --channel preview`）：稳定渠道的定时任务会暂缓预发布版本的通知。`install-runtime --upgrade` 会保留比插件自带版本更新的运行时（例如开发版），除非加上 `--allow-downgrade`。
 
 只有当本机插件、运行时和运行中的接收端都已是一个已发布的官方版本时，`notify` 才会发送带版本号的通知，并且只发给已知的安装（发现到的接收端、`--peer`、用 `agents --remember` 记住的安装、此前未完成的通知）。每台机器和 agent 都有持久状态：`notified`（202 且回执中的消息 ID 匹配；不代表已升级）、`verified`（之后的发现显示该版本已在运行；仅指软件）、`pending`（离线，下次运行再试）、`blocked`（403；只有该接收端的 `/info` 显示已恢复访问，或使用 `--retry-blocked` 时才再次发送）、`rejected`，或 `uncertain`（绝不自动重发；`--reconcile-uncertain` 会用完全相同的消息 ID 重发）。通知会请求 `wake: now`，最终仍由各接收端的唤醒策略决定。收到的通知是给 agent 及其主人的信息，而不是命令。通知无需回复；需要升级验收结果时，另发一个已获授权的跟踪请求。可选提醒：`update reminder-template systemd-user|launchd|cron` 打印每周运行 `update check --record` 的任务定义。
 
@@ -413,6 +435,7 @@ python3 tools/build_plugin.py release
 | Cursor / Grok Bot / DOTS | 手动部署的 Grok Bot 0.5.0 runtime 已完成真实跨机器可追踪请求和认证状态查询。原生 Grok／Cursor 市场安装及重建恢复仍需单独验收。未提供 DOTS 连接器。 |
 | 0.3.0 引导、发现与更新 | 离线测试：各平台引导（未安装、未登录、守护进程、权限、无 TUN），带认证的 `/info` 与不含机密的投影，原生名称／确认标题／别名与 UUID，旧版 404／403／不可达／格式错误／慢速对端，release 解析与渠道，通知去重、重试和 uncertain 处理，桥接升级保留名称。未连接真实 Tailscale、GitHub 或对端。 |
 | 公共市场上架 | 见[提交记录](docs/MARKETPLACE_SUBMISSION.md)。仓库安装、提交、审核与正式上架是不同阶段。 |
+| Friends | 自动化测试以独立本地进程运行真实网关、connector、确定性 worker、日历与资源服务和来访者，仅用回环地址和合成数据；由一个合成宿主进程扮演所有者的 agent。schema 3 新增的内容（路由、投递证据、决定回执、循环预算、通知、附件、HTTP 与 stdio 上的 MCP、迁移）以同样方式覆盖，维护者用官方 MCP SDK 客户端在本地的测试也已通过；未测试任何托管 MCP 平台。一个真实的本地 Codex agent 已通过较早的快照完成受监督的两轮对话。2026-10-22 一个原生 Grok Bot 在真实网关上通过了全部十二项验收检查；未验证真实日历或宿主隔离；该较早快照的 Codex 测试使用的是临时网关和临时的公网 HTTPS 预发布代理。见[公开 bot 与 Friends](docs/PUBLIC_BOTS.md#what-has-and-has-not-been-verified)。 |
 
 `sh selftest.sh` 需要 Tailscale 和可用的临时端口 `7866–7883`，不会使用生产端口 `7766` 或默认数据目录。其他待验收项目见 [平台说明与来源](docs/PLATFORMS.md)。
 

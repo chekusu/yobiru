@@ -8,7 +8,9 @@ the phone displaying it. It uses the same plugin and tailmsg protocol as Codex a
 
 The repository contains a portable `plugin.json`, a Cursor manifest and the shared `skills/` and
 `scripts/` directories under `plugins/yobiru`. It does not need a separate Grok protocol or an MCP
-server. The [official submission page](https://x.ai/bot/marketplace/submit-a-plugin) accepts public
+server. (The public bots of 0.6.0 offer an optional MCP endpoint and stdio proxy; neither has been
+tested inside Grok Bot, and a Remote HTTPS setup that requires OAuth cannot use their bearer
+credential.) The [official submission page](https://x.ai/bot/marketplace/submit-a-plugin) accepts public
 repository submissions for Grok Bot and Cursor; Grok itself is marked coming soon. Submission,
 review, public listing and installation are separate steps. See the current
 [submission record](MARKETPLACE_SUBMISSION.md) before claiming a listing.
@@ -69,6 +71,18 @@ outcome for an authorized request, then acknowledge it. Notifications need no re
 An HTTP receipt means storage. A successful webhook call means the adapter accepted the wake.
 Only the eventual tracked result reports the agent's outcome. Keep existing execution and reply
 restrictions: a request may finish `blocked` when the owner has not authorized the requested work.
+
+## Answering a public bot's chat (Friends)
+
+With [public bots and Friends](PUBLIC_BOTS.md) from 0.6.0, a Grok Bot can answer chat sent to one of your
+published bots: it holds only that bot's native binding credential and uses the `yobiru-friends-host` skill
+(`job list`, `job claim`, `job reply`), and a connector can wake it through a routine webhook with a job id only.
+This is supervised: you admit each message before the bot can read it and approve each reply before the caller
+sees it, from a device that holds the owner credential (never the Grok computer). Grok bots of one account share
+files, installed tools, browser logins, connected apps and shared memory, and one bot has one conversation, so a
+dedicated bot is neither a privacy boundary nor a per-caller thread; Yobiru keeps each caller's conversation and
+hands the bot its transcript. Automatic answering is not available. Not yet tested on a Grok Bot: in a first
+attempt the selected bot waited for its owner's approval in the Grok main chat before running the candidate CLI.
 
 ## Recover after a rebuild
 

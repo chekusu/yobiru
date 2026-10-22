@@ -17,7 +17,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import codex_bridge
 from codex_bridge import Bridge, Rejected, load_config
+from codex_queue_client import CodexAppError
 import tailmsg as receiver_core
 
 
@@ -246,7 +248,9 @@ class BridgeTests(unittest.TestCase):
         ledger.request_record_response.assert_not_called()
         self.assertEqual([], self.bridge.status())
 
-    def test_request_expiring_after_enqueue_is_not_executed(self):
+    def test_request_expiring_before_the_official_queue_send_is_not_sent(self):
+        # Pre-queue expiry: ingested locally, expired before any `codex queue` call. Expiry after the
+        # official queue accepted the notification is DeliveryEvidenceTests' post-acceptance case.
         path, ledger = self.request_fixture()
         self.set_reply_consent(True)
         self.bridge.ingest(path)
@@ -566,6 +570,370 @@ class BridgeTests(unittest.TestCase):
         self.bridge = self.open_bridge()
         self.assertEqual(1, len(self.bridge.status()))
 
+class DeliveryEvidenceTests(BridgeTests):
+    """Queue acceptance, a seen notification, start and final results stay separate evidence. Real request
+    ledgers in temporary homes, a fake queue client and clock; no Codex runtime, socket or network."""
+
+    def setUp(self):
+        super().setUp()
+        self.now = float(int(time.time()))      # the request ledger uses real time
+        self.core = codex_bridge._core()
+
+    def sends(self):
+        return sum(name == "send_message_to_thread" for name, _ in self.client.calls)
+
+    def receipt(self, queue_id="q_0123456789abcdef"):
+        self.client.send_result = {"ok": True, "status": "enqueued", "transport": "codex_queue", "queueId": queue_id}
+
+    def tracked(self, mid="request_0001", wake="now"):
+        """A tracked request as the receiver stores it: inbox record plus its ledger row and receipt."""
+        self.set_reply_consent(True)
+        path = self.message(mid, wake=wake)
+        self.rewrite(path, lambda r: r["envelope"].update(
+            kind="request", to="dispatcher.tailnet.ts.net", ts=self.core.iso(self.core.now_utc()),
+            request={"timeout_seconds": 900, "reply_port": 7766}))
+        self.core.accept_request(self.core.Ctx(self.tailmsg), json.loads(path.read_text()))
+        return path
+
+    def ledger(self, sql, *args):
+        with contextlib.closing(sqlite3.connect(str(self.tailmsg / "requests" / "ledger.sqlite3"))) as db:
+            rows = db.execute(sql, args).fetchall()
+            db.commit()
+            return rows
+
+    def diagnose(self, **overrides):
+        return codex_bridge.diagnostics(dict(self.bridge.config, **overrides), now=self.now)
+
+    def phases(self, **overrides):
+        return self.diagnose(**overrides)["execution"]["phases"]
+
+    def enqueue(self, *paths):
+        self.receipt()
+        for path in paths:
+            self.bridge.ingest(path)
+        self.assertEqual(len(paths), self.bridge.dispatch_due()["enqueued"])
+
+    def test_accepted_receipt_is_kept_once_and_never_resent(self):
+        self.enqueue(self.message())
+        row = self.bridge.status()[0]
+        self.assertEqual(("enqueued", "q_0123456789abcdef", "codex_queue", self.now, 1),
+                         (row["state"], row["queue_id"], row["transport"], row["enqueued_at"], row["attempts"]))
+        accepted = self.now
+        for _ in range(3):                                   # a day of scans, dispatch passes and a restart
+            self.now += 8 * 3600
+            self.bridge.scan()
+            self.bridge.dispatch_due()
+            self.bridge.observe()
+        self.bridge.close()
+        self.bridge = self.open_bridge()
+        self.bridge.scan()
+        self.bridge.dispatch_due()
+        row = self.bridge.status()[0]
+        self.assertEqual((1, 1, accepted, "enqueued"), (self.sends(), row["attempts"], row["enqueued_at"], row["state"]))
+        self.assertNotIn("read_thread", [name for name, _ in self.client.calls])   # no history polling
+        diagnosis = self.diagnose()
+        oldest = diagnosis["execution"]["oldest_without_start"]
+        self.assertEqual(("message_0001", "awaiting_handling_too_long", 24 * 3600, "enqueued_at"),
+                         (oldest["id"], oldest["phase"], oldest["age_seconds"], oldest["age_basis"]))
+        self.assertTrue(diagnosis["execution_unknown"])
+        self.assertIn("accepted_without_start", diagnosis["reasons"])
+        self.receipt("not a queue id!")
+        self.bridge.ingest(self.message("message_0002"))
+        self.bridge.dispatch_due()
+        self.assertIsNone({r["id"]: r for r in self.bridge.status()}["message_0002"]["queue_id"])
+
+    def test_request_expiring_after_official_acceptance_is_flagged_not_resent(self):
+        path = self.tracked()
+        self.enqueue(path)
+        outbox = self.ledger("SELECT COUNT(*) FROM response_outbox")[0][0]
+        record = path.read_bytes()
+        self.ledger("UPDATE requests SET deadline='2000-01-01T00:00:00Z'")
+        self.now += 60
+        self.bridge.scan()
+        self.bridge.dispatch_due()
+        self.bridge.observe()
+        diagnosis = self.diagnose()
+        self.assertEqual({"past_deadline_without_start": 1}, diagnosis["execution"]["phases"])
+        self.assertIn("deadline_passed_without_final", diagnosis["reasons"])
+        self.assertTrue(diagnosis["execution_unknown"])
+        self.assertEqual(1, self.sends())                                         # never sent again
+        self.assertEqual(record, path.read_bytes())                               # never acknowledged
+        self.assertEqual(outbox, self.ledger("SELECT COUNT(*) FROM response_outbox")[0][0])   # no result invented
+
+    def test_running_request_is_never_queued_as_fresh_work(self):
+        path, ledger = self.request_fixture(state="running")
+        self.set_reply_consent(True)
+        self.assertEqual("request_running", self.bridge.ingest(path)["reason"])
+        self.assertEqual([], self.bridge.status())
+        ledger.request_snapshot.return_value = {"state": "received", "overdue": False}
+        self.assertEqual("queued", self.bridge.ingest(path)["status"])
+        ledger.request_snapshot.return_value = {"state": "running", "last_state": "running", "overdue": False}
+        self.assertEqual(1, self.bridge.dispatch_due()["skipped"])
+        self.assertEqual(("skipped", "request_running"), (self.state(), self.bridge.status()[0]["error"]))
+        self.assertEqual([], self.client.calls)
+
+    def test_marker_in_history_means_notification_seen_not_started(self):
+        paths = [self.tracked("request_0001"), self.message("message_0002"), self.message("message_0003")]
+        for path in paths:
+            self.bridge.ingest(path)
+        self.client.send_error = DeliveryError(True)
+        self.assertEqual(3, self.bridge.dispatch_due()["uncertain"])
+        self.client.send_error = None
+        self.client.read_result = {"tailmsgMarkers": ["[TAILMSG:request_0001]", "[TAILMSG:message_0002]"]}
+        self.now += 10
+        counts = self.bridge.dispatch_due()
+        self.assertEqual((2, 1), (counts["delivered"], counts["uncertain"]))
+        self.assertEqual(1, [name for name, _ in self.client.calls].count("read_thread"))   # one read per pass
+        self.assertEqual(3, self.sends())
+        self.assertEqual(self.now, {r["id"]: r for r in self.bridge.status()}["request_0001"]["seen_at"])
+        self.assertEqual({"awaiting_start": 1, "awaiting_handling": 1, "delivery_unconfirmed": 1}, self.phases())
+        for result in (RuntimeError("history read failed"), {"isError": True}, {"tailmsgMarkers": []}):
+            self.client.read_result = result if isinstance(result, dict) else None
+            with patch.object(self.client, "call_tool", side_effect=result) if not isinstance(result, dict) else \
+                    contextlib.suppress():
+                self.now += 10
+                self.bridge.dispatch_due()
+            self.assertEqual("uncertain", {r["id"]: r for r in self.bridge.status()}["message_0003"]["state"])
+        self.assertEqual(3, self.sends())
+
+    def test_durable_lifecycle_outranks_an_old_transport_state(self):
+        path = self.tracked()
+        self.bridge.ingest(path)
+        self.client.send_error = DeliveryError(True)
+        self.bridge.dispatch_due()
+        self.core.respond_request(self.core.Ctx(self.tailmsg), "request_0001", "completed", "Done")
+        diagnosis = self.diagnose()
+        self.assertEqual({"final": 1}, diagnosis["execution"]["phases"])
+        self.assertIsNone(diagnosis["execution"]["oldest_without_start"])
+        self.assertEqual({"confirmed": 0, "pending": 1, "unknown": 0}, diagnosis["execution"]["final_response_delivery"])
+        self.assertNotIn("delivery_unconfirmed", diagnosis["reasons"])
+        self.assertFalse(diagnosis["execution_unknown"])
+
+    def test_observe_closes_only_on_positive_evidence(self):
+        acked, gone = self.message("message_0001"), self.message("message_0002")
+        unresolved, timed_out, final = self.tracked("request_0001"), self.tracked("request_0002"), self.tracked("request_0003")
+        self.enqueue(acked, gone, unresolved, timed_out, final)
+        self.rewrite(acked, lambda r: r.update(acked_at="2026-01-01T00:00:00Z"))
+        gone.unlink()
+        ctx = self.core.Ctx(self.tailmsg)
+        self.ledger("UPDATE requests SET deadline='2000-01-01T00:00:00Z' WHERE id='request_0002'")
+        self.core.expire_requests(ctx)
+        self.rewrite(timed_out, lambda r: r.update(acked_at="2026-01-01T00:00:00Z"))   # ack after a timeout
+        result = self.core.respond_request(ctx, "request_0003", "completed", "Done")
+        ledger = self.tailmsg / "requests"
+        moved = self.root / "ledger moved away"
+        os.rename(str(ledger), str(moved))                       # ledger and inbox file both missing for a while
+        unresolved_record = unresolved.read_bytes()
+        unresolved.unlink()
+        self.bridge.observe()
+        self.assertEqual({"message_0001": "acked", "message_0002": "record_missing"},
+                         {r["id"]: r["closed_reason"] for r in self.bridge.status() if r["closed_at"]})
+        os.rename(str(moved), str(ledger))                       # the receiver's ledger and inbox come back
+        unresolved.write_bytes(unresolved_record)
+        self.ledger("UPDATE response_outbox SET delivered_at='2026-01-01T00:00:00Z' WHERE id=?", result["id"])
+        self.bridge.observe()
+        closed = {r["id"]: r["closed_reason"] for r in self.bridge.status() if r["closed_at"]}
+        self.assertEqual({"message_0001": "acked", "message_0002": "record_missing", "request_0003": "request_final"},
+                         closed)
+        self.assertEqual({"awaiting_start": 1, "past_deadline_without_start": 1}, self.phases())
+        self.assertEqual(5, self.sends())
+
+    def test_unknown_provenance_never_closes_or_borrows_evidence(self):
+        legacy, foreign = self.message("message_0001"), self.tracked("request_0001")
+        self.enqueue(legacy, foreign)
+        self.core.respond_request(self.core.Ctx(self.tailmsg), "request_0001", "completed", "Done")
+        self.bridge.db.execute("UPDATE messages SET tracked=NULL WHERE id='message_0001'")   # an older row
+        self.bridge.db.execute("UPDATE messages SET path=? WHERE id='request_0001'",
+                               (str(self.root / "another home" / "inbox" / "request_0001.json"),))
+        self.bridge.db.commit()
+        legacy.unlink()
+        self.bridge.observe()
+        self.assertEqual([], [r["id"] for r in self.bridge.status() if r["closed_at"]])
+        diagnosis = self.diagnose()
+        self.assertEqual({"record_unavailable": 1, "provenance_mismatch": 1}, diagnosis["execution"]["phases"])
+        self.assertEqual(("partial", "unknown"), (diagnosis["observation_quality"],
+                                                  self.diagnose(codex_remote=None)["state"]
+                                                  if not diagnosis["reasons"] else "unknown"))
+        self.bridge.db.execute("UPDATE messages SET thread_id='another-thread', path=? WHERE id='request_0001'",
+                               (str(self.inbox / "request_0001.json"),))
+        self.bridge.db.commit()
+        self.assertEqual(1, self.phases()["provenance_mismatch"])
+
+    def test_invalid_ledger_times_are_unknown_not_a_start(self):
+        self.enqueue(self.tracked("request_0001"), self.tracked("request_0002"))
+        self.ledger("UPDATE requests SET started_at='garbage', progress_at='13:00' WHERE id='request_0001'")
+        self.ledger("UPDATE requests SET state='running', started_at='garbage', progress_at='x' WHERE id='request_0002'")
+        self.assertEqual({"awaiting_start": 1, "running": 1}, self.phases())
+
+    def test_stale_progress_is_reported_without_changing_the_lifecycle(self):
+        self.enqueue(self.tracked())
+        ctx = self.core.Ctx(self.tailmsg)
+        self.core.respond_request(ctx, "request_0001", "running", "Started")
+        self.assertEqual({"running": 1}, self.phases())
+        self.now += 2 * 3600
+        diagnosis = self.diagnose()
+        self.assertEqual({"running_without_recent_progress": 1}, diagnosis["execution"]["phases"])
+        self.assertGreaterEqual(diagnosis["execution"]["stalled_running"]["progress_age_seconds"], 7200)
+        self.assertEqual("running", self.core.request_snapshot(self.tailmsg, "request_0001")["state"])
+
+    def test_status_and_diagnose_are_read_only(self):
+        config = dict(self.config, bridge_home=str(self.root / "never created"))
+        path = self.root / "read-only.json"
+        path.write_text(json.dumps(config))
+
+        def run(command):
+            output = io.StringIO()
+            with patch("codex_bridge.Bridge", side_effect=AssertionError("constructor")), \
+                    patch("subprocess.Popen", side_effect=AssertionError("process")), \
+                    patch("codex_bridge.DaemonHeartbeat", side_effect=AssertionError("heartbeat")), \
+                    contextlib.redirect_stdout(output):
+                self.assertEqual(0, codex_bridge.main(["--config", str(path), command]))
+            return json.loads(output.getvalue())
+        self.assertEqual([], run("status"))
+        diagnosis = run("diagnose")
+        self.assertEqual(("unavailable", {"available": False, "reason": "queue_absent"}),
+                         (diagnosis["observation_quality"], diagnosis["queue"]))
+        self.assertIn("daemon_not_confirmed", diagnosis["reasons"])
+        self.assertFalse((self.root / "never created").exists())
+        self.bridge.ingest(self.message())
+        self.bridge.close()
+        legacy = Path(self.config["bridge_home"]) / "bridge.sqlite3"
+        with contextlib.closing(sqlite3.connect(str(legacy))) as db:     # back to an old schema
+            db.execute("CREATE TABLE old AS SELECT id,path,wake,state,attempts,next_attempt,created_at,updated_at,"
+                       "error,thread_id,host_id FROM messages")
+            db.execute("DROP TABLE messages")
+            db.execute("ALTER TABLE old RENAME TO messages")
+            db.commit()
+        config["bridge_home"] = self.config["bridge_home"]
+        path.write_text(json.dumps(config))
+        before = (legacy.read_bytes(), os.stat(str(legacy)).st_mtime_ns)
+        self.assertEqual(["message_0001"], [row["id"] for row in run("status")])
+        legacy_view = run("diagnose")
+        self.assertEqual((1, False), (legacy_view["dispatch"]["waiting"], legacy_view["queue"]["receipt_columns"]))
+        self.assertEqual(before, (legacy.read_bytes(), os.stat(str(legacy)).st_mtime_ns))
+        self.bridge = self.open_bridge()
+
+    def test_daemon_phases_are_isolated_and_reported_by_its_heartbeat(self):
+        heartbeat = codex_bridge.DaemonHeartbeat(self.bridge.home)
+        self.bridge.ingest(self.message())
+        with patch.object(self.bridge, "scan", side_effect=OSError("private detail")), \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            outcomes, failure = codex_bridge.daemon_cycle(self.bridge, heartbeat)
+        self.assertEqual({"scan": "failed", "dispatch": "ok", "observe": "ok"}, outcomes)
+        self.assertEqual(1, self.sends())                                 # dispatch still ran
+        self.assertIn("codex_bridge: scan_failed OSError", stderr.getvalue())
+        state = self.bridge.home / "daemon.json"
+        self.assertEqual(0o600, os.stat(str(state)).st_mode & 0o777)
+        self.assertNotIn("private detail", state.read_text())
+        self.assertEqual({"phase": "scan", "error": "OSError"},
+                         {k: json.loads(state.read_text())["failure"][k] for k in ("phase", "error")})
+        diagnosis = self.diagnose()
+        self.assertEqual("reporting", diagnosis["daemon"]["state"])
+        self.assertIn("daemon_cycle_failed", diagnosis["reasons"])
+        codex_bridge.daemon_cycle(self.bridge, heartbeat)
+        doc = json.loads(state.read_text())
+        self.assertIsNone(doc["failure"])
+        self.assertTrue(doc["last_full_success_at"])
+
+    def test_unknown_outcome_with_rate_limit_text_stays_uncertain_without_details(self):
+        self.bridge.ingest(self.message())
+        self.client.send_error = CodexAppError("HTTP 429 Too Many Requests: private body", True, "queue_failed")
+        self.assertEqual(1, self.bridge.dispatch_due()["uncertain"])
+        self.client.send_error = None
+        self.now += 60
+        self.bridge.dispatch_due()
+        self.assertEqual(1, self.sends())
+        self.assertEqual(("uncertain", "delivery_unconfirmed"), (self.state(), self.bridge.status()[0]["error"]))
+        self.assertNotIn("429", json.dumps(self.bridge.status()))
+        self.assertIn("delivery_unconfirmed", self.diagnose()["reasons"])
+
+    def test_unavailable_desktop_is_known_unsent_and_its_gaps_are_reported(self):
+        self.bridge.ingest(self.message())
+        self.client.send_error = CodexAppError("Codex desktop is not available", False, "app_unavailable")
+        self.assertEqual(1, self.bridge.dispatch_due()["retry"])
+        diagnosis = self.diagnose()
+        self.assertIn("dispatch_blocked", diagnosis["reasons"])
+        self.assertEqual({"app_unavailable": 1}, diagnosis["queue"]["retry_reasons"])
+        caps = diagnosis["capabilities"]
+        self.assertEqual(("codex_desktop", "not_available", "not_observed", False, False),
+                         (caps["transport"], caps["resident"], caps["runtime_events"],
+                          caps["retract_after_enqueue"], caps["automatic_resend"]))
+        self.client.send_error = None
+        self.receipt()
+        self.now += 3600
+        self.assertEqual(1, self.bridge.dispatch_due()["enqueued"])
+        self.assertEqual("enqueued", self.state())
+
+    def test_resident_connection_is_never_start_evidence(self):
+        self.enqueue(self.message())
+        (self.bridge.home / "resident.json").write_text(json.dumps(
+            {"state": "connected", "thread_id": "dispatcher-fixed", "updated_at": time.time(), "reason": None}))
+        self.now += 3600
+        diagnosis = self.diagnose(codex_remote="unix:///nonexistent/app.sock")
+        self.assertEqual("connected", diagnosis["resident"]["state"])
+        self.assertNotIn("resident_not_connected", diagnosis["reasons"])
+        self.assertIn("accepted_without_start", diagnosis["reasons"])
+        self.assertEqual("daemon_keeps_thread_loaded", diagnosis["capabilities"]["resident"])
+
+    def test_one_dispatcher_owns_a_send_even_when_two_run_together(self):
+        self.bridge.ingest(self.message())
+        started, release, results = threading.Event(), threading.Event(), []
+        client = FakeClient()
+
+        def call_tool(name, arguments):
+            client.calls.append((name, arguments))
+            started.set()
+            release.wait(5)
+            return {"ok": True}
+        client.call_tool = call_tool
+
+        def first():
+            bridge = Bridge(self.config, client_factory=lambda _: client, clock=lambda: self.now)
+            try:
+                results.append(bridge.dispatch_due())
+            finally:
+                bridge.close()
+        thread = threading.Thread(target=first)
+        thread.start()
+        self.assertTrue(started.wait(5))
+        second = Bridge(self.config, client_factory=lambda _: client, clock=lambda: self.now)
+        try:
+            busy = second.dispatch_due()
+        finally:
+            second.close()
+        release.set()
+        thread.join(5)
+        self.assertEqual((1, 1, 1), (busy.get("busy"), results[0]["enqueued"], len(client.calls)))
+
+    def test_legacy_rows_keep_their_states_without_invented_evidence(self):
+        for mid in ("message_0001", "message_0002", "message_0003", "message_0004", "message_0005"):
+            self.message(mid)
+        self.bridge.close()
+        db_path = Path(self.config["bridge_home"]) / "bridge.sqlite3"
+        db_path.unlink()
+        with contextlib.closing(sqlite3.connect(str(db_path))) as legacy:
+            legacy.execute("""CREATE TABLE messages (
+                id TEXT PRIMARY KEY, path TEXT NOT NULL, wake TEXT NOT NULL,
+                state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt REAL NOT NULL, received_at REAL, created_at REAL NOT NULL, updated_at REAL NOT NULL,
+                error TEXT, thread_id TEXT NOT NULL, host_id TEXT NOT NULL)""")
+            for mid, state in (("message_0001", "enqueued"), ("message_0002", "delivered"),
+                               ("message_0003", "uncertain"), ("message_0004", "sending"),
+                               ("message_0005", "skipped")):
+                legacy.execute("INSERT INTO messages VALUES (?,?,'now',?,1,?,?,?,?,NULL,'dispatcher-fixed','local')",
+                               (mid, str(self.inbox / (mid + ".json")), state, self.now, self.now, self.now, self.now))
+            legacy.commit()
+        self.bridge = self.open_bridge()
+        rows = {r["id"]: r for r in self.bridge.status()}
+        self.assertEqual({None}, {(r["queue_id"] or r["enqueued_at"] or r["seen_at"] or r["closed_at"]) for r in rows.values()})
+        self.assertEqual({0}, {r["tracked"] for r in rows.values()})          # from the stored records only
+        counts = self.bridge.dispatch_due()
+        states = {r["id"]: r["state"] for r in self.bridge.status()}
+        self.assertEqual({"message_0001": "enqueued", "message_0002": "delivered", "message_0003": "uncertain",
+                          "message_0004": "uncertain", "message_0005": "skipped"}, states)
+        self.assertEqual((0, 2), (self.sends(), counts["uncertain"]))          # reconciled only, never resent
+        self.assertEqual("received_at", self.diagnose()["execution"]["oldest_without_start"]["age_basis"])
+
 
 HANDLER = r"""#!%(python)s
 # Neutral test handler: records its argv and whether stdin was empty, then acts per its mode file.
@@ -783,6 +1151,26 @@ class KindRoutingTests(BridgeTests):
                              capture_output=True, text=True, timeout=60)
         self.assertEqual([], json.loads(run.stdout))
         self.assertEqual(1, len(self.handler_calls()))
+
+    def test_tracked_requests_routed_to_a_handler_are_never_restarted(self):
+        self.bridge.excluded_kinds = frozenset(["routed-kind", "request"])
+        path = self.routed()
+        self.rewrite(path, lambda r: r["envelope"].update(kind="request", request={"timeout_seconds": 900,
+                                                                                   "reply_port": 7766}))
+        ledger = Mock()
+        self.addCleanup(patch.stopall)
+        patch("codex_bridge._POLICY_CORE", ledger).start()
+        patch("codex_bridge._access_decision", return_value=(True, "tailnet")).start()
+        for snapshot, reason in (({"state": "running", "overdue": False}, "request_running"),
+                                 ({"state": "completed", "overdue": False}, "request_completed"),
+                                 ({"state": "received", "overdue": True}, "request_expired")):
+            ledger.request_snapshot.return_value = snapshot
+            result, code = self.bridge.wake(path)
+            self.assertEqual((0, "skipped", reason), (code, result["status"], result["reason"]))
+        self.assertEqual([], self.handler_calls())
+        ledger.request_snapshot.return_value = {"state": "received", "overdue": False}
+        self.assertEqual("forwarded", self.bridge.wake(path)[0]["status"])
+        ledger.request_record_response.assert_not_called()
 
 
 def _alive(pid):

@@ -110,6 +110,8 @@ not survive between commands in many hosts). On Windows use `py -3 "<plugin>\scr
    `sh Y session bind --agent NAME --session-id <exact id> [--display-name ALIAS]`, dry run then
    `--apply`. Never pick a session by name alone and never create a new session for this.
 8. **Verify**: `sh Y doctor`, `sh Y agents --online`, then a test message to a peer the user chose.
+   `doctor` lists receiver reachability and maintenance readiness separately; a reachable receiver with
+   `maintenance` degraded still accepts messages but is not healthy.
    For delivery, send with `--wake now` from a peer whose wake policy allows `now` and check
    `show ID` for `wake_delivery`. Report what was proven: 202 = stored, `wake_delivery.ok` = adapter
    accepted the wake, a final response = the agent reported its outcome. On 0.5-capable peers use

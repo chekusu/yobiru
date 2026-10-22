@@ -4,15 +4,15 @@
   "files": {
     "scripts/tailmsg.py": {
       "source": "tailmsg.py",
-      "sha256": "b301e5c951752a129ee12a71a844988b2f30b9b60c96f9659a9a2546018a8ca6"
+      "sha256": "fe7f0b8df90d6ae1a0c3680d6968ac5c3a1b223e495c4f37d08fa8b7aee2cd62"
     },
     "scripts/codex_bridge/CODEX_DISPATCHER.md": {
       "source": "CODEX_DISPATCHER.md",
-      "sha256": "02a6c02b2fe3012eced4fa0ee00613807b0c960aa0d6c760402e346cd3adc2ad"
+      "sha256": "9df86d18cd745d991dfdaa35d6f0a68a191426623e01d1322902f7136c9dbe65"
     },
     "scripts/codex_bridge/codex_bridge.py": {
       "source": "codex_bridge.py",
-      "sha256": "6b09293ea5f84e3c58a4638e0682eede83a442adad3395d56f8ce79ffaa51f93"
+      "sha256": "e6dab615c8331d8493c4e9555ad7a87311b2a8dbeb2d23226939c58142b31bbd"
     },
     "scripts/codex_bridge/codex_queue_client.py": {
       "source": "codex_queue_client.py",
@@ -33,6 +33,34 @@
     "scripts/codex_bridge/install_codex_bridge_linux.py": {
       "source": "install_codex_bridge_linux.py",
       "sha256": "00e3cd33d8ff9163880527b61a1ef44ecae78d2f8e289d934e72e436a6108e19"
+    },
+    "docs/PUBLIC_BOTS.md": {
+      "source": "docs/PUBLIC_BOTS.md",
+      "sha256": "3133674f2a8fb3d936a70caba6ba04049523d08145c71108434833ef8a1eeab8"
+    },
+    "scripts/public_bots/bot_calendar.py": {
+      "source": "public_bots/bot_calendar.py",
+      "sha256": "ced6febf495e03a171edb306cc57bcec8edfb7ad6860c80d689a93a33abe14df"
+    },
+    "scripts/public_bots/bot_client.py": {
+      "source": "public_bots/bot_client.py",
+      "sha256": "ef889a6834f6d9658f005779a9320c542662474f342b3f0e49af68bcd701780e"
+    },
+    "scripts/public_bots/bot_common.py": {
+      "source": "public_bots/bot_common.py",
+      "sha256": "33adaa6d37430aeb04379c7b1799801cdaaf5d16fce122fd83c11e910cc4c0f7"
+    },
+    "scripts/public_bots/bot_gateway.py": {
+      "source": "public_bots/bot_gateway.py",
+      "sha256": "a8131d3a23eba15e678e3bf2465a690a1f69dc97b8f5dbf57c84b18cccc14246"
+    },
+    "scripts/public_bots/bot_mcp.py": {
+      "source": "public_bots/bot_mcp.py",
+      "sha256": "413a571da80034fea96169339634b8c217aff9610dd4d82b9b381f400cf20d6d"
+    },
+    "scripts/public_bots/bot_resources.py": {
+      "source": "public_bots/bot_resources.py",
+      "sha256": "dde8708029d619441cb73f0ba1b6b2224c2558a33d0aca5fad08302279c24e1b"
     },
     "LICENSE": {
       "source": "LICENSE",

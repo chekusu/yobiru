@@ -1,6 +1,10 @@
 # Yobiru plugin privacy policy
 
-Effective date: October 15, 2026
+Effective date: October 22, 2026, with Yobiru 0.6.0. This
+version adds the optional public bot gateway, the official gateway that Chekusu
+operates at `bots.yobiru.com`, and the local maintenance heartbeats. Yobiru 0.5.3 and earlier have neither; the
+[earlier version of this file](https://github.com/chekusu/yobiru/blob/v0.5.3/docs/PRIVACY.md) (effective
+October 15, 2026) covers them.
 
 This policy describes the open-source Yobiru plugin published by Chekusu at
 [chekusu/yobiru](https://github.com/chekusu/yobiru). It covers the plugin and its
@@ -10,8 +14,13 @@ marketplace, an AI provider, Tailscale, GitHub, or the Yobiru website.
 ## What the plugin does with data
 
 Yobiru connects agents on computers that you choose over your Tailscale network.
-It has no Chekusu-operated messaging account, message relay, or central file store.
-The plugin does not send usage analytics or message contents to Chekusu.
+Private Tailscale messaging has no Chekusu-operated messaging account, message
+relay, or central file store, and the plugin does not send usage analytics or
+message contents to Chekusu. The public bots and Friends feature of
+0.6.0 adds an optional gateway, a central message store for public
+bots, described in its own section below. You can host that gateway yourself, or
+use the [official gateway](#the-official-gateway-botsyobirucom) that Chekusu
+operates; only then does Chekusu receive and store your Friends data.
 
 Data is processed on the participating computers to deliver messages, transfer
 files, discover peers, wake configured agents, track requests, and diagnose errors:
@@ -24,6 +33,7 @@ files, discover peers, wake configured agents, track requests, and diagnose erro
 | Tailscale device names and addresses, configured agent names, versions and session metadata | Read or cached locally and disclosed to allowed peers through discovery, routing and status responses. Session metadata can include a configured session ID and display or native name. |
 | Receiver policy, agent settings, wake adapters and configuration | Stored locally. A configured adapter may read a webhook URL or credential from an environment variable or local file. |
 | Operational logs | Stored by the process or service manager; may include peer addresses, request paths, message IDs, timestamps, status codes and error details. |
+| Maintenance and dispatcher heartbeats (`maintenance.json` in the data directory, `daemon.json` in the bridge state directory) | Stored locally, readable only by the owner: worker states, times, counts and exception type names. They contain no message text, peer names, message IDs, file names or paths. `GET /health` tells any tailnet address only an aggregate status, component states and fixed reason codes. |
 
 The default data directory is `~/.tailmsg`; a user can choose another directory.
 Codex integration can also store bridge state and queue information locally.
@@ -47,6 +57,100 @@ retrieve public package or release information. Those services receive ordinary
 network request information. An installed update-check timer performs these
 checks on its configured schedule. Yobiru does not include inbox contents or
 attachments in its GitHub release checks.
+
+## Optional public bot gateway
+
+This section applies only if you run the public bots and Friends feature of
+0.6.0 or later, or a build from its source ([details](PUBLIC_BOTS.md)). Its
+gateway is a separate service on a host you choose, and it does not change
+private Tailscale messaging.
+
+| Data | Where and why it is processed |
+| --- | --- |
+| Public message bodies, stored meeting-slot queries, bot results and owner replies | Stored in plaintext in the gateway's SQLite database so that callers and your worker can exchange them while either side is offline. There is no end-to-end encryption: whoever operates the gateway host can read them. |
+| Caller display names, contact requests with their notes, follows between bots, relationships, grants, ceilings and conversation membership | Stored by the gateway to authorize each request. Display names are self-asserted and unverified. |
+| Email address of a new bot owner (only on gateways that turn on email verification) | Used once to send a verification code. The gateway keeps the address and the code in its outbox only until the mail is sent (or the code expires after 15 minutes), and then only a keyed hash of the address (a hash with a secret random key of that gateway), so that one address registers one owner. The address passes through the mail provider the operator configures. |
+| Friends direct (opt-in) | If you turn it on, messages from friends (mutual follows) are admitted for your agent and its replies released without your per-message review; the gateway still records a decision receipt for each. |
+| Drafts written by your own agent, review decisions, wake records and binding test results | Stored by the gateway; drafts are released to the caller only after you approve them. Wake records hold opaque job ids, outcomes and the route type the connector reported, never message text. |
+| Decision receipts | One record per review, trust and continuation decision: ids, the action, content hashes (never content), grant generation, epochs and times. The owner sees them in full; a caller sees only a masked projection about its own messages, with no hash of a draft it never received. Kept for 365 days by default, and deleted with their conversation. |
+| Attachments (opt-in `files` capability) | Small text files stored inline with their message, draft or result, in plaintext, with the same retention and deletion as message bodies; the gateway keeps no other copy. |
+| Binding descriptions and delivery evidence | Your private host kind, session note and delivery declaration, and the times of recorded checks, wakes, claims and approvals; never on the public card, which shows only whether a binding is configured, your declared tier and how fresh the wake evidence is. |
+| Lifecycle times | When each message was stored, admitted, started and finished, when a response was served, and when the caller's client or your agent acknowledged it. |
+| Bot profiles and policies | Stored by the gateway; the public card shows only the handle, name, description, fixed capabilities per relationship level and coarse chat delivery (binding configured, declared tier, wake evidence freshness). Resource names are not shown. |
+| Credential hashes | The gateway stores SHA-256 hashes of owner, caller, source, worker, connector and capability credentials, never the credentials themselves. Your devices store the credentials in `0600` files. |
+| Chat messages your agent answers | Read by your own agent and therefore by its host and model provider, after you admit each message; a webhook route sends only a job id to the host. |
+| Resource exports | Copies of text you chose, kept by the resource service on your device and released to one caller per authorized request. |
+| Client IP addresses | Used for enrollment rate limits and kept in counters for about an hour; also written to the gateway's request log with routes and status codes (for MCP: the method and tool name; never bodies, arguments or credentials). |
+| MCP requests | Handled by the gateway like its HTTP API, with the same credentials and storage; the stdio proxy on your device forwards them only to the gateway its credential belongs to and stores nothing. |
+| Leave-messages, claimed work items and calendar answers | On the device that runs your worker (its local inbox and lease file) and in the calendar service's ledger of released slot suggestions. |
+| Your calendar events file | Read only by the calendar capability service on your device. Titles, attendees, locations and notes are never sent; only up to a few suggested start and end times leave it. |
+
+Finished message bodies, results and drafts are deleted from the gateway after
+its retention period (30 days by default). Caller identities, follows, contacts,
+bot profiles and conversation metadata are not deleted automatically. The owner
+can delete a conversation's stored messages; deleted content is overwritten in
+the database file, but write-ahead-log files, backups and copies that callers,
+workers or agent providers already received are not erased. Revoking a contact
+stops future releases; it cannot recall results already delivered.
+
+On owner, agent and caller devices:
+
+- The caller's sent-message log (`public/sent.sqlite3`) keeps each send's payload
+  and outcome. Finished sends (stored or refused) are pruned to the newest 1,000
+  whenever a new send is recorded; sends with an open outcome are never pruned, and
+  no new message is sent while 100 are open.
+- Lease files (`public/leases.json`) keep a claimed job, including its message and
+  transcript on your agent's device, until it is finished, released or refused.
+- The connector's wake ledger (`public/connector-ledger.json`) keeps an entry only
+  until its wake result is recorded at the gateway; its wake-route configuration
+  (`public/connectors.json`, pointing at your private URL and key files) stays until
+  you change it.
+- The worker inbox, the calendar service's ledger and resource exports stay until
+  you delete them; `resource-service remove` deletes one export.
+- Attachments you save (`public attachments save`, `job attachments`) go into new
+  private folders under `public/received/` and stay until you delete them; the list
+  of folders `--attach` may read is `public/attachments.json`. Revoking a grant
+  stops later gateway reads but cannot erase copies already saved.
+
+## The official gateway (bots.yobiru.com)
+
+If you enroll on, connect to or message a bot on `https://bots.yobiru.com`, Chekusu
+is the operator of that gateway, and everything in the section above applies with
+Chekusu as "whoever operates the gateway host":
+
+- **Where.** The gateway and its database run on a server in Tokyo, Japan.
+  Cloudflare sits in front of it as a reverse proxy: it terminates HTTPS, so
+  requests and responses pass through Cloudflare's network in readable form, and
+  Cloudflare's own privacy terms apply to that processing.
+- **Who can read it.** Message bodies, drafts, results and attachments are stored
+  in plaintext. Chekusu personnel with server access can read them. Chekusu
+  accesses stored content only to operate and secure the service, to investigate
+  abuse reported to it, or when required by law. Chekusu does not sell it, use it
+  for advertising, or use it to train models.
+- **How long.** Finished message bodies, results and drafts are deleted after 30
+  days; decision receipts after 365 days. Identities, follows, contacts and bot
+  profiles stay until deletion is requested. The database is backed up daily on
+  the same server and each backup is kept for 7 days, so deleted content can
+  remain in a backup for up to 7 more days. Web server access logs (client IP
+  address, time, path, status and size, never bodies or credentials) are rotated
+  and deleted after about two weeks.
+- **Email.** The official gateway verifies an email address before it registers
+  a new owner, so that one address registers one owner. The code is sent through
+  Resend (Resend, Inc., a US email delivery service, from its Tokyo region),
+  whose own privacy terms apply to that delivery. Your address is kept only
+  until that mail is sent (at most 15 minutes), then cleared; what stays is a
+  keyed hash of it, used only to refuse a second registration with the same
+  address. Chekusu does not use the address to
+  contact you and cannot read it back from the hash without guessing it.
+- **Deletion.** You can delete a conversation's stored messages yourself as its
+  bot's owner. To have a bot, its handle or your caller identity removed, ask the
+  maintainer through the contact route below; a released handle is never given to
+  another owner.
+- **Free, as is.** The official gateway is a free service with no availability
+  guarantee. Chekusu may reset it,
+  migrate it (for example to Cloudflare's own infrastructure, keeping the same
+  address) or stop it; a material change to this section is announced in this
+  file with a new effective date.
 
 ## Retention and deletion
 

@@ -7,14 +7,14 @@ read-only, expiring, unguessable URL on its own tailnet address; the receiver pu
 them itself and verifies sha256. Auth = Tailscale identity (`tailscale whois`) +
 per-machine access policy. Python 3.8+ stdlib only. See SPEC.md.
 """
-import argparse, datetime as dt, hashlib, http.client, ipaddress, json, mimetypes, os
-import re, secrets, shlex, shutil, sqlite3, ssl, stat, subprocess, sys, threading, time, unicodedata, urllib.parse
+import argparse, datetime as dt, errno, hashlib, http.client, ipaddress, json, mimetypes, os
+import re, secrets, shlex, shutil, socket, sqlite3, ssl, stat, subprocess, sys, threading, time, unicodedata, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 VERSION = 1                     # wire protocol version (unchanged)
 PRODUCT = "yobiru"
-PRODUCT_VERSION = "0.5.3"       # Yobiru release of this file; tools/build_plugin.py check keeps it in sync
+PRODUCT_VERSION = "0.6.0"  # Yobiru release of this file; tools/build_plugin.py check keeps it in sync
 DEFAULTS = {
     "port": 7766,
     "access_policy": "tailnet",    # authenticated Tailscale peers; use "allowlist" for opt-in restriction
@@ -115,6 +115,86 @@ def atomic_write(path, data):
     tmp = path.with_name(path.name + ".tmp-" + secrets.token_hex(4))
     tmp.write_bytes(data)
     os.replace(tmp, path)
+
+
+def write_private_json(path, obj):
+    """Durably replace `path` with JSON, owner-only (0600): exclusive temporary file, fsync, atomic rename,
+    then the directory where supported. The temporary file is removed on any failure."""
+    path = Path(path)
+    tmp = path.with_name(".%s.%d.%s.tmp" % (path.name, os.getpid(), secrets.token_hex(4)))
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            out.write((json.dumps(obj, ensure_ascii=True, indent=2) + "\n").encode("ascii"))
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(str(tmp), str(path))
+    except BaseException:
+        if os.path.lexists(str(tmp)):
+            os.unlink(str(tmp))
+        raise
+    if os.name == "posix":
+        fsync_directory(path.parent)
+
+
+# A directory fsync that the filesystem does not support; every other error (EIO, ...) is a real failure.
+UNSUPPORTED_SYNC = {getattr(errno, name) for name in ("EINVAL", "ENOTSUP", "EOPNOTSUPP") if hasattr(errno, name)}
+# Only these mean another holder has the lock (flock: EWOULDBLOCK; msvcrt: EACCES or EDEADLOCK); any other
+# locking error is raised, never reported as busy.
+LOCK_CONTENTION = {getattr(errno, name) for name in (("EACCES", "EDEADLOCK") if os.name == "nt"
+                                                     else ("EWOULDBLOCK", "EAGAIN")) if hasattr(errno, name)}
+
+
+def fsync_directory(directory):
+    fd = os.open(str(directory), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        if exc.errno not in UNSUPPORTED_SYNC:
+            raise
+    finally:
+        os.close(fd)
+
+
+class FileLock(object):
+    """Non-blocking, cross-process exclusive lock on a file in the data home: flock on POSIX, msvcrt on Windows.
+    The kernel releases it when the holder exits, so a crashed process never leaves it held. acquire() is False
+    only for real contention; any other error is raised so that it surfaces as a failure."""
+
+    def __init__(self, path):
+        self.path, self.fd = Path(path), None
+
+    def acquire(self):
+        fd = os.open(str(self.path), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            try:
+                import fcntl
+            except ImportError:
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            os.close(fd)
+            if exc.errno in LOCK_CONTENTION:
+                return False
+            raise
+        self.fd = fd
+        return True
+
+    def release(self):
+        if self.fd is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+                os.lseek(self.fd, 0, os.SEEK_SET)
+                msvcrt.locking(self.fd, msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        finally:
+            os.close(self.fd)        # closing also releases flock
+            self.fd = None
 
 
 def sync_directory(path):
@@ -385,6 +465,7 @@ class Ctx:
         self._name_cache = {}        # session id -> (expires epoch, native name lookup result)
         self._name_guard = threading.Lock()
         self._name_lookup = threading.Lock()   # one lookup subprocess at a time
+        self.maintenance = None                # set by `serve`: supervised maintenance workers
 
     def native_name(self, binding):
         """Read-only native session name for a bound session, cached (bounded subprocess cost)."""
@@ -684,6 +765,10 @@ REQUEST_CAPABILITY = "request-lifecycle-v1"
 REQUEST_PULL_CAPABILITY = "request-pull-v1"
 REQUEST_STATES = ("received", "running", "completed", "failed", "rejected", "blocked", "timed_out")
 REQUEST_FINAL = ("completed", "failed", "rejected", "blocked")
+# Local lifecycle evidence for incoming requests (NULL = not known). received_at: durable receiver acceptance;
+# started_at / progress_at: first / latest `running` the owner reported (the only start evidence; a queued or
+# seen notification is not); final_at / final_response_id: the durable final result and its exact response.
+LIFECYCLE_COLUMNS = ("received_at", "started_at", "progress_at", "final_at", "final_response_id")
 
 
 class RequestConnection(sqlite3.Connection):
@@ -698,25 +783,96 @@ def request_db(ctx):
     directory = ctx.home / "requests"
     directory.mkdir(mode=0o700, exist_ok=True)
     db = sqlite3.connect(str(directory / "ledger.sqlite3"), timeout=15, factory=RequestConnection)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA synchronous=FULL")
-    db.executescript("""
-        CREATE TABLE IF NOT EXISTS requests (
-            direction TEXT NOT NULL, id TEXT NOT NULL, peer TEXT NOT NULL, port INTEGER NOT NULL,
-            envelope TEXT NOT NULL, record TEXT, deadline TEXT NOT NULL, state TEXT NOT NULL,
-            seq INTEGER NOT NULL DEFAULT 0, latest TEXT, submission TEXT, timed_out_at TEXT,
-            PRIMARY KEY (direction,id));
-        CREATE TABLE IF NOT EXISTS response_outbox (
-            id TEXT PRIMARY KEY, request_id TEXT NOT NULL, peer TEXT NOT NULL, port INTEGER NOT NULL,
-            envelope TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-            next_attempt REAL NOT NULL DEFAULT 0, delivered_at TEXT, last_error TEXT);
-        CREATE TABLE IF NOT EXISTS response_events (
-            id TEXT PRIMARY KEY, request_id TEXT NOT NULL, envelope TEXT NOT NULL, received_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS pull_staging (
-            id TEXT PRIMARY KEY, peer TEXT NOT NULL, envelope TEXT NOT NULL, expires TEXT NOT NULL);
-    """)
+    try:
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA synchronous=FULL")
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS requests (
+                direction TEXT NOT NULL, id TEXT NOT NULL, peer TEXT NOT NULL, port INTEGER NOT NULL,
+                envelope TEXT NOT NULL, record TEXT, deadline TEXT NOT NULL, state TEXT NOT NULL,
+                seq INTEGER NOT NULL DEFAULT 0, latest TEXT, submission TEXT, timed_out_at TEXT,
+                PRIMARY KEY (direction,id));
+            CREATE TABLE IF NOT EXISTS response_outbox (
+                id TEXT PRIMARY KEY, request_id TEXT NOT NULL, peer TEXT NOT NULL, port INTEGER NOT NULL,
+                envelope TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt REAL NOT NULL DEFAULT 0, delivered_at TEXT, last_error TEXT);
+            CREATE TABLE IF NOT EXISTS response_events (
+                id TEXT PRIMARY KEY, request_id TEXT NOT NULL, envelope TEXT NOT NULL, received_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS pull_staging (
+                id TEXT PRIMARY KEY, peer TEXT NOT NULL, envelope TEXT NOT NULL, expires TEXT NOT NULL);
+        """)
+        migrate_request_ledger(db)
+    except BaseException:
+        db.close()
+        raise
     return db
+
+
+def table_columns(db, table):
+    return {row[1] for row in db.execute("PRAGMA table_info(%s)" % table)}
+
+
+def migrate_request_ledger(db):
+    """Add the lifecycle columns once (additive; older runtimes keep working on the same ledger).
+
+    Serialized like every writer, so a receiver and a CLI opening an old ledger together add each column once.
+    Backfill uses only evidence this receiver wrote itself: the stored receipt time, its own response envelopes
+    (timestamps of `running` and final responses) and the exact final response. Anything else stays NULL."""
+    if set(LIFECYCLE_COLUMNS) <= table_columns(db, "requests"):
+        return
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        missing = [c for c in LIFECYCLE_COLUMNS if c not in table_columns(db, "requests")]
+        for column in missing:
+            db.execute("ALTER TABLE requests ADD COLUMN %s TEXT" % column)
+        if missing:
+            backfill_lifecycle(db)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        raise
+
+
+def _stamp(value):
+    """A receiver-written UTC timestamp, or None."""
+    try:
+        return iso(parse_iso(value)) if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
+def backfill_lifecycle(db):
+    responses = {}
+    for row in db.execute("SELECT request_id, envelope FROM response_outbox ORDER BY rowid"):
+        try:
+            env = json.loads(row["envelope"])
+            state, seq, ts = env["response"]["state"], env["response"]["seq"], _stamp(env["ts"])
+        except (ValueError, KeyError, TypeError):
+            continue
+        if ts is not None and type(seq) is int:
+            responses.setdefault(row["request_id"], []).append((seq, state, ts))
+    for row in db.execute("SELECT id, record, state, latest FROM requests WHERE direction='incoming'").fetchall():
+        try:
+            received = _stamp(json.loads(row["record"])["received"]["at"])
+        except (ValueError, KeyError, TypeError):
+            received = None
+        # First and latest `running` in durable response order (seq), never by comparing wall-clock stamps:
+        # a clock step backwards must not make a later report look like the first start.
+        running = [ts for _, state, ts in sorted(responses.get(row["id"], [])) if state == "running"]
+        final_at = final_id = None
+        if row["state"] in REQUEST_FINAL and row["latest"]:
+            try:
+                latest = json.loads(row["latest"])
+                if latest["response"]["state"] == row["state"]:
+                    final_at, final_id = _stamp(latest["ts"]), latest["id"]
+            except (ValueError, KeyError, TypeError):
+                pass
+        db.execute("UPDATE requests SET received_at=COALESCE(received_at,?), started_at=COALESCE(started_at,?), "
+                   "progress_at=COALESCE(progress_at,?), final_at=COALESCE(final_at,?), "
+                   "final_response_id=COALESCE(final_response_id,?) WHERE direction='incoming' AND id=?",
+                   (received, running[0] if running else None, running[-1] if running else None,
+                    final_at, final_id, row["id"]))
 
 
 def json_canonical(value):
@@ -780,9 +936,16 @@ def queue_response(db, row, state, text, fetch=None, max_bytes=256 * 1024):
     packed = json_canonical(env)
     if error or len(packed.encode("utf-8")) > max_bytes:
         raise ValueError(error or "response exceeds max_msg_bytes; send large content as a file")
-    db.execute("UPDATE requests SET state=?,seq=?,latest=?,timed_out_at=COALESCE(timed_out_at,?) "
-               "WHERE direction='incoming' AND id=?", (state, seq, packed,
-                iso(now_utc()) if state == "timed_out" else None, row["id"]))
+    # Lifecycle evidence is written in the same transaction as the state and its outbox response, with the
+    # response's own timestamp. The first start is kept through timeout and finalization.
+    running, final = state == "running", state in REQUEST_FINAL
+    db.execute("UPDATE requests SET state=?,seq=?,latest=?,timed_out_at=COALESCE(timed_out_at,?),"
+               "started_at=COALESCE(started_at,?),progress_at=COALESCE(?,progress_at),"
+               "final_at=COALESCE(final_at,?),final_response_id=COALESCE(final_response_id,?) "
+               "WHERE direction='incoming' AND id=?",
+               (state, seq, packed, env["ts"] if state == "timed_out" else None,
+                env["ts"] if running else None, env["ts"] if running else None,
+                env["ts"] if final else None, env["id"] if final else None, row["id"]))
     if not is_pull_request(original):
         db.execute("INSERT INTO response_outbox(id,request_id,peer,port,envelope) VALUES(?,?,?,?,?)",
                    (env["id"], row["id"], row["peer"], row["port"], packed))
@@ -817,9 +980,10 @@ def accept_request(ctx, rec):
                 raise ValueError("request ID already belongs to a different sender or envelope")
             return False
         deadline = iso(parse_iso(env["ts"]) + dt.timedelta(seconds=env["request"]["timeout_seconds"]))
-        db.execute("INSERT INTO requests(direction,id,peer,port,envelope,record,deadline,state) "
-                   "VALUES('incoming',?,?,?,?,?,?,'pending')",
-                   (env["id"], peer, env["request"]["reply_port"], packed, json_canonical(rec), deadline))
+        db.execute("INSERT INTO requests(direction,id,peer,port,envelope,record,deadline,state,received_at) "
+                   "VALUES('incoming',?,?,?,?,?,?,'pending',?)",
+                   (env["id"], peer, env["request"]["reply_port"], packed, json_canonical(rec), deadline,
+                    _stamp(rec["received"].get("at"))))
         queue_response(db, request_row(db, "incoming", env["id"]), "received", "Request durably received; execution has not been confirmed.")
         if rec["received"].get("agent_status") == "unknown":
             queue_response(db, request_row(db, "incoming", env["id"]), "rejected", "The addressed agent does not exist on this receiver.")
@@ -899,6 +1063,7 @@ def expire_requests(ctx):
         db.execute("UPDATE requests SET timed_out_at=COALESCE(timed_out_at,?) WHERE direction='outgoing' "
                    "AND state NOT IN ('completed','failed','rejected','blocked') AND deadline<=?",
                    (iso(now_utc()), iso(now_utc())))
+    return {"expired": len(rows)}
 
 
 def request_view(row):
@@ -906,7 +1071,7 @@ def request_view(row):
     latest = json.loads(row["latest"]) if row["latest"] else None
     known = row["state"] in REQUEST_FINAL
     overdue = not known and parse_iso(row["deadline"]) <= now_utc()
-    return {"id": row["id"], "direction": row["direction"], "peer": row["peer"],
+    view = {"id": row["id"], "direction": row["direction"], "peer": row["peer"],
             "transport": env.get("request", {}).get("transport", "push"),
             "agent": env.get("agent"), "from_agent": env.get("from_agent"), "port": row["port"],
             "state": row["state"] if known or not overdue else "timed_out", "last_state": row["state"],
@@ -914,11 +1079,245 @@ def request_view(row):
             "timed_out_at": row["timed_out_at"],
             "late": bool(known and (row["timed_out_at"] or (latest and latest["ts"] > row["deadline"]))),
             "seq": row["seq"], "submission": row["submission"], "response": latest}
+    view.update(lifecycle_fields(row))
+    return view
+
+
+def lifecycle_fields(row):
+    """Additive, metadata-only lifecycle fields of one ledger row (older ledgers: unknown -> None).
+
+    `state` stays the computed view (an overdue request reads `timed_out` before maintenance persists it);
+    `timeout_persisted` says whether that timeout is durable. Only an owner-reported `running` (or a later
+    result after it) confirms a start: receipt, queueing or a seen notification never do."""
+    keys = row.keys()
+    get = lambda key: _stamp(row[key]) if key in keys else None      # an invalid stored time reads as unknown
+    started = get("started_at")
+    final_id = row["final_response_id"] if "final_response_id" in keys else None
+    return {"received_at": get("received_at"), "started_at": started, "progress_at": get("progress_at"),
+            "final_at": get("final_at"),
+            "final_response_id": final_id if isinstance(final_id, str) and ID_RE.match(final_id) else None,
+            "start_confirmed": started is not None or row["state"] == "running",
+            "timeout_persisted": bool(row["timed_out_at"])}
 
 
 def incoming_request_status(ctx, mid, peer):
     snapshot = request_snapshot(ctx.home, mid)
     return snapshot if snapshot and snapshot["peer"] == peer else None
+
+
+# ---------------------------------------------------------------- read-only lifecycle diagnostics
+LEDGER_READ_TIMEOUT = 2.0
+METADATA_MAX_IDS = 1000
+AGE_SCAN_LIMIT = 5000           # pending responses scanned for their oldest valid timestamp
+STAMP_GLOB = "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z"
+ERROR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
+
+
+def ledger_reader(home, timeout=LEDGER_READ_TIMEOUT):
+    """-> (read-only connection, None) or (None, fixed reason). Never creates the ledger or its directory.
+
+    mode=ro reads committed WAL data, so a running receiver's latest commits are seen. "Read-only" means no
+    application data, schema or configuration change; SQLite may still create its own -wal/-shm coordination
+    files next to a ledger whose writers have all closed. immutable=1 is deliberately not used: on a live WAL
+    database it can miss committed writes."""
+    path = Path(home) / "requests" / "ledger.sqlite3"
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None, "ledger_unreadable" if os.path.lexists(str(path)) else "ledger_absent"
+        db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=timeout)
+    except (OSError, sqlite3.Error):
+        return None, "ledger_unreadable"
+    db.row_factory = sqlite3.Row
+    return db, None
+
+
+def ledger_error(exc):
+    text = str(exc).lower()
+    if "locked" in text or "busy" in text:
+        return "ledger_locked"
+    if "no such table" in text or "no such column" in text:
+        return "ledger_schema"
+    if "malformed" in text or "not a database" in text:
+        return "ledger_corrupt"
+    return "ledger_unreadable"
+
+
+def _age(stamp, now):
+    try:
+        return max(0, int((now - parse_iso(stamp)).total_seconds())) if stamp else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _epoch_stamp(value):
+    try:
+        return iso(dt.datetime.fromtimestamp(float(value), dt.timezone.utc).replace(microsecond=0))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def lifecycle_metadata(row, now):
+    """Metadata of one incoming ledger row: states, deadline and lifecycle times, never text or attachments."""
+    known = row["state"] in REQUEST_FINAL
+    overdue = not known and parse_iso(row["deadline"]) <= now
+    meta = {"state": row["state"] if known or not overdue else "timed_out", "last_state": row["state"],
+            "deadline": row["deadline"], "overdue": overdue, "outcome_known": known, "seq": row["seq"],
+            "final_persisted": known, "final_response_delivery": None, "final_response_attempts": None,
+            "final_response_next_attempt": None, "final_response_error": None,
+            "lifecycle_columns": "started_at" in row.keys()}
+    meta.update(lifecycle_fields(row))
+    if known and not meta["final_response_id"] and "latest" in row.keys() and row["latest"]:
+        try:                                      # a ledger from before final_response_id: exact latest result
+            latest = json.loads(row["latest"])
+            meta["final_response_id"] = latest["id"] if latest["response"]["state"] == row["state"] else None
+        except (ValueError, KeyError, TypeError):
+            pass
+    if not known:
+        meta["final_response_id"] = None
+    return meta
+
+
+def request_metadata(home, ids, now=None):
+    """Lifecycle metadata of incoming requests for status and diagnostics.
+
+    Read-only and metadata-only: one mode=ro read transaction covers the requests and the delivery rows of their
+    exact final responses (never an earlier receipt), so a concurrent final result is not half-seen. No message
+    text, attachment, envelope or peer is returned; no application data is created, migrated, expired or sent
+    (SQLite may manage its WAL coordination files, see ledger_reader).
+    -> ({id: metadata}, None), or ({}, fixed reason) when the ledger cannot be read."""
+    wanted = sorted({i for i in ids if isinstance(i, str) and ID_RE.match(i)})[:METADATA_MAX_IDS]
+    db, reason = ledger_reader(home)
+    if db is None:
+        return {}, reason
+    now = now or now_utc()
+    out = {}
+    try:
+        db.execute("BEGIN")
+        columns = table_columns(db, "requests")
+        # `latest` is read (never returned) so that a final result written by an older runtime, whose lifecycle
+        # columns are NULL or absent, still yields its exact final response ID; nothing else is inferred.
+        select = ["id", "state", "deadline", "seq", "timed_out_at", "latest"] + \
+            [c for c in LIFECYCLE_COLUMNS if c in columns]
+        for start in range(0, len(wanted), 200):
+            chunk = wanted[start:start + 200]
+            for row in db.execute("SELECT %s FROM requests WHERE direction='incoming' AND id IN (%s)"
+                                  % (",".join(select), ",".join("?" * len(chunk))), chunk).fetchall():
+                try:
+                    out[row["id"]] = lifecycle_metadata(row, now)
+                except (TypeError, ValueError):
+                    continue                     # malformed row: reported as unavailable by the caller
+        finals = {}
+        for mid, meta in out.items():
+            if meta["final_response_id"]:
+                meta["final_response_delivery"] = "unknown"   # no matching outbox row: never assumed delivered
+                finals.setdefault(meta["final_response_id"], {})[mid] = meta
+        keys = sorted(finals)
+        for start in range(0, len(keys), 200):
+            chunk = keys[start:start + 200]
+            for row in db.execute("SELECT id,request_id,attempts,next_attempt,delivered_at,last_error FROM "
+                                  "response_outbox WHERE id IN (%s)" % ",".join("?" * len(chunk)), chunk).fetchall():
+                meta = finals[row["id"]].get(row["request_id"])
+                if meta is None:
+                    continue                      # an inconsistent row never confirms another request's result
+                meta["final_response_delivery"] = "confirmed" if row["delivered_at"] else "pending"
+                meta["final_response_attempts"] = row["attempts"]
+                meta["final_response_next_attempt"] = None if row["delivered_at"] else _epoch_stamp(row["next_attempt"])
+                error = row["last_error"]
+                meta["final_response_error"] = error if error is None or ERROR_NAME_RE.match(str(error)) else "other"
+        db.rollback()
+    except sqlite3.Error as exc:
+        return {}, ledger_error(exc)
+    finally:
+        db.close()
+    return out, None
+
+
+def request_backlog(home, now=None):
+    """Read-only, metadata-only ledger summary for health, doctor and status: counts and ages in one read
+    transaction with bounded queries. A ledger that cannot be read is reported with a fixed reason, never as an
+    empty backlog. Never creates, migrates, expires, repairs or sends (SQLite may manage its WAL coordination
+    files, see ledger_reader)."""
+    db, reason = ledger_reader(home)
+    if db is None:
+        return {"available": False, "reason": reason}
+    now = now or now_utc()
+    stamp, epoch = iso(now), now.timestamp()
+    final = "('completed','failed','rejected','blocked')"
+    try:
+        db.execute("BEGIN")
+        columns = table_columns(db, "requests")
+        lifecycle = set(LIFECYCLE_COLUMNS) <= columns
+        one = lambda sql, *args: db.execute(sql, args).fetchone()[0]
+        incoming = {
+            "unstarted": one("SELECT COUNT(*) FROM requests WHERE direction='incoming' AND state='received' "
+                             "AND deadline>?", stamp),
+            "running": one("SELECT COUNT(*) FROM requests WHERE direction='incoming' AND state='running' "
+                           "AND deadline>?", stamp),
+            "overdue_not_persisted": one("SELECT COUNT(*) FROM requests WHERE direction='incoming' "
+                                         "AND state IN ('received','running') AND deadline<=?", stamp),
+            "timed_out": one("SELECT COUNT(*) FROM requests WHERE direction='incoming' AND state='timed_out'"),
+            "final": one("SELECT COUNT(*) FROM requests WHERE direction='incoming' AND state IN %s" % final),
+            "lifecycle_columns": lifecycle}
+        if lifecycle:              # only well-formed stored times take part in the minimum
+            incoming["oldest_unstarted_age_seconds"] = _age(one(
+                "SELECT MIN(received_at) FROM requests WHERE direction='incoming' AND state='received' "
+                "AND deadline>? AND received_at GLOB ?", stamp, STAMP_GLOB), now)
+            incoming["oldest_progress_age_seconds"] = _age(one(
+                "SELECT MIN(CASE WHEN progress_at GLOB ? THEN progress_at WHEN started_at GLOB ? THEN started_at "
+                "END) FROM requests WHERE direction='incoming' AND state='running' AND deadline>?",
+                STAMP_GLOB, STAMP_GLOB, stamp), now)
+            # The exact final response of the same request: an earlier receipt never counts, nor another
+            # request's row. A final result without its outbox row is unknown, never delivered.
+            incoming["final_response_pending"] = one(
+                "SELECT COUNT(*) FROM requests r JOIN response_outbox o ON o.id=r.final_response_id "
+                "AND o.request_id=r.id WHERE r.direction='incoming' AND r.state IN %s "
+                "AND o.delivered_at IS NULL" % final)
+            incoming["final_response_unknown"] = one(
+                "SELECT COUNT(*) FROM requests r LEFT JOIN response_outbox o ON o.id=r.final_response_id "
+                "AND o.request_id=r.id WHERE r.direction='incoming' AND r.state IN %s AND o.id IS NULL" % final)
+        responses = {
+            "pending": one("SELECT COUNT(*) FROM response_outbox WHERE delivered_at IS NULL"),
+            "due": one("SELECT COUNT(*) FROM response_outbox WHERE delivered_at IS NULL AND next_attempt<=?", epoch),
+            "never_attempted": one("SELECT COUNT(*) FROM response_outbox WHERE delivered_at IS NULL AND attempts=0"),
+            "max_attempts": one("SELECT COALESCE(MAX(attempts),0) FROM response_outbox WHERE delivered_at IS NULL"),
+            "errors": {}}
+        # Oldest by each response's own valid timestamp, not by insertion order (a clock can step back, a row
+        # can be malformed). Due and never attempted is the only sign that delivery itself is not running.
+        oldest, unattempted, unreadable = None, None, 0
+        rows = db.execute("SELECT envelope, attempts, next_attempt FROM response_outbox WHERE delivered_at IS NULL "
+                          "LIMIT ?", (AGE_SCAN_LIMIT + 1,)).fetchall()
+        for row in rows[:AGE_SCAN_LIMIT]:
+            try:
+                created = parse_iso(json.loads(row["envelope"])["ts"])
+            except (ValueError, KeyError, TypeError):
+                unreadable += 1
+                continue
+            oldest = created if oldest is None else min(oldest, created)
+            if row["attempts"] == 0 and row["next_attempt"] <= epoch:
+                unattempted = created if unattempted is None else min(unattempted, created)
+        responses.update(
+            oldest_pending_age_seconds=None if oldest is None else max(0, int((now - oldest).total_seconds())),
+            oldest_unattempted_due_age_seconds=None if unattempted is None else
+            max(0, int((now - unattempted).total_seconds())),
+            unreadable_timestamps=unreadable, age_scan_truncated=len(rows) > AGE_SCAN_LIMIT)
+        for error, count in db.execute("SELECT last_error, COUNT(*) FROM response_outbox WHERE delivered_at IS NULL "
+                                       "AND last_error IS NOT NULL GROUP BY last_error LIMIT 32").fetchall():
+            key = error if ERROR_NAME_RE.match(str(error)) else "other"
+            responses["errors"][key] = responses["errors"].get(key, 0) + count
+        outgoing = {
+            "awaiting_result": one("SELECT COUNT(*) FROM requests WHERE direction='outgoing' AND state NOT IN %s"
+                                   % final),
+            "submission_unknown": one("SELECT COUNT(*) FROM requests WHERE direction='outgoing' "
+                                      "AND submission='unknown' AND state NOT IN %s" % final),
+            "overdue": one("SELECT COUNT(*) FROM requests WHERE direction='outgoing' AND state NOT IN %s "
+                           "AND deadline<=?" % final, stamp)}
+        db.rollback()
+    except sqlite3.Error as exc:
+        return {"available": False, "reason": ledger_error(exc)}
+    finally:
+        db.close()
+    return {"available": True, "checked_at": stamp, "incoming": incoming, "responses": responses,
+            "outgoing": outgoing}
 
 
 def prepare_pull_request(ctx, env, ident):
@@ -990,6 +1389,7 @@ def recover_request_inbox(ctx):
     """Recover inbox files lost between SQLite commit and materialization; never replay agent execution."""
     with request_db(ctx) as db:
         rows = db.execute("SELECT id,record FROM requests WHERE direction='incoming'").fetchall()
+    restored = 0
     for row in rows:
         path = ctx.inbox / (row["id"] + ".json")
         if not path.exists():
@@ -999,42 +1399,124 @@ def recover_request_inbox(ctx):
                 temporary.write_bytes(row["record"].encode("utf-8"))
                 try:
                     os.link(str(temporary), str(path))
+                    restored += 1
                 except FileExistsError:
                     pass
             finally:
                 if temporary.exists():
                     temporary.unlink()
+    return {"restored": restored}
 
 
-def flush_responses(ctx, limit=20):
-    """Retry only immutable protocol responses. Unknown HTTP outcomes reuse the same response ID."""
-    with request_db(ctx) as db:
-        pending = db.execute("SELECT * FROM response_outbox WHERE delivered_at IS NULL AND next_attempt<=? ORDER BY rowid LIMIT ?",
-                             (time.time(), limit)).fetchall()
-    for row in pending:
-        error = None
-        try:
-            peer, ip = ctx.resolve(row["peer"])
-            if peer != row["peer"]:
-                raise RuntimeError("response destination identity changed")
-            ident = ctx.whois(ip)
-            if not ident or ident.get("node") != row["peer"] or not ctx.access_decision(ident)[0]:
-                raise RuntimeError("response destination denied by local access policy")
-            status, body = http_json(ip, row["port"], "POST", "/msg", json.loads(row["envelope"]), host=peer, timeout=3)
-            if status not in (200, 202) or not isinstance(body, dict) or body.get("ok") is not True or body.get("id") != row["id"]:
-                raise RuntimeError("response delivery not confirmed (HTTP %s)" % status)
-        except Exception as exc:
-            error = type(exc).__name__  # avoid storing URLs, message contents or arbitrary remote error bodies
+BUSY = "busy"                    # a phase found its work already running elsewhere and did nothing
+FLUSH_LIMIT = 20                 # due responses considered per pass
+FLUSH_BUDGET = 120               # seconds; no new delivery starts after this, the rest waits for the next pass
+FLUSH_EXCHANGE_SECONDS = 10      # wall-clock limit of one POST after connecting (a socket timeout is per read)
+FLUSH_REPLY_BYTES = 64 * 1024
+
+
+def flush_responses(ctx, limit=FLUSH_LIMIT, budget=FLUSH_BUDGET, clock=time.monotonic):
+    """Retry only immutable protocol responses. Unknown HTTP outcomes reuse the same response ID.
+
+    One flush per data home at a time, across processes (the receiver's worker and `request maintain`): another
+    caller gets BUSY and sends nothing. Destinations take turns: each pass visits the least recently attempted
+    routes first, tries each route's next due response, continues on that route only while deliveries succeed,
+    and leaves it after one failure, so an offline peer's backlog never starves another peer. Work is bounded:
+    at most `limit` attempts, none started after `budget` seconds, and a hard deadline per exchange. A delivery
+    failure is recorded on its row (backoff, error type only) and is not a maintenance failure. A ledger error
+    after a possible POST propagates: the row stays pending with the same ID, so the peer deduplicates it."""
+    (ctx.home / "requests").mkdir(mode=0o700, exist_ok=True)
+    lock = FileLock(ctx.home / "requests" / "flush.lock")
+    if not lock.acquire():
+        return BUSY
+    try:
+        now = time.time()
         with request_db(ctx) as db:
-            db.execute("UPDATE response_outbox SET attempts=attempts+1,next_attempt=?,delivered_at=?,last_error=? WHERE id=? AND delivered_at IS NULL",
-                       (time.time() + min(60, 2 ** min(row["attempts"] + 1, 6)),
-                        iso(now_utc()) if error is None else None, error, row["id"]))
+            due = db.execute("SELECT COUNT(*) FROM response_outbox WHERE delivered_at IS NULL AND next_attempt<=?",
+                             (now,)).fetchone()[0]
+            routes = db.execute("SELECT peer, port FROM response_outbox WHERE delivered_at IS NULL GROUP BY peer, port "
+                                "HAVING MIN(next_attempt)<=? ORDER BY MAX(next_attempt), MIN(rowid) LIMIT ?",
+                                (now, limit)).fetchall()
+        started, attempts, resolved = clock(), 0, {}
+        counts = {"due": due, "delivered": 0, "failed": 0}
+        for route in routes:
+            if attempts >= limit or clock() - started >= budget:
+                break
+            with request_db(ctx) as db:
+                rows = db.execute("SELECT * FROM response_outbox WHERE delivered_at IS NULL AND next_attempt<=? "
+                                  "AND peer=? AND port=? ORDER BY next_attempt, rowid LIMIT ?",
+                                  (now, route["peer"], route["port"], limit - attempts)).fetchall()
+            for row in rows:
+                if attempts >= limit or clock() - started >= budget:
+                    break
+                attempts += 1
+                error = deliver_response(ctx, row, resolved)
+                with request_db(ctx) as db:
+                    db.execute("UPDATE response_outbox SET attempts=attempts+1,next_attempt=?,delivered_at=?,last_error=? WHERE id=? AND delivered_at IS NULL",
+                               (time.time() + min(60, 2 ** min(row["attempts"] + 1, 6)),
+                                iso(now_utc()) if error is None else None, error, row["id"]))
+                counts["failed" if error else "delivered"] += 1
+                if error:
+                    break                         # one failed attempt per destination per pass
+        counts["deferred"] = due - counts["delivered"] - counts["failed"]   # untouched, still due next pass
+        return counts
+    finally:
+        lock.release()
+
+
+def deliver_response(ctx, row, resolved):
+    """POST one stored response to its original authenticated destination -> None, or the error type name."""
+    try:
+        if row["peer"] not in resolved:
+            resolved[row["peer"]] = ctx.resolve(row["peer"])
+        peer, ip = resolved[row["peer"]]
+        if peer != row["peer"]:
+            raise RuntimeError("response destination identity changed")
+        ident = ctx.whois(ip)
+        if not ident or ident.get("node") != row["peer"] or not ctx.access_decision(ident)[0]:
+            raise RuntimeError("response destination denied by local access policy")
+        status, body = http_json(ip, row["port"], "POST", "/msg", json.loads(row["envelope"]), host=peer,
+                                 timeout=3, deadline=FLUSH_EXCHANGE_SECONDS, limit=FLUSH_REPLY_BYTES)
+        if status not in (200, 202) or not isinstance(body, dict) or body.get("ok") is not True or body.get("id") != row["id"]:
+            raise RuntimeError("response delivery not confirmed (HTTP %s)" % status)
+    except Exception as exc:
+        return type(exc).__name__     # avoid storing URLs, message contents or arbitrary remote error bodies
+    return None
+
+
+class PhaseIncomplete(Exception):
+    """A maintenance phase finished its bounded pass but some items failed; `code` is a fixed reason."""
+
+    def __init__(self, code, counts=None):
+        super().__init__(code)
+        self.code, self.counts = code, counts or {}
+
+
+REQUEST_PHASES = (("recover", lambda ctx: recover_request_inbox(ctx)), ("expire", lambda ctx: expire_requests(ctx)),
+                  ("flush", lambda ctx: flush_responses(ctx)))
+
+
+def run_phase(fn, ctx):
+    """-> ("ok" | "busy" | "failed", counts, fixed error code or None). Errors are recorded by type name only."""
+    try:
+        result = fn(ctx)
+    except PhaseIncomplete as exc:
+        return "failed", exc.counts, exc.code
+    except Exception as exc:
+        return "failed", {}, type(exc).__name__
+    if result == BUSY:
+        return "busy", {}, None
+    return "ok", result if isinstance(result, dict) else {}, None
 
 
 def request_maintenance(ctx):
-    recover_request_inbox(ctx)
-    expire_requests(ctx)
-    flush_responses(ctx)
+    """One pass of inbox recovery, request expiry and response delivery. Each phase is attempted even when an
+    earlier one fails, so a recovery error cannot stop expiry or delivery. -> {phase: outcome, ...}."""
+    results = {}
+    for name, fn in REQUEST_PHASES:
+        outcome, counts, error = run_phase(fn, ctx)
+        results[name] = outcome if error is None else "failed:" + error
+    return results
 
 
 # ---------------------------------------------------------------- server
@@ -1088,7 +1570,9 @@ def make_handler(ctx, me):
             if path == "/health":
                 if not is_tailnet_ip(self.client_address[0]):
                     return self.reply(403, {"ok": False, "error": "not a tailnet address"})
-                return self.reply(200, {"ok": True, "v": VERSION, "node": me})
+                # 200 whenever the receiver answers (transport reachability); `ok`/`status` carry maintenance
+                # readiness, so a degraded receiver is reachable but not reported healthy.
+                return self.reply(200, health_payload(ctx, me))
             if path == "/info":
                 # Authenticated discovery: Tailscale identity AND current policy (or this machine itself)
                 # are checked before any metadata is read or any session name is looked up.
@@ -1862,16 +2346,281 @@ def run_hook(ctx, path):
 
 
 def sweep_outbox(ctx):
+    """Delete expired attachment grants (one hour after expiry); each entry is handled on its own.
+
+    -> counts. Unexpired grants are kept. An entry without metadata may still be prepared by a send: it is
+    kept and counted as incomplete. Unreadable metadata and failed deletions are failures: the pass continues,
+    then raises PhaseIncomplete so it is never reported as success. An outbox that cannot be listed raises."""
     now = now_utc()
+    counts = {"scanned": 0, "active": 0, "deleted": 0, "incomplete": 0, "failed": 0, "ignored": 0}
     for d in ctx.outbox.iterdir():
+        counts["scanned"] += 1
+        if d.is_symlink() or not d.is_dir():
+            counts["ignored"] += 1
+            continue
+        if not os.path.lexists(str(d / "meta.json")):
+            counts["incomplete"] += 1
+            continue
         try:
             meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
-            if meta.get("persistent_request"):
-                continue
-            if parse_iso(meta["expires"]) + dt.timedelta(hours=1) < now:
-                shutil.rmtree(d, ignore_errors=True)
+            expired = not meta.get("persistent_request") and \
+                parse_iso(meta["expires"]) + dt.timedelta(hours=1) < now
         except Exception:
+            counts["failed"] += 1
+            continue
+        if not expired:
+            counts["active"] += 1
+            continue
+        try:
+            shutil.rmtree(str(d))
+            counts["deleted"] += 1
+        except OSError:
+            counts["failed"] += 1
+    if counts["failed"]:
+        raise PhaseIncomplete("attachment_cleanup_failed", counts)
+    return counts
+
+
+# ---------------------------------------------------------------- receiver maintenance supervision
+MAINTENANCE_FILE = "maintenance.json"
+HEARTBEAT_EVERY = 10              # seconds between routine heartbeat writes; changes are written at once
+RESTART_BACKOFF_MAX = 60
+
+
+def maintenance_workers():
+    """name -> (phases, interval seconds, stale_after seconds). Local request lifecycle work and network
+    response delivery are separate workers, so a slow or failing peer never delays expiry. stale_after is a
+    diagnostic threshold only: a live worker is never restarted or duplicated because of it."""
+    return {"requests": (REQUEST_PHASES[:2], 1, 120),
+            "responses": (REQUEST_PHASES[2:], 1, 1800),
+            "attachments": ((("sweep", lambda ctx: sweep_outbox(ctx)),), 300, 3600)}
+
+
+class MaintenanceWorker(object):
+    def __init__(self, name, phases, interval, stale_after):
+        self.name, self.phases, self.interval, self.stale_after = name, tuple(phases), interval, stale_after
+        self.thread = None
+        self.generation = self.restarts = self.streak = self.cycles = self.failures = 0
+        self.next_restart = 0.0          # monotonic; bounded backoff between restarts of a dying worker
+        self.started = self.started_at = None
+        self.cycle_started = self.cycle_started_at = self.phase = None
+        self.outcomes, self.counts, self.last_cycle_at = {}, {}, None
+        self.success = self.success_at = None     # end of the last cycle in which every phase succeeded
+        self.failure = None              # {"phase", "error", "at"[, "exit"]} until a full cycle succeeds again
+        self.exit = None                 # the last unexpected thread exit, kept as history
+
+
+class Maintenance(object):
+    """Supervises the receiver's maintenance workers: request lifecycle (inbox recovery, expiry), response
+    delivery and attachment cleanup.
+
+    service_actions() runs on the HTTP serving loop and only inspects real Thread objects: a worker whose thread
+    has ended gets one replacement, after a short bounded backoff. A live worker is never restarted or
+    duplicated, however long its cycle takes; staleness is reported, not acted on. A cycle attempts every phase
+    and is a full success only when all succeed. Workers persist a metadata-only heartbeat (atomic, 0600,
+    fsynced); a failed write degrades health until a later write succeeds. Each process has a new instance id,
+    so an earlier process's heartbeat is never mistaken for a live worker."""
+
+    def __init__(self, ctx, workers=None, clock=time.monotonic, heartbeat_every=HEARTBEAT_EVERY):
+        self.ctx, self.clock, self.heartbeat_every = ctx, clock, heartbeat_every
+        self.instance, self.started_at = secrets.token_hex(8), iso(now_utc())
+        self.lock, self.write_lock, self.stop = threading.Lock(), threading.Lock(), threading.Event()
+        self.path = Path(ctx.home) / MAINTENANCE_FILE
+        self.workers = {name: MaintenanceWorker(name, phases, interval, stale_after)
+                        for name, (phases, interval, stale_after) in (workers or maintenance_workers()).items()}
+        self.heartbeat_failed, self.heartbeat_failures, self.heartbeat_error = False, 0, None
+        self.heartbeat_attempt = None
+
+    def start(self):
+        self._clean_temporary()
+        for worker in self.workers.values():
+            self._launch(worker)
+
+    def _launch(self, worker):
+        """Start a worker thread. If the thread cannot start (for example a thread limit), the failure is
+        recorded and the never-started thread counts as dead, so the supervisor retries with backoff while
+        the listener keeps serving and reports itself degraded."""
+        with self.lock:
+            worker.generation += 1
+            worker.started, worker.started_at = self.clock(), iso(now_utc())
+            worker.cycle_started = worker.cycle_started_at = worker.phase = None
+            worker.thread = threading.Thread(target=self._run, args=(worker,), daemon=True,
+                                             name="yobiru-maintenance-" + worker.name)
+            thread = worker.thread
+        try:
+            thread.start()
+        except Exception as exc:
+            error, at = type(exc).__name__, iso(now_utc())
+            with self.lock:
+                worker.exit = {"error": error, "at": at}
+                worker.failure = {"phase": "start", "error": error, "at": at, "exit": True}
+            log("maintenance worker %s could not start: %s" % (worker.name, error))
+
+    def service_actions(self):
+        try:
+            self.supervise()
+        except Exception as exc:          # supervision must never stop the serving loop
+            log("maintenance supervision failed:", type(exc).__name__)
+
+    def supervise(self):
+        """Restart only workers whose thread has actually ended; never a live one, however stale."""
+        if self.stop.is_set():
+            return
+        for worker in self.workers.values():
+            with self.lock:
+                now = self.clock()
+                if worker.thread is None or worker.thread.is_alive() or now < worker.next_restart:
+                    continue
+                worker.restarts += 1
+                worker.streak += 1
+                worker.next_restart = now + min(RESTART_BACKOFF_MAX, 2 ** min(worker.streak, 6))
+            log("maintenance worker %s had stopped; starting a replacement (restart %d)" % (worker.name, worker.restarts))
+            self._launch(worker)
+
+    def _run(self, worker):
+        try:
+            while not self.stop.is_set():
+                self._cycle(worker)
+                if self.stop.wait(worker.interval):
+                    break
+        except BaseException as exc:      # including SystemExit: recorded; the supervisor decides about a restart
+            error, at = type(exc).__name__, iso(now_utc())
+            with self.lock:
+                worker.exit = {"error": error, "at": at}
+                worker.failure = {"phase": worker.phase or "loop", "error": error, "at": at, "exit": True}
+                worker.cycle_started = worker.cycle_started_at = worker.phase = None
+            log("maintenance worker %s stopped unexpectedly: %s" % (worker.name, error))
+            self.persist(force=True)
+
+    def _cycle(self, worker):
+        with self.lock:
+            worker.cycles += 1
+            worker.cycle_started, worker.cycle_started_at = self.clock(), iso(now_utc())
+        outcomes, counts, failure = {}, {}, None
+        for name, fn in worker.phases:
+            with self.lock:
+                worker.phase = name
+            outcome, result, error = run_phase(fn, self.ctx)
+            outcomes[name] = outcome
+            if result:
+                counts[name] = result
+            if error and failure is None:
+                failure = {"phase": name, "error": error}
+        at = iso(now_utc())
+        with self.lock:
+            before = worker.failure
+            worker.phase = worker.cycle_started = worker.cycle_started_at = None
+            changed = worker.outcomes != outcomes
+            worker.outcomes, worker.counts, worker.last_cycle_at = outcomes, counts, at
+            if failure:
+                failure["at"] = at
+                worker.failure, worker.failures = failure, worker.failures + 1
+            elif all(outcome == "ok" for outcome in outcomes.values()):
+                worker.failure, worker.failures, worker.streak = None, 0, 0
+                worker.success, worker.success_at = self.clock(), at
+        if failure and (before is None or (before["phase"], before["error"]) != (failure["phase"], failure["error"])):
+            log("maintenance %s: phase %s failed: %s" % (worker.name, failure["phase"], failure["error"]))
+        elif before is not None and worker.failure is None:
+            log("maintenance %s: full cycle completed again" % worker.name)
+        self.persist(force=changed or (before is None) != (worker.failure is None))
+
+    def persist(self, force=False):
+        """Write the metadata heartbeat; routine writes at most every `heartbeat_every` seconds."""
+        with self.write_lock:
+            now = self.clock()
+            if not force and self.heartbeat_attempt is not None and now - self.heartbeat_attempt < self.heartbeat_every:
+                return
+            self.heartbeat_attempt = now
+            try:
+                write_private_json(self.path, self.snapshot(detail=True))
+            except Exception as exc:
+                with self.lock:
+                    first = not self.heartbeat_failed
+                    self.heartbeat_failed, self.heartbeat_error = True, type(exc).__name__
+                    self.heartbeat_failures += 1
+                if first:
+                    log("maintenance heartbeat could not be written:", type(exc).__name__)
+            else:
+                with self.lock:
+                    recovered, self.heartbeat_failed = self.heartbeat_failed, False
+                if recovered:
+                    log("maintenance heartbeat written again")
+
+    def _clean_temporary(self):
+        """Remove heartbeat temporary files a killed process left behind (older than a minute)."""
+        try:
+            for path in Path(self.ctx.home).glob("." + MAINTENANCE_FILE + ".*.tmp"):
+                try:
+                    if time.time() - path.lstat().st_mtime > 60:
+                        path.unlink()
+                except OSError:
+                    pass
+        except OSError:
             pass
+
+    @staticmethod
+    def _status(worker, now):
+        if worker.thread is None or not worker.thread.is_alive():
+            return "dead", "worker_dead"
+        if worker.failure:
+            return "failed", "worker_restarted" if worker.failure.get("exit") else "cycle_failed"
+        if worker.success is None:
+            return ("starting", None) if now - worker.started <= worker.stale_after else ("stalled", "no_completed_cycle")
+        if now - worker.success > worker.stale_after:
+            return "stalled", "no_recent_full_cycle"
+        return "ok", None
+
+    def snapshot(self, detail=False):
+        """Aggregate status (for /health) or, with detail, the metadata heartbeat document. Live state only:
+        the actual thread objects and monotonic times of this process."""
+        now = self.clock()
+        age = lambda t: None if t is None else round(max(0.0, now - t), 1)
+        with self.lock:
+            components, workers, reasons = {}, {}, []
+            for worker in self.workers.values():
+                status, reason = self._status(worker, now)
+                components[worker.name] = status
+                if reason and reason not in reasons:
+                    reasons.append(reason)
+                if detail:
+                    workers[worker.name] = {
+                        "status": status, "alive": bool(worker.thread and worker.thread.is_alive()),
+                        "generation": worker.generation, "restarts": worker.restarts,
+                        "interval_seconds": worker.interval, "stale_after_seconds": worker.stale_after,
+                        "thread_started_at": worker.started_at, "cycles": worker.cycles,
+                        "in_cycle_since": worker.cycle_started_at, "in_cycle_seconds": age(worker.cycle_started),
+                        "phase": worker.phase, "last_cycle_at": worker.last_cycle_at,
+                        "last_outcomes": dict(worker.outcomes),
+                        "last_counts": {k: dict(v) for k, v in worker.counts.items()},
+                        "last_full_success_at": worker.success_at, "last_full_success_age_seconds": age(worker.success),
+                        "failure": dict(worker.failure) if worker.failure else None,
+                        "consecutive_failures": worker.failures, "last_exit": dict(worker.exit) if worker.exit else None}
+            if self.heartbeat_failed:
+                reasons.append("heartbeat_write_failed")
+            statuses = set(components.values())
+            state = "degraded" if statuses & {"dead", "failed", "stalled"} or self.heartbeat_failed else \
+                "starting" if "starting" in statuses else "healthy"
+            if not detail:
+                return {"supported": True, "status": state, "components": components, "reasons": reasons,
+                        "instance": self.instance}
+            return {"schema": 1, "instance": self.instance, "started_at": self.started_at,
+                    "written_at": iso(now_utc()), "status": state, "reasons": reasons, "workers": workers,
+                    "heartbeat": {"every_seconds": self.heartbeat_every, "failures": self.heartbeat_failures,
+                                  "last_error": self.heartbeat_error}}
+
+
+def health_payload(ctx, me):
+    """GET /health for any tailnet address: receiver liveness, aggregate maintenance status, component states
+    and fixed reason codes only. `ok` is false while maintenance is degraded, so a reachable but impaired
+    receiver never looks healthy. Timings, counts and backlog stay local (maintenance.json, doctor)."""
+    body = {"ok": True, "v": VERSION, "node": me, "receiver_alive": True}
+    maintenance = getattr(ctx, "maintenance", None)
+    if maintenance is None:
+        body.update(status="unknown", maintenance={"supported": False})
+        return body
+    summary = maintenance.snapshot()
+    body.update(ok=summary["status"] != "degraded", status=summary["status"], maintenance=summary)
+    return body
 
 
 def cmd_serve(ctx, a):
@@ -1893,30 +2642,31 @@ def cmd_serve(ctx, a):
         log("self_agent (sent as from_agent):", ctx.cfg["self_agent"])
     srv = ThreadingHTTPServer((bind, port), make_handler(ctx, me["node"]))
     srv.daemon_threads = True
-
-    def sweeper():
-        while True:
-            sweep_outbox(ctx)
-            time.sleep(300)
-    threading.Thread(target=sweeper, daemon=True).start()
-    def request_sweeper():
-        while True:
-            try:
-                request_maintenance(ctx)
-            except Exception as exc:
-                log("request maintenance failed:", type(exc).__name__)
-            time.sleep(1)
-    threading.Thread(target=request_sweeper, daemon=True).start()
+    # Request lifecycle, response delivery and attachment cleanup run as supervised workers; the serving loop
+    # restarts only a worker whose thread has ended (see Maintenance).
+    ctx.maintenance = Maintenance(ctx)
+    srv.service_actions = ctx.maintenance.service_actions
+    ctx.maintenance.start()
     log("tailmsg v%d serving %s on %s:%d  home=%s" % (VERSION, me["node"], bind, port, ctx.home))
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        ctx.maintenance.stop.set()
 
 
 # ---------------------------------------------------------------- client
 class TransportError(RuntimeError):
     """No complete HTTP response was received; a write may already have reached the peer."""
+
+
+def _expire_exchange(sock, expired):
+    expired.set()
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
 
 
 def transport_diagnostic(peer, ip, port, operation, error):
@@ -1931,17 +2681,33 @@ def transport_diagnostic(peer, ip, port, operation, error):
             (operation, peer, endpoint, type(error).__name__, reason, port, shlex.quote(peer)))
 
 
-def http_json(ip, port, method, path, body=None, host=None, timeout=15):
+def http_json(ip, port, method, path, body=None, host=None, timeout=15, deadline=None, limit=None):
+    """`timeout` limits each socket operation, not the exchange: a peer that trickles bytes can hold it longer.
+    With `deadline`, the connected socket is shut down that many seconds after connecting and the exchange
+    fails even if a usable prefix arrived. With `limit`, a body larger than `limit` bytes, or one that does not
+    match its Content-Length, fails: a truncated response is never treated as a complete reply."""
     c = http.client.HTTPConnection(ip, port, timeout=timeout)
     hdrs = {"Host": "%s:%d" % (host or ip, port)}
     data = None
     if body is not None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         hdrs["Content-Type"] = "application/json"
+    timer, expired = None, threading.Event()
     try:
+        if deadline is not None:
+            c.connect()                       # bounded by `timeout`
+            sock = c.sock                     # kept: a `Connection: close` reply detaches c.sock while reading
+            timer = threading.Timer(deadline, _expire_exchange, args=(sock, expired))
+            timer.daemon = True
+            timer.start()
         c.request(method, path, body=data, headers=hdrs)
         r = c.getresponse()
-        raw = r.read()
+        length = None if r.chunked else r.length      # the declared Content-Length, before reading
+        raw = r.read() if limit is None else r.read(limit + 1)
+        if expired.is_set():
+            raise socket.timeout("exchange deadline exceeded")
+        if limit is not None and (len(raw) > limit or (length is not None and len(raw) != length)):
+            raise http.client.IncompleteRead(raw[:0], None)
     except (OSError, http.client.HTTPException) as e:
         detail = transport_diagnostic(host or ip, ip, port, "%s %s" % (method, path), e)
         if method == "POST" and path == "/msg":
@@ -1950,6 +2716,8 @@ def http_json(ip, port, method, path, body=None, host=None, timeout=15):
                        (body or {}).get("id", "(unknown)"))
         raise TransportError(detail) from e
     finally:
+        if timer is not None:
+            timer.cancel()
         c.close()
     try:
         return r.status, json.loads(raw)
@@ -2589,8 +3357,12 @@ def cmd_request(ctx, a):
         print(json.dumps(dict(detail, id=mid, response_id=result["id"], state=a.state)))
         return
     if a.request_cmd == "maintain":
-        request_maintenance(ctx)
-        print(json.dumps({"ok": True}))
+        phases = request_maintenance(ctx)
+        failed = sorted(name for name, outcome in phases.items() if outcome.startswith("failed"))
+        # busy: the receiver (or another maintain) is delivering responses right now; nothing was sent twice.
+        print(json.dumps({"ok": not failed, "complete": all(o == "ok" for o in phases.values()), "phases": phases}))
+        if failed:
+            sys.exit(1)
         return
     if a.request_cmd == "list":
         output = request_snapshots(ctx.home)
@@ -2722,7 +3494,8 @@ def main():
     rq.add_argument("--state", choices=("running",) + REQUEST_FINAL, default="completed")
     rq.add_argument("--file", action="append", default=[])
     rq.add_argument("--ttl-hours", type=float)
-    rs.add_parser("maintain", help="retry queued responses and persist expired request status")
+    rs.add_parser("maintain", help="one pass: inbox recovery, request expiry and response delivery "
+                                   "(each attempted; delivery reports busy while the receiver delivers)")
     pi = sp.add_parser("inbox", help="list received messages")
     pi.add_argument("--pending", action="store_true", help="only un-acked messages with effective wake now/batch")
     pi.add_argument("--agent", help="only messages for this agent (no `agent` in message = default_agent)")
