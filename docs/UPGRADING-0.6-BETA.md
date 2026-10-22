@@ -179,8 +179,9 @@ act. It never addresses that device by name: the agent dials the admin device's 
 device's Tailscale name only costs waiting time, and the runbook says how to resume. The owner's reviews are made by
 the script with the owner credential, as above. It exits 0 when every check passed, 1 when one failed or a command
 broke off, and 3 when the agent did not act in time; in every case it revokes the binding, unpublishes the bot,
-stops its services and deletes the test homes and its own copies of the tokens. Remove the HTTPS routes afterwards
-(`tailscale serve reset`).
+stops its services and deletes the test homes and its own copies of the tokens. Remove only these HTTPS routes
+afterwards (`tailscale serve --https=8443 off`, and the same for 8444): `tailscale serve reset` would also remove
+every other route on that device.
 
 ## Not verified in this Beta
 

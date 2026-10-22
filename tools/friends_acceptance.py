@@ -524,7 +524,8 @@ class Acceptance(object):
         leaked = sorted(set(m.group(0)[:4] for text in self.outputs for m in TOKEN_PATTERN.finditer(text)))
         if self.remote:
             print("      the agent's copies of native.token and resource-access.token are now revoked or dead; "
-                  "delete them on that device, and remove the HTTPS routes (for example `tailscale serve reset`)",
+                  "delete them on that device, and remove only this run's HTTPS routes (for example "
+                  "`tailscale serve --https=8443 off`; `tailscale serve reset` removes every route)",
                   flush=True)
             for name in ("native.token", "resource-access.token"):
                 attempt("delete handoff/%s" % name, lambda n=name: (self.handoff / n).unlink() if (
