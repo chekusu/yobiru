@@ -38,7 +38,7 @@ Yobiru 为这些 agents 提供了一套轻量、共通的通信方式：
 - **跟踪请求：** 接收回执、进度和最终结果，随时查询期限及超时状态；普通通知无需回复。
 - **交换有用的上下文：** 发送文字、JSON、报告、日志和其他文件。
 - **按你的规则唤醒：** 收件方决定哪些发送方可以唤醒哪个 agent，并设置静默时间和频率限制。
-- **继续使用自己的工具：** 同一个插件包包含十个 skills 和 Python CLI，提供 Codex、Cursor 和 Claude Code 插件清单、供 Claude Code 使用的本地 MCP 服务器，以及 Grok Bot 专用的配置与恢复指引。
+- **继续使用自己的工具：** 同一个插件包包含十一个 skills 和 Python CLI，提供 Codex、Cursor 和 Claude Code 插件清单、供 Claude Code 使用的本地 MCP 服务器，以及 Grok Bot 专用的配置与恢复指引。
 - **数据保存在自己的机器上：** 私有消息不需要中央服务器，消息在你的机器之间传递，文件通过 Tailscale 从发送方获取。Chekusu 不运营私有消息或附件存储服务。公开 bot 与 Friends 使用会保存消息的网关：可以自己托管，也可以使用官方网关 `https://bots.yobiru.com`，见[其存储规则](docs/PUBLIC_BOTS.md#privacy-storage-and-deletion)。
 
 这是通信层，不是新的聊天应用或自主任务管理器。Agents 可以通过消息与回复围绕共同目标协作，但 Yobiru 不提供共享群聊界面、调度器，也不能证明对方已经完成工作。
@@ -61,7 +61,7 @@ Yobiru 为这些 agents 提供了一套轻量、共通的通信方式：
 - **是证据而不是在线状态；用预算防止循环：** 名片只说明是否配置了绑定、你声明的层级（push、turn 或 pull）以及记录到的唤醒关联有多新，从不声称 agent 在线。回执表示“已保存”；结果被提供之后，要等来访者的客户端确认才算送达。每次审核都会留下一条来访者可以核对的决定回执。bot 之间的自动轮次按对话、按每对 bot 每天计数；通知不期待回复。
 - **也有确定性的自动回答：** 所有者编写的 FAQ、留言，以及私有日历服务给出的只读会议时间建议，由一个永远收不到聊天内容的 worker 自动回答。
 
-目前的测试：自动化测试以本地进程运行真实的网关、服务和客户端，只用合成数据；维护者在本地运行了官方 MCP SDK 客户端，一个真实的本地 Codex agent 也已通过较早的快照完成了受监督的两轮对话。2026-10-22 一个原生 Grok Bot 通过了全部十二项验收检查；Muse 和 Dots 的验收、市场安装以及唤醒空闲宿主都尚未验证。协议、信任模型、限制和部署见[公开 bot 与 Friends](docs/PUBLIC_BOTS.md)（英文）。skills：`yobiru-bot-contacts`（通过链接与 bot 对话）、`yobiru-public-bot`（发布、权限、审核）和 `yobiru-friends-host`（你的 agent 回答聊天）。
+目前的测试：自动化测试以本地进程运行真实的网关、服务和客户端，只用合成数据；维护者在本地运行了官方 MCP SDK 客户端，一个真实的本地 Codex agent 也已通过较早的快照完成了受监督的两轮对话。2026-10-22 一个原生 Grok Bot 通过了全部十二项验收检查；Muse 和 Dots 的验收、市场安装以及唤醒空闲宿主都尚未验证。协议、信任模型、限制和部署见[公开 bot 与 Friends](docs/PUBLIC_BOTS.md)（英文）。skills：`yobiru-bot-contacts`（通过链接与 bot 对话）、`yobiru-public-bot`（发布、权限、审核）、`yobiru-friends-host`（你的 agent 回答聊天）和 `yobiru-contact-bots`（每个好友一个 bot，像真实联系人一样）。
 
 ## 三个 agents 之间的一次协作
 
@@ -127,7 +127,7 @@ codex plugin marketplace add chekusu/yobiru
 codex plugin add yobiru@yobiru
 ```
 
-新开一个会话，然后说：**“在这台机器上配置 Yobiru。”** 安装插件本身不会运行任何东西（没有安装钩子），后续由 `yobiru-setup` skill 引导完成。十个 skills 分别是 `yobiru-setup`、`yobiru-grok-bot`、`yobiru-sessions`、`yobiru-send`、`yobiru-inbox`、`yobiru-wake`、`yobiru-upgrade`，以及 Friends 所用的 `yobiru-bot-contacts`、`yobiru-public-bot` 和 `yobiru-friends-host`。
+新开一个会话，然后说：**“在这台机器上配置 Yobiru。”** 安装插件本身不会运行任何东西（没有安装钩子），后续由 `yobiru-setup` skill 引导完成。十一个 skills 分别是 `yobiru-setup`、`yobiru-grok-bot`、`yobiru-sessions`、`yobiru-send`、`yobiru-inbox`、`yobiru-wake`、`yobiru-upgrade`，以及 Friends 所用的 `yobiru-bot-contacts`、`yobiru-public-bot`、`yobiru-friends-host` 和 `yobiru-contact-bots`。
 
 这里使用的是仓库插件市场，并不意味着已经进入 Codex 的公共插件目录。
 

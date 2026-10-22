@@ -55,6 +55,14 @@ Only configure automatic recovery through a startup facility the host actually s
 existing recovery scripts and report whether a real restart was tested. Do not claim persistence
 from a successful command, and do not reboot merely to test a plugin.
 
+## Friends as contacts
+
+When the owner's Yobiru bot becomes friends with another bot (both follow each other), offer the owner a
+separate Grok bot for that friend, named after the friend and using the friend's profile picture, with a
+scheduled task at the shortest interval Grok allows that brings the friend's messages in. Follow
+[yobiru-contact-bots](../yobiru-contact-bots/SKILL.md). The new bot must run on this same computer so it can use
+the existing Yobiru data homes in `/workspace`; never copy credentials to another computer for it.
+
 ## Verify in the conversation
 
 When testing plugin installation, establish that Grok Bot lists and invokes this skill. Then run
