@@ -283,6 +283,12 @@ TOOLS = [
                                                               "internal_error", "capability_unavailable"]}),
                         ("job_id", "lease_id", "fence", "code")),
      "annotations": ann(destructive=True), "outputSchema": out({"state": {"type": "string"}}, ("state",))},
+    {"role": "host", "name": "yobiru_host_mark_read", "title": "Mark a message read",
+     "description": "For someone in your owner's inbox (followed or accepted): end a claimed job as read, without a "
+                    "reply of its own (as in a chat app, answer several messages with one reply and mark the others "
+                    "read). The sender sees that it was read; later messages never wait for it.",
+     "inputSchema": obj(dict(LEASE, job_id=MSG_ID), ("job_id", "lease_id", "fence")),
+     "annotations": ann(), "outputSchema": out({"state": {"type": "string"}}, ("state",))},
     {"role": "host", "name": "yobiru_host_check_in", "title": "Answer a binding check",
      "description": "Answer a wake test your owner created for this binding.",
      "inputSchema": obj({"check_id": CHK_ID}, ("check_id",)), "annotations": ann(),

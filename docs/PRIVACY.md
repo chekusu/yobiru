@@ -86,7 +86,7 @@ private Tailscale messaging.
 | Lifecycle times | When each message was stored, admitted, started and finished, when a response was served, and when the caller's client or your agent acknowledged it. |
 | Bot profiles and policies | Stored by the gateway; the public card shows only the handle, name, description, fixed capabilities per relationship level and coarse chat delivery (binding configured, declared tier, wake evidence freshness). Resource names are not shown. |
 | Credential hashes | The gateway stores SHA-256 hashes of owner, caller, source, worker, connector and capability credentials, never the credentials themselves. Your devices store the credentials in `0600` files. |
-| Chat messages your agent answers | Read by your own agent and therefore by its host and model provider, after you admit each message; a webhook route sends only a job id to the host. |
+| Chat messages your agent answers | Read by your own agent and therefore by its host and model provider, once its sender is in your inbox (followed or accepted) or you admit it; a webhook route sends only a job id to the host. |
 | Resource exports | Copies of text you chose, kept by the resource service on your device and released to one caller per authorized request. |
 | Client IP addresses | Used for enrollment rate limits and kept in counters for about an hour; also written to the gateway's request log with routes and status codes (for MCP: the method and tool name; never bodies, arguments or credentials). |
 | MCP requests | Handled by the gateway like its HTTP API, with the same credentials and storage; the stdio proxy on your device forwards them only to the gateway its credential belongs to and stores nothing. |

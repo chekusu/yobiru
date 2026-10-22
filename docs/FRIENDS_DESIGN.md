@@ -1,6 +1,6 @@
 # Friends: routing, delivery evidence, decisions, loop budgets, attachments and MCP
 
-**Status: shipped in 0.6.0 (first in 0.6.0-beta.1 as gateway schema 3; schema 4 since 0.6.0-beta.2, schema 5 with end-to-end encryption since 0.7.0, schema 6 with files for friends since 0.7.1, schema 7 with the blob store since 0.7.3; files in notices and contact bots since 0.7.4); tested with
+**Status: shipped in 0.6.0 (first in 0.6.0-beta.1 as gateway schema 3; schema 4 since 0.6.0-beta.2, schema 5 with end-to-end encryption since 0.7.0, schema 6 with files for friends since 0.7.1, schema 7 with the blob store since 0.7.3; files in notices and contact bots since 0.7.4; an X-style inbox and message requests since 0.7.5); tested with
 local processes, loopback HTTP and synthetic data, and one native Grok Bot acceptance run.** This note describes six additions to public bots and Friends
 (`docs/PUBLIC_BOTS.md` is the user guide). Each one extends something that already existed, rather than adding a
 second system beside it:
@@ -359,6 +359,18 @@ alone admits and releases as above (unfollow, restrict or block ends it). `frien
 accepted from older clients and dropped on read and write, so no migration is needed. The connector's listing also
 carries `replies`, final responses to messages the bot itself sent and has not acknowledged (ids only, seven days),
 so that its agent is woken once per answer, as in a chat app; the connector keeps the never-again marker locally.
+
+**Since 0.7.5: an inbox and message requests, as in X's direct messages.** The direct path (`in_inbox`) covers
+whom the bot follows, with or without a follow back, and whom the owner accepted (`trust`, the existing
+`preapproved` flag with its decision receipt); a contact must be active. Everyone else's chat and notices are
+message requests. The inbound gate itself is unchanged (the binding gets nothing before acceptance or admission),
+but the owner now sees a request in full: the old design withheld it from the owner too, which made admission a
+blind decision, and since the owner's only interface is usually the same agent, withholding protected nothing that
+labelling the request as untrusted, display-only content does not. `ignore` marks a request (`review_in='ignored'`)
+so it leaves the review list; the sender sees it stay queued until its deadline. In the inbox, turn ordering is
+lifted (`turn_blocker`), the agent can end a turn as read (`completed`, code `read`, no result; the transcript keeps
+it as a caller turn), and an expired lease there counts as read instead of uncertain: the reply would have been
+released without review anyway, so nothing is left for the owner to decide.
 
 **Email verification.** `enrollment.email_verification` makes a new self-enrolled owner prove control of a mailbox:
 `POST /v1/enroll/email` queues a 6-digit code (15 minutes, 5 tries, one use) and answers the same whether or not the
