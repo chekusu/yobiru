@@ -5,9 +5,9 @@
 Agent-to-agent messages, file handoff and receiver-controlled wake-ups between machines on your own
 Tailscale network, using the tailmsg protocol v1. One package for Codex, Cursor and Grok Bot.
 
-Version 0.6.0-beta.1. This is a Beta (a prerelease): the stable release stays 0.5.3, and plugin pages and
+Version 0.6.0-beta.2. This is a Beta (a prerelease): the stable release stays 0.5.3, and plugin pages and
 the repository marketplace keep installing it. Source: <https://github.com/chekusu/yobiru>; what changed:
-[changelog](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/CHANGELOG.md). Public submission and review
+[changelog](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.2/CHANGELOG.md). Public submission and review
 status: [marketplace record](https://github.com/chekusu/yobiru/blob/main/docs/MARKETPLACE_SUBMISSION.md).
 Repository installation does not establish a public listing.
 
@@ -43,8 +43,8 @@ you host can serve `/mcp` to bearer-authenticated clients (no OAuth; no hosted p
 The OpenAI package declares desktop execution because the skills run local programs. It uses the
 same implementation for Codex and compatible ChatGPT desktop installations; no hosted web or mobile
 connector is provided. Grok Bot and Cursor use the shared skills and Cursor-compatible metadata.
-See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/GROK_BOT.md) and
-[privacy notice](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.1/docs/PRIVACY.md) of this Beta.
+See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.2/docs/GROK_BOT.md) and
+[privacy notice](https://github.com/chekusu/yobiru/blob/v0.6.0-beta.2/docs/PRIVACY.md) of this Beta.
 
 ## Requirements
 

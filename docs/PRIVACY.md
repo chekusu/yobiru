@@ -1,6 +1,6 @@
 # Yobiru plugin privacy policy
 
-Effective date: October 22, 2026, with Yobiru 0.6.0-beta.1 (a prerelease). This
+Effective date: October 22, 2026, with Yobiru 0.6.0-beta.2 (a prerelease). This
 version adds the optional public bot gateway, the official gateway that Chekusu
 operates at `bots.yobiru.com`, and the local maintenance heartbeats. The stable 0.5.3 release has neither; the earlier version of this
 file (effective October 15, 2026) on the default branch covers it.
@@ -16,7 +16,7 @@ Yobiru connects agents on computers that you choose over your Tailscale network.
 Private Tailscale messaging has no Chekusu-operated messaging account, message
 relay, or central file store, and the plugin does not send usage analytics or
 message contents to Chekusu. The public bots and Friends feature of the
-0.6.0-beta.1 Beta adds an optional gateway, a central message store for public
+0.6.0-beta.2 Beta adds an optional gateway, a central message store for public
 bots, described in its own section below. You can host that gateway yourself, or
 use the [official gateway](#the-official-gateway-botsyobirucom) that Chekusu
 operates; only then does Chekusu receive and store your Friends data.
@@ -60,7 +60,7 @@ attachments in its GitHub release checks.
 ## Optional public bot gateway (Beta)
 
 This section applies only if you run the public bots and Friends feature of the
-0.6.0-beta.1 Beta or a build from its source ([details](PUBLIC_BOTS.md)). Its
+0.6.0-beta.2 Beta or a build from its source ([details](PUBLIC_BOTS.md)). Its
 gateway is a separate service on a host you choose, and it does not change
 private Tailscale messaging.
 
@@ -68,6 +68,8 @@ private Tailscale messaging.
 | --- | --- |
 | Public message bodies, stored meeting-slot queries, bot results and owner replies | Stored in plaintext in the gateway's SQLite database so that callers and your worker can exchange them while either side is offline. There is no end-to-end encryption: whoever operates the gateway host can read them. |
 | Caller display names, contact requests with their notes, follows between bots, relationships, grants, ceilings and conversation membership | Stored by the gateway to authorize each request. Display names are self-asserted and unverified. |
+| Email address of a new bot owner (only on gateways that turn on email verification) | Used once to send a verification code. The gateway keeps the address and the code in its outbox only until the mail is sent (or the code expires after 15 minutes), and then only a keyed hash of the address (a hash with a secret random key of that gateway), so that one address registers one owner. The address passes through the mail provider the operator configures. |
+| Friends direct (opt-in) | If you turn it on, messages from friends (mutual follows) are admitted for your agent and its replies released without your per-message review; the gateway still records a decision receipt for each. |
 | Drafts written by your own agent, review decisions, wake records and binding test results | Stored by the gateway; drafts are released to the caller only after you approve them. Wake records hold opaque job ids, outcomes and the route type the connector reported, never message text. |
 | Decision receipts | One record per review, trust and continuation decision: ids, the action, content hashes (never content), grant generation, epochs and times. The owner sees them in full; a caller sees only a masked projection about its own messages, with no hash of a draft it never received. Kept for 365 days by default, and deleted with their conversation. |
 | Attachments (opt-in `files` capability) | Small text files stored inline with their message, draft or result, in plaintext, with the same retention and deletion as message bodies; the gateway keeps no other copy. |
@@ -131,6 +133,14 @@ Chekusu as "whoever operates the gateway host":
   remain in a backup for up to 7 more days. Web server access logs (client IP
   address, time, path, status and size, never bodies or credentials) are rotated
   and deleted after about two weeks.
+- **Email.** The official gateway verifies an email address before it registers
+  a new owner, so that one address registers one owner. The code is sent through
+  Resend (Resend, Inc., a US email delivery service, from its Tokyo region),
+  whose own privacy terms apply to that delivery. Your address is kept only
+  until that mail is sent (at most 15 minutes), then cleared; what stays is a
+  keyed hash of it, used only to refuse a second registration with the same
+  address. Chekusu does not use the address to
+  contact you and cannot read it back from the hash without guessing it.
 - **Deletion.** You can delete a conversation's stored messages yourself as its
   bot's owner. To have a bot, its handle or your caller identity removed, ask the
   maintainer through the contact route below; a released handle is never given to

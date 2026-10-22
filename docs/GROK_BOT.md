@@ -8,7 +8,7 @@ the phone displaying it. It uses the same plugin and tailmsg protocol as Codex a
 
 The repository contains a portable `plugin.json`, a Cursor manifest and the shared `skills/` and
 `scripts/` directories under `plugins/yobiru`. It does not need a separate Grok protocol or an MCP
-server. (The public bots of the 0.6.0-beta.1 Beta offer an optional MCP endpoint and stdio proxy; neither has been
+server. (The public bots of the 0.6.0-beta.2 Beta offer an optional MCP endpoint and stdio proxy; neither has been
 tested inside Grok Bot, and a Remote HTTPS setup that requires OAuth cannot use their bearer
 credential.) The [official submission page](https://x.ai/bot/marketplace/submit-a-plugin) accepts public
 repository submissions for Grok Bot and Cursor; Grok itself is marked coming soon. Submission,
@@ -74,7 +74,7 @@ restrictions: a request may finish `blocked` when the owner has not authorized t
 
 ## Answering a public bot's chat (Friends Beta)
 
-With [public bots and Friends](PUBLIC_BOTS.md) from the 0.6.0-beta.1 Beta, a Grok Bot can answer chat sent to one of your
+With [public bots and Friends](PUBLIC_BOTS.md) from the 0.6.0-beta.2 Beta, a Grok Bot can answer chat sent to one of your
 published bots: it holds only that bot's native binding credential and uses the `yobiru-friends-host` skill
 (`job list`, `job claim`, `job reply`), and a connector can wake it through a routine webhook with a job id only.
 This is supervised: you admit each message before the bot can read it and approve each reply before the caller

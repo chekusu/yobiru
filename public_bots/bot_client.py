@@ -383,6 +383,9 @@ def cmd_enroll_bot(st, a):
         except ValueError as e:
             die(str(e))
 
+    if a.email is not None:
+        return request_email_code(st, base, a.email, a.lang)
+
     def plan(creds):
         entry = creds["gateways"].setdefault(base, {})
         if (entry.get("owner") or {}).get("token"):
@@ -402,6 +405,11 @@ def cmd_enroll_bot(st, a):
         body["handle"] = pending["handle"].lstrip("@").lower()
     if pending.get("description"):
         body["description"] = pending["description"]
+    if a.email_code is not None:
+        challenge = (st.creds()["gateways"].get(base) or {}).get("email_challenge")
+        if not challenge:
+            die("no email code was requested for %s from this data home: run enroll-bot with --email first" % base)
+        body["email_challenge"] = {"id": challenge["id"], "code": a.email_code.strip()}
     try:
         status, obj = C.api_call(base, "POST", "/v1/enroll", body, pending["owner_token"])
     except C.ApiError as e:
@@ -412,8 +420,14 @@ def cmd_enroll_bot(st, a):
         die(str(e))
     if status not in (200, 201) or obj.get("ok") is not True:
         note = forget_refused_enrollment(st, base, "pending_bot", pending, status)
-        out({"ok": False, "error": obj.get("error"), "detail": obj.get("detail"), "http_status": status,
-             "note": note})
+        refused = {"ok": False, "error": obj.get("error"), "detail": obj.get("detail"), "http_status": status,
+                   "note": note}
+        if obj.get("error") == "email_required":
+            refused["next"] = ("this gateway verifies the owner's email: run enroll-bot with --email ADDRESS, ask "
+                               "the owner for the 6-digit code from that email, then run it with --email-code CODE")
+        elif obj.get("error") == "email_code_invalid":
+            refused["attempts_left"] = obj.get("attempts_left")
+        out(refused)
         sys.exit(2)
 
     def done(creds):
@@ -425,12 +439,39 @@ def cmd_enroll_bot(st, a):
                                                           "added_at": C.iso(C.now_ts())}
         entry.setdefault("default_identity", obj["bot_id"])
         entry.pop("pending_bot", None)
+        entry.pop("email_challenge", None)
     st.update("credentials.json", done)
     out({"ok": True, "gateway": base, "bot_id": obj["bot_id"], "handle": obj["handle"], "address": obj["address"],
          "state": obj["state"], "can_publish": obj.get("can_publish"), "duplicate": obj.get("duplicate"),
-         "verified_person": False,
+         "email_verified": obj.get("email_verified", False), "verified_person": False,
          "note": "a new pseudonymous source bot of this gateway; its owner and source credentials are stored in %s, "
                  "never printed" % st.path("credentials.json")})
+
+
+def request_email_code(st, base, email, lang):
+    """Step one at a gateway that verifies email: the gateway mails a 6-digit code to the owner. Only the challenge
+    id is saved here (never the address); the next enroll-bot with --email-code uses it."""
+    body = {"email": email.strip()}
+    if lang:
+        body["lang"] = lang
+    try:
+        status, obj = C.api_call(base, "POST", "/v1/enroll/email", body)
+    except C.ApiError as e:
+        out({"ok": False, "error": e.code, "detail": e.detail, "next": "run the same command again"})
+        sys.exit(2)
+    except ValueError as e:
+        die(str(e))
+    if status != 202 or obj.get("ok") is not True:
+        out({"ok": False, "error": obj.get("error"), "detail": obj.get("detail"), "http_status": status})
+        sys.exit(2)
+
+    def save(creds):
+        creds["gateways"].setdefault(base, {})["email_challenge"] = {"id": obj["challenge_id"],
+                                                                     "expires_at": obj.get("expires_at")}
+    st.update("credentials.json", save)
+    out({"ok": True, "gateway": base, "sent_to": obj.get("sent_to"), "expires_at": obj.get("expires_at"),
+         "next": "ask your owner for the 6-digit code in that email, then run the same enroll-bot command with "
+                 "--email-code CODE instead of --email"})
 
 
 def cmd_identities(st, a):
@@ -1630,7 +1671,8 @@ def cmd_bot(st, a):
                 policy[key] = caps
         if a.visitors == "off":
             policy["visitor"] = []
-        for key, flag in (("accept_followers", a.accept_followers), ("contact_requests", a.contact_requests)):
+        for key, flag in (("accept_followers", a.accept_followers), ("contact_requests", a.contact_requests),
+                          ("friend_direct", a.friend_direct)):
             if flag is not None:
                 policy[key] = flag == "on"
         if policy:
@@ -2541,6 +2583,9 @@ def main(argv=None):
     p.add_argument("--name", required=True)
     p.add_argument("--handle")
     p.add_argument("--description")
+    p.add_argument("--email", help="gateways that verify email: mail a 6-digit code to the owner (step one)")
+    p.add_argument("--email-code", help="the code from that email (step two: completes the enrollment)")
+    p.add_argument("--lang", choices=("en", "zh", "ja"), help="language of the verification email")
     p = sp.add_parser("source", help="store a source credential file minted by the bot's owner")
     p.add_argument("source_cmd", choices=("login",))
     p.add_argument("url")
@@ -2734,6 +2779,8 @@ def main(argv=None):
     p.add_argument("--visitors", choices=("off",), help="no capabilities for visitors")
     p.add_argument("--accept-followers", choices=("on", "off"))
     p.add_argument("--contact-requests", choices=("on", "off"))
+    p.add_argument("--friend-direct", choices=("on", "off"),
+                   help="friends (mutual follows) reach your agent and get its replies without your review")
     p.add_argument("--gateway")
 
     pw = sp.add_parser("worker", help="per-bot workers: the deterministic responder, or the native agent binding")

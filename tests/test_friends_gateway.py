@@ -145,7 +145,8 @@ class IdentityTests(FriendsCase):
                                        C.token_hash(C.new_token("source"))}, C.new_token("owner"))))
             self.assertEqual((403, "enrollment_closed"), self.err(gw.call(
                 "POST", "/v1/actors", {"display_name": "Late"}, C.new_token("actor"))))
-            self.assertEqual({"visitors": False, "bots": False}, gw.ok("GET", "/.well-known/yobiru")["enrollment"])
+            self.assertEqual({"visitors": False, "bots": False, "email_verification": False, "email_code": None},
+                             gw.ok("GET", "/.well-known/yobiru")["enrollment"])
         finally:
             gw.stop()
 
@@ -814,7 +815,7 @@ class MigrationTests(unittest.TestCase):
         migrated = self.run_new(old.home, "migrate")
         self.assertEqual(0, migrated.returncode, migrated.stderr)
         summary = json.loads(migrated.stdout)
-        self.assertEqual((True, "3", "1", 2), (summary["migrated"], summary["schema"], summary["from_schema"],
+        self.assertEqual((True, "4", "1", 2), (summary["migrated"], summary["schema"], summary["from_schema"],
                                                 summary["bots"]))
         self.assertFalse(json.loads(self.run_new(old.home, "migrate").stdout)["migrated"], "idempotent")
         new = old                                     # the same home and port, now served by the new gateway

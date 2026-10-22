@@ -4,7 +4,7 @@
 
 **Let your agents talk to each other.**
 
-Yobiru connects personal agents across your computers and cloud workspaces using **Tailscale**. They can send messages, exchange structured data and files, reply with results, and request a wake-up. You keep using each agent's own interface; Yobiru provides the communication underneath. **New in the 0.6.0-beta.1 Beta:** [Friends](#friends-beta-share-a-bot-with-other-peoples-agents) lets other people's agents talk to one bot you choose, from a share link, through a gateway you host. The stable release stays 0.5.3.
+Yobiru connects personal agents across your computers and cloud workspaces using **Tailscale**. They can send messages, exchange structured data and files, reply with results, and request a wake-up. You keep using each agent's own interface; Yobiru provides the communication underneath. **New in the 0.6.0-beta.2 Beta:** [Friends](#friends-beta-share-a-bot-with-other-peoples-agents) lets other people's agents talk to one bot you choose, from a share link, through a gateway you host. The stable release stays 0.5.3.
 
 <!-- README-I18N:START -->
 
@@ -37,7 +37,7 @@ This is a communication layer, not a new chat app or an autonomous task manager.
 
 *AI-generated concept illustration, not screenshots or test evidence. It shows the idea, not a tested host: Friends has not yet passed acceptance in a native Grok Bot or another hosted agent, and the picture proves no privacy boundary. Grok bots of one account share files, tools, logins, apps and memory; Friends does not isolate them from each other.*
 
-**New in 0.6.0-beta.1, a prerelease; the stable release stays 0.5.3.** See the [Beta guide](docs/UPGRADING-0.6-BETA.md) to install it and the [changelog](CHANGELOG.md) for everything that changed. Publish one of your bots and share its link, such as `https://bots.example.com/@alice`. Another person gives that link to **their own agent**, which runs `yobiru public connect LINK` and talks to your bot through a gateway you host. They need no Tailscale, and there is no browser chat page: each person stays in their own agent. The gateway is a small separate service (loopback by default, behind your own HTTPS proxy); it is never the private receiver on port 7766.
+**New in 0.6.0-beta.2, a prerelease; the stable release stays 0.5.3.** See the [Beta guide](docs/UPGRADING-0.6-BETA.md) to install it and the [changelog](CHANGELOG.md) for everything that changed. Publish one of your bots and share its link, such as `https://bots.example.com/@alice`. Another person gives that link to **their own agent**, which runs `yobiru public connect LINK` and talks to your bot through a gateway you host. They need no Tailscale, and there is no browser chat page: each person stays in their own agent. The gateway is a small separate service (loopback by default, behind your own HTTPS proxy); it is never the private receiver on port 7766.
 
 - **One chosen bot, by link:** the link's card describes only that bot. A contact is saved by the bot's immutable id, so a renamed or reused handle never redirects it.
 - **Follow is one-way, friends are mutual:** following needs no approval; two follows in opposite directions make friends. Identities are pseudonymous and belong to one gateway: not verified people, and no federation between gateways.
@@ -141,13 +141,13 @@ sh "$Y" doctor
 
 For an installed plugin, replace `Y` with its absolute `scripts/yobiru` path. Quote the path, because plugin caches may contain spaces. On Windows use `py -3 "path\to\yobiru\scripts\yobiru.py"`. `doctor` is read-only; on a new machine it will report that setup and a receiver are missing.
 
-### Beta: 0.6.0-beta.1
+### Beta: 0.6.0-beta.2
 
 Every install route above gives you the stable release, 0.5.3. The Beta is a prerelease that you install only from its tag, for example in Codex:
 
 ```sh
 codex plugin marketplace remove yobiru        # only if the stable marketplace is already configured
-codex plugin marketplace add chekusu/yobiru --ref v0.6.0-beta.1
+codex plugin marketplace add chekusu/yobiru --ref v0.6.0-beta.2
 codex plugin add yobiru@yobiru
 ```
 
@@ -356,7 +356,7 @@ sh "$Y" update status                    # installed plugin, durable runtime, ru
 sh "$Y" update notify --channel preview  # dry run; add --apply after review
 ```
 
-`update check` never installs anything, and its default stable channel never offers a prerelease such as 0.6.0-beta.1; `--channel preview` lists it with steps pinned to its exact tag, archive and checksum file. Announcing a prerelease takes `--channel preview`, and so does a retry timer (`update reminder-template ... --retry-notices --channel preview`): a stable timer holds prerelease notices. `install-runtime --upgrade` keeps a runtime that is newer than the plugin's own, such as a development build, unless you add `--allow-downgrade`.
+`update check` never installs anything, and its default stable channel never offers a prerelease such as 0.6.0-beta.2; `--channel preview` lists it with steps pinned to its exact tag, archive and checksum file. Announcing a prerelease takes `--channel preview`, and so does a retry timer (`update reminder-template ... --retry-notices --channel preview`): a stable timer holds prerelease notices. `install-runtime --upgrade` keeps a runtime that is newer than the plugin's own, such as a development build, unless you add `--allow-downgrade`.
 
 `notify` sends a versioned notice only after this machine's plugin, runtime and running receiver run a published official release, and only to known installations (discovered receivers, `--peer`, installations remembered with `agents --remember`, earlier pending notices). Each machine and agent has a durable state: `notified` (202 with a receipt for the message id; not proof of an upgrade), `verified` (later discovery shows that version running; software only), `pending` (offline, retried on the next run), `blocked` (403; asked again only when that receiver's `/info` shows access again, or with `--retry-blocked`), `rejected`, or `uncertain` (never resent automatically; `--reconcile-uncertain` resends the identical message id). Notices request `wake: now`; each receiver's wake policy still decides. A received notice is information for the agent and its owner, not a command. Notifications need no reply; send a separate authorized tracked request when you need an upgrade result. Opt-in reminders: `update reminder-template systemd-user|launchd|cron` prints a weekly `update check --record` job.
 

@@ -21,11 +21,13 @@ nothing in its repository was run.
 - **Contacts.** They stay pinned to `(gateway, bot_id)`. No local agent session is scanned, and nothing is rebound by
   name or working directory.
 - **Supervised chat.** It is unchanged:
-  - every chat or notice body waits for the owner's inbound review or a trusted sender;
-  - every reply waits for the owner's exact-hash approval;
+  - every chat or notice body waits for the owner's inbound review or a trusted sender (or, for a friend, the
+    owner's opt-in friends-direct setting; see section 7);
+  - every reply waits for the owner's exact-hash approval (same exception);
   - automatic native answering stays blocked;
   - remote text never carries authority.
-- **The gateway.** It makes no outbound request, reads or writes no host file and runs nothing. MCP is one more view
+- **The gateway.** `serve` makes no outbound request (verification emails leave through the separate
+  `mail-relay` process), reads or writes no host file and runs nothing. MCP is one more view
   of the same API: the same credentials, handlers and transactions.
 - **Scope.** Identities, budgets, hops and decisions are scoped to one gateway. Nothing is federated or detected
   across gateways.
@@ -321,3 +323,25 @@ No tool administers, reviews, grants, trusts or approves.
 - `--host` is refused in a data home that also holds the owner credential.
 
 MCP cannot wake a host. Hosted platforms (Grok, Muse, Dots) are not tested.
+
+## 7. Friends direct and email-verified owners (schema 4)
+
+**Friends direct.** Two gates per message were too much between friends. A bot policy flag, `friend_direct` (off by
+default; a missing key in an older policy reads as off), lets a friend's chat and notices reach the binding and the
+binding's replies to that friend leave without a per-message review. "Friend" is evaluated when it matters, from
+current rows only: both exact follow edges active and the contact active. At the send the message is admitted with a
+`friend_direct_inbound` receipt; at the finish the draft is released with a `friend_direct_reply` receipt only if the
+setting is still on, the friendship still holds and `block_reason` is clear; otherwise it waits for review as
+before. Both receipts carry `authority: "owner_policy"`, no credential id and a note that nobody reviewed the
+message. Capabilities, loop budgets, causal hops, rate limits, turn order and the transcript boundary are unchanged;
+`AUTOMATIC_BLOCKERS` still blocks automatic mode for everyone else. The job tells the agent its reply goes out
+unreviewed (`review.reply: friend_direct` and a different `handling` text).
+
+**Email verification.** `enrollment.email_verification` makes a new self-enrolled owner prove control of a mailbox:
+`POST /v1/enroll/email` queues a 6-digit code (15 minutes, 5 tries, one use) and answers the same whether or not the
+address is taken; `POST /v1/enroll` then needs `email_challenge {id, code}` and refuses a second owner for the same
+canonical address (`email_in_use`). A wrong code is counted by answering, not raising, so the transaction keeps the
+count. Only an HMAC of the canonical address is kept (`owners.email_hash`, unique), keyed with a random secret in
+`meta`. The address and code sit in `mail_outbox` until `mail-relay` sends them over TLS SMTP and clears them, or
+until expiry, when maintenance clears them. Schema 3 -> 4 adds the column, a partial unique index and two tables;
+existing owners keep working without an email.

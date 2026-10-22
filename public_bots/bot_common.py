@@ -26,8 +26,8 @@ from pathlib import Path
 API_VERSION = 1
 SERVICE = "yobiru-bot-gateway"
 MAX_RESPONSE_BYTES = 1024 * 1024
-ID_KINDS = ("bot", "act", "own", "wrk", "ver", "cnv", "msg", "chk", "dec")
-ID_RE = re.compile(r"^(?:bot|act|own|wrk|ver|cnv|msg|chk|dec)_[a-z2-7]{16}\Z")
+ID_KINDS = ("bot", "act", "own", "wrk", "ver", "cnv", "msg", "chk", "dec", "eml")
+ID_RE = re.compile(r"^(?:bot|act|own|wrk|ver|cnv|msg|chk|dec|eml)_[a-z2-7]{16}\Z")
 # source: speak and follow as one bot (minted only through that bot's owner); connector: wake one native
 # binding's host, never read message bodies.
 TOKEN_PREFIX = {"owner": "ybo", "actor": "yba", "worker": "ybw", "verifier": "ybv", "ticket": "ybt",
