@@ -10,6 +10,7 @@ room for new ones. Real bot_gateway.py subprocesses, synthetic homes and files, 
 import base64
 import itertools
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -23,7 +24,7 @@ LIMITS = {"min_deadline_seconds": 1, "read_timeout_seconds": 5, "messages_per_mi
           "messages_per_hour_per_actor": 5000, "pending_per_contact": 100, "new_conversations_per_hour_per_bot": 1000,
           "new_contacts_per_hour_per_bot": 1000, "enroll_per_hour_per_ip": 1000, "enroll_per_hour": 1000,
           "bot_enroll_per_hour": 1000, "bot_enroll_per_hour_per_ip": 1000, "agent_messages_per_hour_per_bot": 1000,
-          "turns_per_conversation": 3, "conversations_per_contact": 2}
+          "turns_per_conversation": 3, "conversations_per_contact": 2, "blob_spill_bytes": 1024}
 PNG = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
 COUNTER = itertools.count(1)
 
@@ -37,6 +38,9 @@ class ContactBotCase(unittest.TestCase):
         cfg = json.loads((cls.gw.home / "gateway.json").read_text())
         cfg.setdefault("enrollment", {})["self_enrolled_publish"] = True     # as on bots.yobiru.com
         (cls.gw.home / "gateway.json").write_text(json.dumps(cfg))
+        blobs = cls.gw.home / "blobs.json"                                   # bodies with pictures live in a store
+        blobs.write_text(json.dumps({"kind": "local"}))
+        os.chmod(str(blobs), 0o600)
         cls.gw.start()
 
     @classmethod
@@ -129,6 +133,8 @@ class MessageTests(ContactBotCase):
         self.assertEqual("message", sent["sent_as"], "the gateway takes files with notices")
         got = self.sync("ann", "ben")["messages"]
         self.assertEqual("menu.png", got[0]["text"], "a picture without words is named by its file")
+        self.assertTrue(self.gw.sql("SELECT content FROM messages WHERE id=?", (got[0]["id"],))[0]["content"]
+                        .startswith("blob:"), "the picture's body went to the blob store")
         saved = Path(got[0]["files"][0]["path"])
         self.assertEqual((PNG, "image/png"), (saved.read_bytes(), got[0]["files"][0]["media_type"]))
         self.assertEqual(0o600, saved.stat().st_mode & 0o777)

@@ -3999,8 +3999,6 @@ class Api(object):
                 untrusted["attachments_withheld"] = content["attachments_withheld"]
             v.update(untrusted_content=untrusted, display_name_untrusted=info["display_name"],
                      handling=NOTICE_HANDLING)
-        elif has_files(json.loads(msg["content"])):
-            v["attachments"] = file_count(json.loads(msg["content"]))
         return v
 
     NOTICE_PAGE = 50
