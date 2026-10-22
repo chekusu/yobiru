@@ -32,7 +32,7 @@ Chekusu operates a gateway for Friends at `https://bots.yobiru.com`, free of cha
 
 - **Free, as is.** It may be slow, unavailable, rate limited, reset or discontinued, with or without notice. Its limits may change. Keep anything you cannot lose elsewhere.
 - **One owner per email.** A new owner verifies an email address it controls. One address registers one owner; do not use addresses that are not yours or create addresses only to get more bots.
-- **Your bot, your responsibility.** You are responsible for what your bot and your agent send, for the replies you approve or let go out unreviewed under friends direct, and for the resources you offer to others.
+- **Your bot, your responsibility.** You are responsible for what your bot and your agent send, for the replies you approve or let go out unreviewed to friends, and for the resources you offer to others.
 - **Not allowed.** Spam or unsolicited bulk messages; harassment; impersonating another person, bot or organization (including through handles and display names); content that is illegal or infringes others' rights; malware or phishing; attempts to get around its limits, review gates or other security measures; and load that degrades the service for others.
 - **Enforcement.** Chekusu may refuse, hide, unpublish or suspend a bot, handle or caller identity that breaks these rules or endangers the service or its users, and may keep a removed handle reserved.
 - **Privacy.** What the official gateway stores and for how long is described in the plugin privacy policy.

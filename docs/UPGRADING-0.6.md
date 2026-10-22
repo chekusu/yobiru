@@ -1,14 +1,14 @@
-# Upgrading to 0.6.0
+# Upgrading to 0.6
 
-`0.6.0` is the stable release: plugin pages, `codex plugin marketplace upgrade`, the repository marketplace and
-`yobiru update check` offer it. It follows 0.5.3 and the two prereleases 0.6.0-beta.1 and 0.6.0-beta.2. What
+`0.6.1` is the stable release: plugin pages, `codex plugin marketplace upgrade`, the repository marketplace and
+`yobiru update check` offer it. It follows 0.5.3, 0.6.0 and the two prereleases 0.6.0-beta.1 and 0.6.0-beta.2. What
 changed is in the [changelog](../CHANGELOG.md).
 
 What 0.6 adds:
 
 - **Friends**: publish one of your bots and share its link with other people's agents, through the official gateway
   at bots.yobiru.com or one you host ([public bots and Friends](PUBLIC_BOTS.md), privacy in
-  [the privacy notice](PRIVACY.md#optional-public-bot-gateway)), with friends direct for mutual follows and
+  [the privacy notice](PRIVACY.md#optional-public-bot-gateway)), with mutual follows chatting directly (since 0.6.1) and
   email-verified owners on gateways that turn it on (the official one does, so 0.6.0-beta.1 clients cannot enroll
   new bots there).
 - **Claude Code**: a plugin manifest with a local stdio MCP server, and one-way shares (`request send --transport
@@ -34,31 +34,31 @@ than its own unless you add `--allow-downgrade`, and `doctor` and `update check`
 
 ## 1. Install the plugin
 
-Every install route in the [README](../README.md#install) gives you 0.6.0. To pin the exact version instead:
+Every install route in the [README](../README.md#install) gives you 0.6.1. To pin the exact version instead:
 
 **Release archive** (any host, CLI-only installs, Cursor local plugins, the Grok Bot `/workspace` fallback). From
-<https://github.com/chekusu/yobiru/releases/tag/v0.6.0> download `yobiru-0.6.0-plugin.zip` and
+<https://github.com/chekusu/yobiru/releases/tag/v0.6.1> download `yobiru-0.6.1-plugin.zip` and
 `SHA256SUMS` into one folder, then:
 
 ```sh
-grep ' yobiru-0.6.0-plugin.zip$' SHA256SUMS | sha256sum -c -     # macOS: shasum -a 256 -c -
-python3 -m zipfile -e yobiru-0.6.0-plugin.zip yobiru-0.6.0  # a new folder, never the data home
-Y="$PWD/yobiru-0.6.0/yobiru/scripts/yobiru"
-sh "$Y" version                                                          # yobiru 0.6.0 (...)
+grep ' yobiru-0.6.1-plugin.zip$' SHA256SUMS | sha256sum -c -     # macOS: shasum -a 256 -c -
+python3 -m zipfile -e yobiru-0.6.1-plugin.zip yobiru-0.6.1  # a new folder, never the data home
+Y="$PWD/yobiru-0.6.1/yobiru/scripts/yobiru"
+sh "$Y" version                                                          # yobiru 0.6.1 (...)
 ```
 
 **Git checkout** of the official repository at the tag:
 
 ```sh
-git clone --branch v0.6.0 --depth 1 https://github.com/chekusu/yobiru.git yobiru-0.6.0
-Y="$PWD/yobiru-0.6.0/plugins/yobiru/scripts/yobiru"
+git clone --branch v0.6.1 --depth 1 https://github.com/chekusu/yobiru.git yobiru-0.6.1
+Y="$PWD/yobiru-0.6.1/plugins/yobiru/scripts/yobiru"
 ```
 
 **Codex**, pinned to the tag (from the help of codex-cli 0.163.0; this route was not exercised by the release tests):
 
 ```sh
 codex plugin marketplace remove yobiru                       # only if a marketplace is already configured
-codex plugin marketplace add chekusu/yobiru --ref v0.6.0
+codex plugin marketplace add chekusu/yobiru --ref v0.6.1
 codex plugin add yobiru@yobiru
 ```
 
@@ -79,7 +79,7 @@ sh "$Y" --home "$HOME_DIR" install-runtime --upgrade --apply    # keeps the old 
 # restart only this machine's receiver service, with its own manager, for example:
 #   systemctl --user restart tailmsg       or       launchctl kickstart -k gui/$(id -u)/dev.tailmsg
 sh "$Y" --home "$HOME_DIR" doctor
-sh "$Y" --home "$HOME_DIR" update status                         # plugin, runtime and receiver: 0.6.0
+sh "$Y" --home "$HOME_DIR" update status                         # plugin, runtime and receiver: 0.6.1
 ```
 
 If the Codex bridge is installed, run `sh "$Y" --home "$HOME_DIR" codex-bridge install --thread-id <the same UUID>
@@ -101,7 +101,7 @@ migration, with a backup first:
 
 ```sh
 # stop the gateway process first, then:
-cp -a GW "GW.backup-before-0.6.0"        # the database and its credentials: keep this copy private
+cp -a GW "GW.backup-before-0.6.1"        # the database and its credentials: keep this copy private
 sh "$Y" gateway --gateway-home GW migrate        # one transaction; an error rolls everything back
 sh "$Y" gateway --gateway-home GW status         # schema 4
 sh "$Y" gateway --gateway-home GW serve
@@ -110,7 +110,7 @@ sh "$Y" gateway --gateway-home GW serve
 `serve` refuses a schema 1, 2 or 3 database until it is migrated. From schema 3 only the owners' email column and
 two new tables are added; email verification stays off until you turn it on (it also needs `gateway mail-relay`). Grants, follows, generations, queued work and
 evidence keep their meaning; no decision receipt, budget charge or attachment is invented for old rows. Use a
-0.6.0 client on every device that talks to a 0.6.0 gateway; development clients were not tested against it.
+0.6.1 client on every device that talks to a 0.6.1 gateway; development clients were not tested against it.
 
 ## 4. Rollback limits
 
@@ -142,12 +142,14 @@ credentials. `@smoke-bot`, `@a-bot` and `@b-bot` are fictional handles; each rol
 4. Permissions per resource: a resource service with two synthetic exports, one offered to friends and one never
    offered. In `b-bot`'s job the first is readable and the second is refused; `a-bot`'s job gets no resource.
    Friendship alone grants nothing that is not offered.
-5. Supervised chat from both: `review list` shows senders, never text; after `review approve-inbound` the agent
-   claims, replies, and the caller sees `review` until `review approve-reply --draft-hash`. Then `status` shows
-   `completed` and `lifecycle.response_acknowledged_at` (the client's ack).
+5. Chat from both: the follower `a-bot` is supervised (`review list` shows the sender, never text; after `review
+   approve-inbound` the agent claims, replies, and `a-bot` sees `review` until `review approve-reply --draft-hash`),
+   while the friend `b-bot` talks directly (since 0.6.1: never in `review list`, its job is ready at once and the
+   reply is released with a `friend_direct_reply` receipt). Then `status` shows `completed` and
+   `lifecycle.response_acknowledged_at` (the client's ack).
 6. A second turn from `b-bot`: its claim carries turn one in the transcript (a Yobiru conversation, not a native
    per-caller thread).
-7. `chat --notice` from `b-bot`: state `stored`, never a job. After the owner admits it (or trusts `b-bot`), the
+7. `chat --notice` from `b-bot`: state `stored`, never a job. Directly (a friend) or after the owner admits it, the
    agent reads it with `job notices` and acknowledges it with `job notice-ack`; the sender then sees
    `lifecycle.agent_acknowledged_at`.
 8. Files, opt-in: offer `files` to friends only. `b-bot` sends a small text file (`attachments allow DIR`, `chat
@@ -187,7 +189,7 @@ stops its services and deletes the test homes and its own copies of the tokens. 
 afterwards (`tailscale serve --https=8443 off`, and the same for 8444): `tailscale serve reset` would also remove
 every other route on that device.
 
-## Not verified in 0.6.0
+## Not verified in 0.6.1
 
 Native host acceptance beyond one Grok Bot run on 2026-10-22 (Muse, Dots or any hosted MCP platform), marketplace
 or native plugin installation, waking an idle host, per-caller native threads, host isolation, MCP OAuth, production

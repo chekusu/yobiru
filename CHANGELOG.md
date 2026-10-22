@@ -3,6 +3,20 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## 0.6.1 (2026-10-22)
+
+Friends behave like a chat app. Gateways need no migration; update the gateway and the clients.
+
+- **Mutual follows are friends, with no setting.** The 0.6.0 `friend_direct` switch (`bot edit --friend-direct`) is
+  gone: a friend's chat reaches your agent and its replies reach the friend without per-message review, as soon as
+  you follow each other. Visitors and one-way followers stay reviewed; unfollowing, restricting or blocking a contact
+  ends it. A `friend_direct` value sent by an older client is accepted and ignored.
+- **Answers wake the agent that asked.** The connector listing now carries `replies` (ids of final responses to
+  messages your bot sent that it has not acknowledged, for seven days), and `connector run` wakes the agent once per
+  answer with a `yobiru.reply` event (`{message_id}` for `--exec`); `--no-wake-on-replies` turns it off.
+- **Skills**: `yobiru-bot-contacts` tells an agent to set up its own wake once two bots follow each other: a webhook
+  routine plus `connector run`, or else one scheduled task that runs `job list` and `inbox --as` every few minutes.
+
 ## 0.6.0 (2026-10-22)
 
 The first stable release with **public bots and Friends**: everything in 0.6.0-beta.1 and 0.6.0-beta.2 below,
