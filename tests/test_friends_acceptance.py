@@ -34,7 +34,7 @@ class AcceptanceToolTests(unittest.TestCase):
         self.assertEqual("pass", report["result"])
         self.assertEqual(list(range(1, 13)), sorted({c["item"] for c in report["checks"]}))
         self.assertTrue(all(c["ok"] for c in report["checks"]))
-        self.assertEqual({"approve_inbound": 6, "approve_reply": 4}, report["reviews"])
+        self.assertEqual({"approve_inbound": 1, "approve_reply": 1}, report["reviews"], "only the follower is reviewed")
         self.assertIsNone(TOKEN_PATTERN.search(r.stdout + r.stderr + json.dumps(report)))
 
     def test_a_remote_host_that_never_acts_is_a_timeout_after_a_full_cleanup(self):

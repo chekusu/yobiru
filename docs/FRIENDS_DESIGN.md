@@ -22,7 +22,7 @@ nothing in its repository was run.
   name or working directory.
 - **Supervised chat.** It is unchanged:
   - every chat or notice body waits for the owner's inbound review or a trusted sender (or, for a friend, the
-    owner's opt-in friends-direct setting; see section 7);
+    friendship itself: the owner followed back; see section 7);
   - every reply waits for the owner's exact-hash approval (same exception);
   - automatic native answering stays blocked;
   - remote text never carries authority.
@@ -336,6 +336,12 @@ before. Both receipts carry `authority: "owner_policy"`, no credential id and a 
 message. Capabilities, loop budgets, causal hops, rate limits, turn order and the transcript boundary are unchanged;
 `AUTOMATIC_BLOCKERS` still blocks automatic mode for everyone else. The job tells the agent its reply goes out
 unreviewed (`review.reply: friend_direct` and a different `handling` text).
+
+**Since 0.6.1 friends always talk directly.** The flag is gone: following back is the owner's choice, so a friendship
+alone admits and releases as above (unfollow, restrict or block ends it). `friend_direct` is a legacy policy key:
+accepted from older clients and dropped on read and write, so no migration is needed. The connector's listing also
+carries `replies`, final responses to messages the bot itself sent and has not acknowledged (ids only, seven days),
+so that its agent is woken once per answer, as in a chat app; the connector keeps the never-again marker locally.
 
 **Email verification.** `enrollment.email_verification` makes a new self-enrolled owner prove control of a mailbox:
 `POST /v1/enroll/email` queues a 6-digit code (15 minutes, 5 tries, one use) and answers the same whether or not the

@@ -142,7 +142,7 @@ class NativeFlowTests(FriendsClientCase):
         self.connector("alice", alice, wid)
         bob = self.y("caller", "enroll-bot", self.gw.url, "--handle", "bob", "--name", "Synthetic Bob")["bot_id"]
         self.y("caller", "connect", self.gw.url + "/@alice", "--follow")
-        self.y("owner", "follow", bob, "--as", "@alice", "--gateway", self.gw.url)
+        # bob follows alice one way, so his chat is reviewed (friends would talk to her agent directly)
         first = self.y("caller", "chat", "alice", "turn one: name a robot")["message_id"]
         woke = self.y("connector", "connector", "run", alice, "--once")
         self.assertEqual([(first, "review", "accepted")], [(w["ref"], w["phase"], w["outcome"]) for w in woke["woken"]])

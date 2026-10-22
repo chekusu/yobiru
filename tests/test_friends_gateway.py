@@ -305,15 +305,17 @@ class PermissionTests(FriendsCase):
 
 # ---------------------------------------------------------------- native lifecycle and invalidation
 class NativeCase(FriendsCase):
-    def setup_pair(self, friend_extra=()):
-        """A (admin owner, native binding) and B (another owner's source bot), mutual friends."""
+    def setup_pair(self, friend_extra=(), mutual=False):
+        """A (admin owner, native binding) and B (another owner's source bot). B follows A, so B's chat is reviewed;
+        with `mutual` A follows back and they are friends, whose chat reaches A's agent directly."""
         a_id, a_src = self.gw.owned_bot(self.handle("a"))
         b_id, b_src = self.gw.owned_bot(self.handle("b"))
         offered = ["faq", "leave_message", "calendar_slots", "chat"] + list(friend_extra)
-        self.gw.policy(a_id, offered=offered, visitor=["faq"], follower=["faq", "chat"],
+        self.gw.policy(a_id, offered=offered, visitor=["faq"], follower=["faq", "chat"] + list(friend_extra),
                        friend=["faq", "chat"] + list(friend_extra))
         self.gw.follow(b_src, a_id)
-        self.gw.follow(a_src, b_id)
+        if mutual:
+            self.gw.follow(a_src, b_id)
         wtoken, wid = self.gw.native(a_id)
         return a_id, a_src, b_id, b_src, wtoken, wid
 
@@ -609,7 +611,7 @@ class RequiredCoverageTests(NativeCase):
         self.assertEqual(404, self.gw.call("GET", "/v1/conversations/%s" % cid, None, b_src)[0])
         self.assertEqual(404, self.gw.call("GET", "/v1/messages/%s" % answered, None, b_src)[0])
         self.assertEqual((409, "conversation_closed"), self.err(self.gw.send(cid, b_src, kind="chat", text="again")))
-        self.assertEqual("friend", self.gw.relation(b_src, a_id)["relationship"], "follows outlive a republish")
+        self.assertEqual("follower", self.gw.relation(b_src, a_id)["relationship"], "follows outlive a republish")
         fresh = self.gw.conversation(a_id, b_src)
         later = self.gw.chat(fresh, b_src, "after republish")
         self.gw.admit(a_id, later)
@@ -667,7 +669,7 @@ class RequiredCoverageTests(NativeCase):
         self.gw.admit(a_id, mid)
         job = self.gw.claim_job(wtoken, mid)[1]
         self.gw.restart(hard=True)
-        self.assertEqual("friend", self.gw.relation(b_src, a_id)["relationship"])
+        self.assertEqual("follower", self.gw.relation(b_src, a_id)["relationship"])
         self.assertEqual("started", self.state(mid)["state"])
         self.assertEqual(200, self.gw.reply_job(wtoken, job, "after the restart")[0], "the lease survived")
         self.assertEqual(200, self.gw.approve_reply(a_id, mid)[0])
