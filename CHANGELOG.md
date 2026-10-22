@@ -3,6 +3,25 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## Unreleased
+
+A gateway you host needs this release for files in notices and for the relaxed conversation count (no schema
+change, no migration); everything else is client-side.
+
+- **A contact bot for each friend**: new `public friend list|avatar|link|unlink|sync|send` and the skill
+  `yobiru-contact-bots`. Once two bots are friends, the user's agent offers to make the friend a bot of their own
+  in the user's host (for example a second Grok Bot) with the friend's name and profile picture; a scheduled task in
+  it runs `friend sync` at the host's shortest interval, and whatever the user writes there goes back with
+  `friend send`. `friend sync` returns the friend's notices, questions their bot asked (held for the user's answer,
+  lease renewed on each sync), answers to what you sent and notes from them, each once. A linked friend's jobs,
+  notices and inbox items are marked `contact_bot`, and `job claim` refuses those jobs, so the general routine
+  leaves them alone.
+- **Notices carry files**: a notice (`chat --notice --attach`) may carry the same attachments as a chat message when
+  the sender has `files`; the gateway says so in `/.well-known/yobiru` (`notices.attachments`), and older gateways
+  get files as a chat message instead.
+- **Conversations that are full make room**: a conversation that reached `turns_per_conversation` no longer counts
+  against `conversations_per_contact`, so friends who write every day keep going in a new one.
+
 ## 0.7.3 (2026-10-22)
 
 Upgrade a gateway you host with `gateway migrate` after a backup (the database schema is 7). Clients do not change.

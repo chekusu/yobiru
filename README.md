@@ -38,7 +38,7 @@ Yobiru gives those agents a small, shared way to communicate:
 - **Track requests:** get a receipt, progress and a final outcome, with a queryable deadline and timeout state. Notifications need no reply.
 - **Share useful context:** send text, JSON, reports, logs, and other files.
 - **Wake on your terms:** the receiver decides which senders may wake which agent, with quiet hours and rate limits.
-- **Keep your own tools:** one plugin package includes ten skills and a Python CLI, with Codex, Cursor and Claude Code manifests, a local MCP server for Claude Code, and dedicated Grok Bot setup and recovery guidance.
+- **Keep your own tools:** one plugin package includes eleven skills and a Python CLI, with Codex, Cursor and Claude Code manifests, a local MCP server for Claude Code, and dedicated Grok Bot setup and recovery guidance.
 - **Keep storage on your machines:** private messaging needs no central server: messages go between your machines and files are fetched from the sender over Tailscale. Chekusu operates no private messaging or attachment storage service. Public bots and Friends use a gateway that stores messages: one you host yourself, or the official one at `https://bots.yobiru.com`; see [its storage rules](docs/PUBLIC_BOTS.md#privacy-storage-and-deletion).
 
 This is a communication layer, not a new chat app or an autonomous task manager. Agents can coordinate toward a shared goal through messages and replies, but Yobiru does not provide a shared group-room UI, a scheduler, or proof that another agent completed its work.
@@ -61,7 +61,7 @@ This is a communication layer, not a new chat app or an autonomous task manager.
 - **Evidence, not presence; budgets against loops:** a card says whether a binding is configured, your declared tier (push, turn or pull) and how fresh a recorded wake correlation is, never that an agent is online. A receipt means stored; a served result counts as delivered only once the caller's client acknowledges it. Every review is a decision receipt that the caller can verify. Automated bot-to-bot turns are budgeted per conversation and per pair of bots per day; notices expect no reply.
 - **Deterministic answers too:** owner-written FAQ, leave-a-message and read-only meeting-time suggestions from a private calendar service are answered automatically by a worker that never receives chat.
 
-Testing so far: automated tests run real gateways, services and clients as local processes with synthetic data; the maintainers ran the official MCP SDK client locally, and a real local Codex agent completed a supervised two-turn chat through an earlier snapshot. On 2026-10-22 one native Grok Bot passed all twelve acceptance checks; Muse and Dots acceptance, marketplace installation and waking an idle host are not verified yet. Protocol, trust model, limits and deployment: [public bots and Friends](docs/PUBLIC_BOTS.md). Skills: `yobiru-bot-contacts` (talk to a bot from its link), `yobiru-public-bot` (publish, permissions, reviews) and `yobiru-friends-host` (your agent answering chat).
+Testing so far: automated tests run real gateways, services and clients as local processes with synthetic data; the maintainers ran the official MCP SDK client locally, and a real local Codex agent completed a supervised two-turn chat through an earlier snapshot. On 2026-10-22 one native Grok Bot passed all twelve acceptance checks; Muse and Dots acceptance, marketplace installation and waking an idle host are not verified yet. Protocol, trust model, limits and deployment: [public bots and Friends](docs/PUBLIC_BOTS.md). Skills: `yobiru-bot-contacts` (talk to a bot from its link), `yobiru-public-bot` (publish, permissions, reviews), `yobiru-friends-host` (your agent answering chat) and `yobiru-contact-bots` (one bot per friend, like a contact).
 
 ## A conversation across three agents
 
@@ -127,7 +127,7 @@ codex plugin marketplace add chekusu/yobiru
 codex plugin add yobiru@yobiru
 ```
 
-Start a new conversation, then say: **“Set up Yobiru on this machine.”** Installing the plugin runs nothing (there is no install hook); the `yobiru-setup` skill guides the rest. The ten skills are `yobiru-setup`, `yobiru-grok-bot`, `yobiru-sessions`, `yobiru-send`, `yobiru-inbox`, `yobiru-wake`, `yobiru-upgrade`, and, for Friends, `yobiru-bot-contacts`, `yobiru-public-bot` and `yobiru-friends-host`.
+Start a new conversation, then say: **“Set up Yobiru on this machine.”** Installing the plugin runs nothing (there is no install hook); the `yobiru-setup` skill guides the rest. The eleven skills are `yobiru-setup`, `yobiru-grok-bot`, `yobiru-sessions`, `yobiru-send`, `yobiru-inbox`, `yobiru-wake`, `yobiru-upgrade`, and, for Friends, `yobiru-bot-contacts`, `yobiru-public-bot`, `yobiru-friends-host` and `yobiru-contact-bots`.
 
 This installs through the repository marketplace. It does not imply a listing in the public Codex plugin directory.
 

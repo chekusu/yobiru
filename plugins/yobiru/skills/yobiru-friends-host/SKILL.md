@@ -60,6 +60,8 @@ use the same one in every command. The bot's end-to-end key comes with it (`nati
 `native.token`, or `public e2e import --file F`); with it the CLI opens sealed jobs and seals your replies itself.
 
 - Claim one job at a time and answer it. A claim is the start: the job is never handed to a second run.
+- A job or notice marked `contact_bot` comes from a friend whose contact bot shows it to your owner, who answers
+  it there (yobiru-contact-bots skill): leave it. `job claim` refuses it.
 - `earlier_turn_pending` / `turn_in_progress`: an earlier turn of that conversation goes first; stop.
 - `review_required`: your owner has not admitted the message yet; stop and say so if asked.
 - `context_reset: true`: earlier turns were withheld from you because the caller's permissions changed;

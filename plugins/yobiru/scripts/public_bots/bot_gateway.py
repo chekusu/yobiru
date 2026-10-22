@@ -155,6 +155,7 @@ LEVELS = ("visitor", "follower", "friend")
 KIND_CAPABILITY = {"faq": "faq", "message": "leave_message", "slots": "calendar_slots", "chat": "chat",
                    "notice": "leave_message"}
 AGENT_KINDS = ("chat",)                       # answered by the owner's agent binding, never by the responder
+FILE_KINDS = ("chat", "notice")                # kinds that may carry attachments (the sender still needs `files`)
 # Friends (mutual follows) exchange files by default: pictures, documents and voice notes are part of chatting.
 DEFAULT_POLICY = {"offered": ["faq", "leave_message", "calendar_slots", "chat", "files"],
                   "visitor": ["faq", "leave_message", "chat"],
@@ -748,7 +749,7 @@ def sealed_parts(body, limits, must_reach, files_ok):
     if "sealed_files" not in body and "files" not in body:
         return out, 0
     if not files_ok:
-        raise Fail(400, "attachments_not_supported", "attachments go with chat messages only")
+        raise Fail(400, "attachments_not_supported", "attachments go with chat messages and notices only")
     files = body.get("files")
     if not isinstance(files, dict) or set(files) != {"count", "bytes"} or \
             not C.int_in(files["count"], 1, limits["attachment_max_files"]) or \
@@ -2040,6 +2041,7 @@ class Api(object):
                                     else None},
                      "federation": "none: identities are scoped to this gateway",
                      "e2e": {"alg": E.ALG, "sealed_bodies": True},
+                     "notices": {"attachments": True},
                      "identity": {"verified_person": False}}
 
     def public_profile(self, db, r):
@@ -2374,8 +2376,12 @@ class Api(object):
                 raise Fail(403, "visitors_not_accepted", "follow the bot or send a contact request instead")
             raise Fail(403, "no_capabilities", "the owner offers you nothing right now")
         if contact is not None:
+            # A conversation that reached its turn limit takes no more messages, so it no longer holds a place:
+            # friends who talk every day keep starting new ones as the old ones fill up.
             open_count = db.execute("SELECT COUNT(*) FROM conversations WHERE bot_id=? AND actor_id=? AND epoch=? "
-                                    "AND deleted_ts IS NULL", (bot["id"], pid, contact["epoch"])).fetchone()[0]
+                                    "AND deleted_ts IS NULL AND turns<?", (bot["id"], pid, contact["epoch"],
+                                                                         self.limits["turns_per_conversation"])
+                                    ).fetchone()[0]
             if open_count >= self.limits["conversations_per_contact"]:
                 raise Fail(429, "too_many_conversations")
         if not take(db, "conv:new:%s" % bot["id"], self.limits["new_conversations_per_hour_per_bot"], 3600, now):
@@ -2468,7 +2474,7 @@ class Api(object):
                 raise Fail(400, "invalid_sealed", "a sealed message carries its text and attachments inside sealed")
             if not bot["e2e_key"]:
                 raise Fail(409, "e2e_unavailable", "this bot has no end-to-end key; send it unsealed or ask its owner")
-            content, nbytes = sealed_parts(body, L, [bot["e2e_key"]], files_ok=kind == "chat")
+            content, nbytes = sealed_parts(body, L, [bot["e2e_key"]], files_ok=kind in FILE_KINDS)
             if kind == "slots":
                 content["query"] = slots_query(body.get("query"))
             elif "query" in body:
@@ -2487,8 +2493,8 @@ class Api(object):
                 raise Fail(400, "unknown_field", "query is only for kind slots")
             content["text"] = text_field(body, "text", L["max_text_chars"], multiline=True)
         if "attachments" in body:
-            if kind != "chat":
-                raise Fail(400, "attachments_not_supported", "attachments go with chat messages only")
+            if kind not in FILE_KINDS:
+                raise Fail(400, "attachments_not_supported", "attachments go with chat messages and notices only")
             items, nbytes, err = C.attachments_error(body["attachments"], L["attachment_max_files"],
                                                      L["attachment_max_bytes"], L["attachment_total_bytes"],
                                                      L["attachment_media_max_bytes"])
@@ -3984,8 +3990,17 @@ class Api(object):
              "causal_hop": msg["hop"], "reply_expected": False}
         if body:
             content = json.loads(msg["content"])
-            v.update(untrusted_content=dict({"text": content.get("text")}, **sealed_of(content)),
-                     display_name_untrusted=info["display_name"], handling=NOTICE_HANDLING)
+            if has_files(content) and "files" not in current_caps(db, bot, msg["actor_id"], contact):
+                withhold_files(content)
+            untrusted = dict({"text": content.get("text")}, **sealed_of(content))
+            if content.get("attachments"):
+                untrusted["attachments"] = attachment_views(content["attachments"])
+            if content.get("attachments_withheld"):
+                untrusted["attachments_withheld"] = content["attachments_withheld"]
+            v.update(untrusted_content=untrusted, display_name_untrusted=info["display_name"],
+                     handling=NOTICE_HANDLING)
+        elif has_files(json.loads(msg["content"])):
+            v["attachments"] = file_count(json.loads(msg["content"]))
         return v
 
     NOTICE_PAGE = 50

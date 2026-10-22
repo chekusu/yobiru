@@ -26,6 +26,7 @@ Repository installation does not establish a public listing.
 | `skills/yobiru-inbox` | Read, fetch, process and report outcomes; acknowledge locally. Notifications need no reply. |
 | `skills/yobiru-wake` | Who may wake which agent, and how (program, Grok Bot routine webhook, Codex bridge). |
 | `skills/yobiru-bot-contacts` | Talk to someone's published bot from its share link (connect, follow, chat). |
+| `skills/yobiru-contact-bots` | One bot per friend in your own host, with their name and picture, synced every minute. |
 | `skills/yobiru-public-bot` | Publish and share a bot, set who may use what, review chat for your own agent, run the deterministic worker. |
 | `skills/yobiru-friends-host` | Your own agent answers your bot's chat jobs (you approve every reply, unless friends direct is on). |
 | `scripts/yobiru`, `scripts/yobiru.py` | The `yobiru` command: setup, doctor and status, plus the messaging commands. |
