@@ -336,11 +336,15 @@ class ExportReleaseOrderTests(unittest.TestCase):
     stubbed here so the owner's change can land exactly between the two authorizations; the HTTP path itself is
     covered by ResourceTests."""
 
-    def service(self):
+    def service(self, through_link=False):
         import bot_resources as R
         tmp = tempfile.TemporaryDirectory(prefix="yobiru exports ")
         self.addCleanup(tmp.cleanup)
         d = Path(tmp.name) / "svc"
+        if through_link:            # like macOS, where /var and /tmp are links to /private/...
+            (Path(tmp.name) / "real").mkdir()
+            os.symlink(str(Path(tmp.name) / "real"), str(Path(tmp.name) / "link"))
+            d = Path(tmp.name) / "link" / "svc"
         with redirect_stdout(io.StringIO()):
             R.main(["init", "--dir", str(d), "--gateway", "http://127.0.0.1:9", "--bot", "bot_aaaaaaaaaaaaaaaa"])
         C.create_private_file(d / "verifier.token", C.new_token("verifier") + "\n")
@@ -367,6 +371,20 @@ class ExportReleaseOrderTests(unittest.TestCase):
         R, svc, d, src = self.service()
         self.stub(svc, lambda: None)
         self.assertEqual("NOTE-V1\n", svc.release(C.new_token("ticket"), "note")["content"])
+
+    def test_a_service_folder_under_a_linked_parent_is_released(self):
+        R, svc, d, src = self.service(through_link=True)
+        self.stub(svc, lambda: None)
+        self.assertEqual("NOTE-V1\n", svc.release(C.new_token("ticket"), "note")["content"])
+
+    def test_an_exports_folder_swapped_for_a_link_releases_nothing(self):
+        R, svc, d, src = self.service()
+        (d / "exports").rename(d / "exports-moved")
+        os.symlink(str(d / "exports-moved"), str(d / "exports"))
+        self.stub(svc, lambda: None)
+        with self.assertRaises(R.Refuse) as cm:
+            svc.release(C.new_token("ticket"), "note")
+        self.assertEqual((503, "not_configured"), (cm.exception.status, cm.exception.code))
 
     def test_a_remove_before_the_final_check_releases_nothing(self):
         R, svc, d, src = self.service()

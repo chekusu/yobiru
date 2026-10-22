@@ -60,7 +60,7 @@
     },
     "scripts/public_bots/bot_resources.py": {
       "source": "public_bots/bot_resources.py",
-      "sha256": "2a469b3c94ece7f6ef374c9ad0279c9c094856244a101a5d7274b8d9d8a4ddf5"
+      "sha256": "dde8708029d619441cb73f0ba1b6b2224c2558a33d0aca5fad08302279c24e1b"
     },
     "LICENSE": {
       "source": "LICENSE",
