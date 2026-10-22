@@ -14,6 +14,7 @@ arguments are a tool execution error (`isError`), an unknown tool a JSON-RPC err
 """
 import json
 import re
+import urllib.parse
 
 SUPPORTED_VERSIONS = ("2025-11-25", "2025-06-18")
 LATEST_VERSION = SUPPORTED_VERSIONS[0]
@@ -21,7 +22,7 @@ SERVER_NAME = "yobiru-friends"
 SERVER_TITLE = "Yobiru Friends"
 SERVER_VERSION = "api-1"
 PARSE_ERROR, INVALID_REQUEST, METHOD_NOT_FOUND, INVALID_PARAMS, INTERNAL_ERROR = -32700, -32600, -32601, -32602, -32603
-MAX_LINE_BYTES = 256 * 1024             # one stdio message
+MAX_LINE_BYTES = 12 * 1024 * 1024        # one stdio message (media attachments travel inline as base64)
 
 
 # ---------------------------------------------------------------- JSON-RPC
@@ -92,13 +93,16 @@ DEC_ID = {"type": "string", "pattern": "^dec_[a-z2-7]{16}$"}
 CHK_ID = {"type": "string", "pattern": "^chk_[a-z2-7]{16}$"}
 HASH = {"type": "string", "pattern": "^[0-9a-f]{64}$"}
 TEXT = {"type": "string", "minLength": 1, "maxLength": 4000}
-ATTACHMENTS = {"type": "array", "minItems": 1, "maxItems": 4,
-               "description": "Small UTF-8 text files, inline only (no paths or URLs): plain names with a text "
-                              "extension (.txt, .md, .json, .csv, .yaml, ...) or none; 16 KiB each, 32 KiB together. "
-                              "Needs the `files` capability.",
-               "items": {"type": "object", "additionalProperties": False, "required": ["name", "content"],
+ATTACHMENTS = {"type": "array", "minItems": 1, "maxItems": 8,
+               "description": "Files, inline only (no paths or URLs). Text files as {name, content}: UTF-8, a text "
+                              "extension (.txt, .md, .json, .csv, .yaml, ...) or none, 16 KiB each. Images, PDFs, "
+                              "audio and video as {name, data}: standard padded base64 of a .png, .jpg, .webp, .gif, "
+                              ".heic, .pdf, .mp3, .m4a, .mp4, .mov ... file whose content matches its extension, 4 MiB "
+                              "each. 8 MiB together. Needs the `files` capability.",
+               "items": {"type": "object", "additionalProperties": False, "required": ["name"],
                          "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 100},
-                                        "content": {"type": "string", "maxLength": 16384}}}}
+                                        "content": {"type": "string", "maxLength": 16384},
+                                        "data": {"type": "string", "minLength": 4, "maxLength": 5592408}}}}
 LEASE = {"lease_id": {"type": "string", "minLength": 1, "maxLength": 128,
                       "description": "lease.lease_id from yobiru_host_claim"},
          "fence": {"type": "integer", "minimum": 0, "description": "lease.fence from yobiru_host_claim"}}
@@ -378,12 +382,38 @@ def _is_type(value, name):
 
 
 # ---------------------------------------------------------------- results
+def media_blocks(value, blocks):
+    """Move the base64 `data` of every media attachment view in `value` into MCP content blocks (images as image
+    blocks, audio as audio blocks, PDFs and video as embedded resources), so a model sees a picture as a picture and
+    the JSON stays small. The view keeps its name, type, size and hash, plus the index of its block."""
+    if isinstance(value, list):
+        for item in value:
+            media_blocks(item, blocks)
+    elif isinstance(value, dict):
+        if isinstance(value.get("data"), str) and isinstance(value.get("media_type"), str) and "sha256" in value:
+            data, mime = value.pop("data"), value["media_type"]
+            kind = mime.split("/", 1)[0]
+            if kind in ("image", "audio"):
+                blocks.append({"type": kind, "data": data, "mimeType": mime})
+            else:
+                blocks.append({"type": "resource", "resource": {
+                    "uri": "yobiru-attachment:///%s/%s" % (value["sha256"], urllib.parse.quote(value["name"])),
+                    "mimeType": mime, "blob": data}})
+            value["content_block"] = len(blocks)
+            return
+        for item in value.values():
+            media_blocks(item, blocks)
+
+
 def tool_result(status, body):
     """A gateway API answer as an MCP tool result: success with `structuredContent`, or a tool execution error
-    carrying the gateway's error code, so a model can correct its call."""
+    carrying the gateway's error code, so a model can correct its call. Media attachments follow the JSON as their
+    own content blocks (`content_block` in a view is the block's position, counted from 1 after the JSON)."""
     data = {k: v for k, v in body.items() if k != "ok"}
     if status is not None and status < 400 and body.get("ok") is True:
-        return {"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False, sort_keys=True)}],
+        blocks, data = [], json.loads(json.dumps(data))
+        media_blocks(data, blocks)
+        return {"content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False, sort_keys=True)}] + blocks,
                 "structuredContent": data, "isError": False}
     err = dict(data, error=body.get("error") or "http_%s" % status, detail=body.get("detail") or "", http_status=status)
     text = "error %s (HTTP %s)%s" % (err["error"], status, ": " + err["detail"] if err["detail"] else "")

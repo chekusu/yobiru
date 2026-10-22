@@ -25,7 +25,7 @@ from pathlib import Path
 
 API_VERSION = 1
 SERVICE = "yobiru-bot-gateway"
-MAX_RESPONSE_BYTES = 1024 * 1024
+MAX_RESPONSE_BYTES = 24 * 1024 * 1024      # a job or message may carry 8 MiB of media (sealed: about 15 MB)
 ID_KINDS = ("bot", "act", "own", "wrk", "ver", "cnv", "msg", "chk", "dec", "eml")
 ID_RE = re.compile(r"^(?:bot|act|own|wrk|ver|cnv|msg|chk|dec|eml)_[a-z2-7]{16}\Z")
 # source: speak and follow as one bot (minted only through that bot's owner); connector: wake one native
@@ -41,12 +41,20 @@ DATE_RE = re.compile(r"^\d{4}-\d\d-\d\d\Z")
 ISO_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\Z")
 # Bidirectional overrides/isolates and marks: they can make displayed text differ from stored text.
 BIDI = set("\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
-# Small text attachments (opt-in `files` capability): plain names with a text extension or none at all. Names
-# a viewer could run or open as something else (scripts, executables, HTML) are refused outright.
+# Attachments (opt-in `files` capability): plain names with a known extension or none at all. Text files travel as
+# UTF-8 `content`; images, PDFs, audio and video travel as base64 `data` and must start with the file signature of
+# their extension. Names a viewer could run or open as something else (scripts, executables, HTML, SVG) are refused.
 ATTACHMENT_EXTENSIONS = ("txt", "md", "markdown", "json", "csv", "tsv", "yaml", "yml", "toml", "log", "diff", "patch",
                          "rst")
 ATTACHMENT_NAME_CHARS = 100
 ATTACHMENT_NAME_BYTES = 200
+# extension -> media type of binary (media) attachments; each must match its signature (media_signature_ok)
+MEDIA_TYPES = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "gif": "image/gif",
+               "webp": "image/webp", "heic": "image/heic", "heif": "image/heif", "avif": "image/avif",
+               "pdf": "application/pdf", "mp3": "audio/mpeg", "m4a": "audio/mp4", "wav": "audio/wav",
+               "ogg": "audio/ogg", "opus": "audio/ogg", "mp4": "video/mp4", "mov": "video/quicktime",
+               "webm": "video/webm"}
+MEDIA_MAX_BYTES = 4 * 1024 * 1024           # one media file, raw bytes (the default; a gateway may set less)
 NAME_RESERVED_CHARS = set('/\\:*?"<>|')
 WINDOWS_DEVICE_RE = re.compile("^(?:con|prn|aux|nul|clock\\$|conin\\$|conout\\$|com[0-9\u00b9\u00b2\u00b3]|"
                                "lpt[0-9\u00b9\u00b2\u00b3])\\Z", re.I)
@@ -157,11 +165,19 @@ def clean_label(value, limit=80):
     return " ".join(unicodedata.normalize("NFC", value).split())[:limit]
 
 
-# ---------------------------------------------------------------- small text attachments
+# ---------------------------------------------------------------- attachments (text and media)
+def attachment_ext(name):
+    return name.rsplit(".", 1)[1].lower() if "." in name else ""
+
+
+def is_media_name(name):
+    return attachment_ext(name) in MEDIA_TYPES
+
+
 def attachment_name_error(name):
-    """None if `name` is a safe plain file name for a text attachment; a short reason otherwise. Plain means: no
+    """None if `name` is a safe plain file name for an attachment; a short reason otherwise. Plain means: no
     separators or traversal, no leading dot or dash, no trailing dot or space, nothing invisible or reserved on
-    Windows, and an extension from ATTACHMENT_EXTENSIONS (or none). Never modifies input."""
+    Windows, and an extension from ATTACHMENT_EXTENSIONS or MEDIA_TYPES (or none). Never modifies input."""
     if not isinstance(name, str):
         return "must be a string"
     if not 1 <= len(name) <= ATTACHMENT_NAME_CHARS or len(name.encode("utf-8", "surrogatepass")) > ATTACHMENT_NAME_BYTES:
@@ -176,9 +192,10 @@ def attachment_name_error(name):
         return "must not start with a dot, dash or space, nor end with a dot or space"
     if WINDOWS_DEVICE_RE.match(name.split(".", 1)[0].rstrip(" ")):
         return "is a reserved device name on Windows"
-    ext = name.rsplit(".", 1)[1].lower() if "." in name else ""
-    if ext and ext not in ATTACHMENT_EXTENSIONS:
-        return "must be a text file (.%s) or have no extension" % ", .".join(ATTACHMENT_EXTENSIONS)
+    ext = attachment_ext(name)
+    if ext and ext not in ATTACHMENT_EXTENSIONS and ext not in MEDIA_TYPES:
+        return "must be a text file (.%s), an image, PDF, audio or video file (.%s) or have no extension" % (
+            ", .".join(ATTACHMENT_EXTENSIONS), ", .".join(sorted(MEDIA_TYPES)))
     return None
 
 
@@ -201,17 +218,75 @@ def attachment_text_error(content, max_bytes):
     return None
 
 
-def attachments_error(items, max_files, max_bytes, total_bytes):
-    """Validate a list of {name, content} attachments. -> (clean list, total bytes, None) or (None, 0, reason).
-    Names must be distinct within one message, also after case folding."""
+ISO_BMFF = {"heic": (b"heic", b"heix", b"heim", b"heis", b"hevc", b"hevx", b"mif1", b"msf1"),
+            "heif": (b"mif1", b"msf1", b"heic", b"heix", b"heif"), "avif": (b"avif", b"avis")}
+
+
+def media_signature_ok(ext, raw):
+    """Whether `raw` starts like a file of type `ext`: a renamed program, page or archive is refused."""
+    if ext == "png":
+        return raw.startswith(b"\x89PNG\r\n\x1a\n")
+    if ext in ("jpg", "jpeg"):
+        return raw.startswith(b"\xff\xd8\xff")
+    if ext == "gif":
+        return raw[:6] in (b"GIF87a", b"GIF89a")
+    if ext == "webp":
+        return raw[:4] == b"RIFF" and raw[8:12] == b"WEBP"
+    if ext == "wav":
+        return raw[:4] == b"RIFF" and raw[8:12] == b"WAVE"
+    if ext in ISO_BMFF:
+        return raw[4:8] == b"ftyp" and (raw[8:12] in ISO_BMFF[ext] or any(
+            raw[i:i + 4] in ISO_BMFF[ext] for i in range(16, min(len(raw), int.from_bytes(raw[:4], "big"), 64), 4)))
+    if ext in ("m4a", "mp4", "mov"):
+        return raw[4:8] in (b"ftyp", b"moov", b"mdat", b"wide", b"free")
+    if ext == "pdf":
+        return raw.startswith(b"%PDF-")
+    if ext == "mp3":
+        return raw.startswith(b"ID3") or (len(raw) > 1 and raw[0] == 0xFF and raw[1] & 0xE0 == 0xE0)
+    if ext in ("ogg", "opus"):
+        return raw.startswith(b"OggS")
+    if ext == "webm":
+        return raw.startswith(b"\x1a\x45\xdf\xa3")
+    return False
+
+
+def decode_media(data, max_bytes):
+    """Canonical standard base64 (padded, no whitespace) -> (bytes, None) or (None, reason)."""
+    if not isinstance(data, str):
+        return None, "must be a base64 string"
+    if len(data) > 4 * ((max_bytes + 2) // 3):
+        return None, "is larger than %d bytes" % max_bytes
+    try:
+        raw = base64.b64decode(data.encode("ascii"), validate=True)
+    except (ValueError, UnicodeEncodeError):
+        return None, "is not valid base64"
+    if base64.b64encode(raw).decode("ascii") != data:
+        return None, "is not canonical base64 (standard alphabet, padded, no whitespace)"
+    if not raw:
+        return None, "is empty"
+    if len(raw) > max_bytes:
+        return None, "is larger than %d bytes" % max_bytes
+    return raw, None
+
+
+def media_raw_size(data):
+    """Raw bytes of canonical base64 `data` without decoding it."""
+    return len(data) // 4 * 3 - (len(data) - len(data.rstrip("=")))
+
+
+def attachments_error(items, max_files, max_bytes, total_bytes, media_max_bytes=MEDIA_MAX_BYTES):
+    """Validate a list of attachments: text {name, content} (UTF-8, within `max_bytes`) or media {name, data}
+    (base64 of an image, PDF, audio or video file within `media_max_bytes` whose signature matches its extension).
+    -> (clean list, total raw bytes, None) or (None, 0, reason). Names must be distinct within one message, also
+    after case folding."""
     if not isinstance(items, list) or not items:
         return None, 0, "attachments must be a non-empty list"
     if len(items) > max_files:
         return None, 0, "at most %d attachments" % max_files
     clean, seen, total = [], set(), 0
     for item in items:
-        if not isinstance(item, dict) or set(item) != {"name", "content"}:
-            return None, 0, "each attachment is exactly {name, content}"
+        if not isinstance(item, dict) or set(item) not in ({"name", "content"}, {"name", "data"}):
+            return None, 0, "each attachment is exactly {name, content} (text) or {name, data} (base64 media)"
         err = attachment_name_error(item["name"])
         if err:
             return None, 0, "attachment name %s" % err
@@ -219,26 +294,72 @@ def attachments_error(items, max_files, max_bytes, total_bytes):
         if folded in seen:
             return None, 0, "attachment names must be distinct"
         seen.add(folded)
-        err = attachment_text_error(item["content"], max_bytes)
-        if err:
-            return None, 0, "attachment %s %s" % (item["name"], err)
-        total += len(item["content"].encode("utf-8"))
+        ext = attachment_ext(item["name"])
+        if "data" in item:
+            if ext not in MEDIA_TYPES:
+                return None, 0, "attachment %s: base64 data is only for image, PDF, audio or video files (.%s)" % (
+                    item["name"], ", .".join(sorted(MEDIA_TYPES)))
+            raw, err = decode_media(item["data"], media_max_bytes)
+            if err:
+                return None, 0, "attachment %s %s" % (item["name"], err)
+            if not media_signature_ok(ext, raw):
+                return None, 0, "attachment %s is not a .%s file (its content does not match the extension)" % (
+                    item["name"], ext)
+            size = len(raw)
+            clean.append({"name": item["name"], "data": item["data"]})
+        else:
+            if ext in MEDIA_TYPES:
+                return None, 0, "attachment %s is a media file: send it as base64 data, not content" % item["name"]
+            err = attachment_text_error(item["content"], max_bytes)
+            if err:
+                return None, 0, "attachment %s %s" % (item["name"], err)
+            size = len(item["content"].encode("utf-8"))
+            clean.append({"name": item["name"], "content": item["content"]})
+        total += size
         if total > total_bytes:
             return None, 0, "attachments are larger than %d bytes together" % total_bytes
-        clean.append({"name": item["name"], "content": item["content"]})
     return clean, total, None
 
 
+def attachment_raw(item):
+    """The bytes of one validated attachment."""
+    if "data" in item:
+        return base64.b64decode(item["data"])
+    return item["content"].encode("utf-8")
+
+
+def attachment_size(item):
+    return media_raw_size(item["data"]) if "data" in item else len(item["content"].encode("utf-8"))
+
+
 def attachment_bytes(items):
-    return sum(len(a["content"].encode("utf-8")) for a in items or [])
+    return sum(attachment_size(a) for a in items or [])
 
 
 def attachment_view(item, content=True):
-    v = {"name": item["name"], "bytes": len(item["content"].encode("utf-8")),
-         "sha256": hashlib.sha256(item["content"].encode("utf-8")).hexdigest()}
-    if content:
+    """What a reader sees of one attachment: name, raw bytes and sha256, plus the media type of a media file, and
+    with `content` its text or base64 data. A text view stays exactly {name, bytes, sha256[, content]}."""
+    raw = attachment_raw(item)
+    v = {"name": item["name"], "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+    if "data" in item:
+        v["media_type"] = MEDIA_TYPES[attachment_ext(item["name"])]
+        if content:
+            v["data"] = item["data"]
+    elif content:
         v["content"] = item["content"]
     return v
+
+
+def omit_media_data(value, hint):
+    """A copy of `value` in which every media attachment view keeps its name, type, size and hash but not its base64
+    `data` (megabytes an agent should save as a file, not read as text): `data_omitted` says how to save it."""
+    if isinstance(value, list):
+        return [omit_media_data(v, hint) for v in value]
+    if isinstance(value, dict):
+        if isinstance(value.get("data"), str) and "media_type" in value and "sha256" in value:
+            return dict({k: v for k, v in value.items() if k != "data"}, data_omitted=hint)
+        return {k: omit_media_data(v, hint) for k, v in value.items()}
+    return value
 
 
 def int_in(value, low, high):
@@ -480,7 +601,18 @@ class _Deadline(object):
         if self.expired:
             raise socket.timeout("deadline exceeded")
 
+    def extend(self, seconds):
+        """Allow a large body (attachments) more time: restart the total limit at `seconds` from now."""
+        with self.lock:
+            if self.expired:
+                return
+            self.timer.cancel()
+            self.timer = threading.Timer(max(0.05, seconds), self._expire)
+            self.timer.daemon = True
+            self.timer.start()
+
     def __enter__(self):
+        self.started = time.monotonic()
         self.timer.start()
         return self
 
@@ -492,6 +624,37 @@ class _Deadline(object):
                 self.sock.close()
             except OSError:
                 pass
+
+
+LARGE_BODY_BYTES = 256 * 1024
+TRANSFER_BYTES_PER_SECOND = 64 * 1024       # the slowest rate a large body is given time for
+MAX_TRANSFER_SECONDS = 300.0
+
+
+def transfer_seconds(timeout, nbytes):
+    """The total time limit for an exchange that moves `nbytes`: small bodies keep `timeout`, a large one (media
+    attachments) also gets the time it takes at TRANSFER_BYTES_PER_SECOND, up to MAX_TRANSFER_SECONDS."""
+    if nbytes <= LARGE_BODY_BYTES:
+        return timeout
+    return min(MAX_TRANSFER_SECONDS, timeout + nbytes / TRANSFER_BYTES_PER_SECOND)
+
+
+def read_bounded(resp, d, timeout):
+    """Read a response body of at most MAX_RESPONSE_BYTES (+1 to detect more). Bytes that keep arriving earn their
+    own transfer time, so a large answer gets through while a peer that trickles stays held to `timeout`."""
+    length = resp.getheader("Content-Length")
+    if length and length.isdigit() and int(length) > MAX_RESPONSE_BYTES:
+        return b"x" * (MAX_RESPONSE_BYTES + 1)
+    chunks, total = [], 0
+    while total <= MAX_RESPONSE_BYTES:
+        chunk = resp.read1(65536)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > LARGE_BODY_BYTES:
+            d.extend(d.started + transfer_seconds(timeout, total) - time.monotonic())
+    return b"".join(chunks)
 
 
 def api_call(base_url, method, path, body=None, token=None, timeout=15.0):
@@ -515,12 +678,12 @@ def api_call(base_url, method, path, body=None, token=None, timeout=15.0):
     if body is not None:
         data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    with _Deadline(conn, timeout) as d:
+    with _Deadline(conn, transfer_seconds(timeout, len(data or b""))) as d:
         try:
             d.connect()
             conn.request(method, u.path + path, body=data, headers=headers)
             resp = conn.getresponse()
-            raw = resp.read(MAX_RESPONSE_BYTES + 1)
+            raw = read_bounded(resp, d, timeout)
             d.check()            # a body that completed only because the deadline cut it short is not a success
         except (OSError, http.client.HTTPException) as e:
             raise ApiError(None, "unreachable", "%s%s" % (type(e).__name__, " (deadline)" if d.expired else ""))
@@ -551,12 +714,12 @@ def post_raw(base_url, path, data, headers, timeout=60.0):
         conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
     hdrs = {"User-Agent": "yobiru-public/%d" % API_VERSION}
     hdrs.update(headers)
-    with _Deadline(conn, timeout) as d:
+    with _Deadline(conn, transfer_seconds(timeout, len(data))) as d:
         try:
             d.connect()
             conn.request("POST", u.path + path, body=data, headers=hdrs)
             resp = conn.getresponse()
-            raw = resp.read(MAX_RESPONSE_BYTES + 1)
+            raw = read_bounded(resp, d, timeout)
             d.check()
         except (OSError, http.client.HTTPException) as e:
             raise ApiError(None, "unreachable", "%s%s" % (type(e).__name__, " (deadline)" if d.expired else ""))

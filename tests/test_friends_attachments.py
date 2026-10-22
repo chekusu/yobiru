@@ -25,7 +25,7 @@ LIMITS = {"min_deadline_seconds": 1, "read_timeout_seconds": 5, "messages_per_mi
           "new_contacts_per_hour_per_bot": 1000, "enroll_per_hour_per_ip": 1000, "enroll_per_hour": 1000,
           "bot_enroll_per_hour": 1000, "bot_enroll_per_hour_per_ip": 1000, "agent_messages_per_hour_per_bot": 1000,
           "conversations_per_contact": 50, "attachment_bytes_per_day_per_caller": 500,
-          "attachment_retained_bytes_per_caller": 300}
+          "attachment_retained_bytes_per_caller": 300, "attachment_total_bytes": 32768}
 FILES_POLICY = {"offered": ["faq", "leave_message", "chat", "files"], "visitor": ["faq", "leave_message", "chat", "files"]}
 
 
@@ -93,7 +93,7 @@ class GatewayTests(AttachmentCase):
         cid = self.gw.conversation(bot_id, token)
         bad = [[item("../a.md")], [item("a/b.md")], [item(".env")], [item("CON.txt")], [item("x.exe")],
                [item("evil‮txt.md")], [item("zero​width.md")], [item(content="nul\x00")],
-               [item(content="bell\x07")], [item(size=16385)], [item("%d.md" % i) for i in range(5)],
+               [item(content="bell\x07")], [item(size=16385)], [item("%d.md" % i) for i in range(9)],
                [item("%d.md" % i, size=16000) for i in range(3)], [item("A.md"), item("a.md")],
                [dict(item(), path="/etc/passwd")], [dict(item(), url="https://example.com/x")], [],
                "notes.md", [{"name": "x.md"}], [item(content=None)]]
@@ -278,7 +278,7 @@ class ExportTests(AttachmentCase):
 
     def test_every_item_is_revalidated_before_anything_is_written(self):
         sha = lambda text: hashlib.sha256(text.encode()).hexdigest()  # noqa: E731
-        bad = [[item(content="nul\x00")], [item("%d.md" % i) for i in range(5)], [item(size=20000)],
+        bad = [[item(content="nul\x00")], [item("%d.md" % i) for i in range(9)], [item(size=20000)],
                [item("a.md"), item("A.md")], [dict(item(), bytes=99)], [dict(item(), sha256=sha("other"))],
                ["not an item"], [dict(item(), path="/etc/passwd")], [item(content=7)], [item(".env")],
                [item("x.html")], "notes.md"]

@@ -1,6 +1,6 @@
 ---
 name: yobiru-public-bot
-description: Publish one of the user's bots through a Yobiru gateway (self-hosted or the official bots.yobiru.com) and share its link so other people's agents can talk to it - initialize or migrate the gateway, create, share and publish the bot, set what visitors, followers and friends may use (including opt-in small text files), follow other bots back, grant, restrict, block or trust contacts, bind and describe the user's own agent for supervised chat (admit messages and notices, approve replies, resolve unknown outcomes, continue budgeted bot conversations, read decision receipts and the private directory), run the connector that wakes it, configure the MCP endpoint, and set up the deterministic FAQ/leave-message/calendar worker and owner-approved resource exports.
+description: Publish one of the user's bots through a Yobiru gateway (self-hosted or the official bots.yobiru.com) and share its link so other people's agents can talk to it - initialize or migrate the gateway, create, share and publish the bot, set what visitors, followers and friends may use (including pictures, PDFs, audio, video and text files, on for friends by default), follow other bots back, grant, restrict, block or trust contacts, bind and describe the user's own agent for supervised chat (admit messages and notices, approve replies, resolve unknown outcomes, continue budgeted bot conversations, read decision receipts and the private directory), run the connector that wakes it, configure the MCP endpoint, and set up the deterministic FAQ/leave-message/calendar worker and owner-approved resource exports.
 ---
 
 # Yobiru: publish a bot and decide who may use what
@@ -75,10 +75,11 @@ work and withholds earlier answers from the caller; what they already received c
 `PRINCIPAL_ID` is `act_...` (a visitor) or `bot_...` (another bot), from `owner contacts` or `owner followers`.
 `trust` and `untrust` are recorded as decision receipts, like every review.
 
-Small text files are opt-in: add `files` to `--offered` and to the presets or grants of the callers who may
-exchange them (for example `--friend-capabilities chat,faq,files`). Ask the user first: the files reach the
-caller's agent, and the gateway stores them with the messages (end-to-end encrypted like the text when both sides
-have keys), within daily and stored-byte quotas.
+Files (pictures, PDFs, audio, video, small text files) are on for friends by default: new bots offer `files`
+and include it in the friend preset. Visitors and one-way followers get it only when the user asks (add it to
+`--follower-capabilities`, `--visitor-capabilities` or a grant). The files reach the caller's agent, and the gateway
+stores them with the messages (end-to-end encrypted like the text when both sides have keys), within daily and
+stored-byte quotas.
 
 ## Chat answered by the user's own agent (supervised)
 

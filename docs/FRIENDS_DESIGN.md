@@ -1,6 +1,6 @@
 # Friends: routing, delivery evidence, decisions, loop budgets, attachments and MCP
 
-**Status: shipped in 0.6.0 (first in 0.6.0-beta.1 as gateway schema 3; schema 4 since 0.6.0-beta.2, schema 5 with end-to-end encryption since 0.7.0); tested with
+**Status: shipped in 0.6.0 (first in 0.6.0-beta.1 as gateway schema 3; schema 4 since 0.6.0-beta.2, schema 5 with end-to-end encryption and schema 6 with files for friends since 0.7.0); tested with
 local processes, loopback HTTP and synthetic data, and one native Grok Bot acceptance run.** This note describes six additions to public bots and Friends
 (`docs/PUBLIC_BOTS.md` is the user guide). Each one extends something that already existed, rather than adding a
 second system beside it:
@@ -223,13 +223,27 @@ contents, kind or cause) is `409 op_key_conflict`, before any charge.
 - A notice whose sender lost access is retired as `cancelled` when the inbox scan meets it.
 - Owner messages to callers are notices too. Both carry `reply_expected: false`.
 
-## 5. Small text attachments (opt-in)
+## 5. Attachments: text and media
 
-- **Capability.** The `files` capability is offered by nobody by default. It is checked by the presence of
-  attachments, also an empty file.
-- **What may be attached.** A chat message, and the native agent's reply to that caller, may carry up to 4 files:
-  16 KiB each, 32 KiB in all, UTF-8 text only. Control characters other than newline, carriage return and tab are
-  refused, and so are bidirectional controls.
+- **Capability.** The `files` capability is part of the default friend preset (and of the default `offered`
+  ceiling): mutual follows exchange files without a setting. Visitors and one-way followers get it only from an
+  owner's preset or grant. It is checked by the presence of attachments, also an empty file.
+- **What may be attached.** A chat message, and the native agent's reply to that caller, may carry up to 8 files,
+  8 MiB in all (raw bytes):
+  - text files as `{name, content}`: 16 KiB each, UTF-8 only. Control characters other than newline, carriage
+    return and tab are refused, and so are bidirectional controls;
+  - media files as `{name, data}`: canonical padded standard base64 of at most 4 MiB, for the extensions
+    `.png .jpg .jpeg .gif .webp .heic .heif .avif .pdf .mp3 .m4a .wav .ogg .opus .mp4 .mov .webm`. The decoded
+    bytes must start with the signature of the extension (PNG, JPEG, GIF, RIFF/WEBP, RIFF/WAVE, ISO-BMFF `ftyp`
+    brands, `%PDF-`, ID3 or MPEG sync, `OggS`, EBML), so a renamed executable, page or archive is refused. Text
+    extensions never take `data`, media extensions never take `content`.
+- **Views.** A text view stays `{name, bytes, sha256, content}`; a media view adds `media_type` and carries `data`.
+  Transcripts carry media as metadata only (name, type, size, hash). The CLI never prints base64 (`data_omitted`
+  says how to save the file); the gateway's MCP tools move media into image, audio or embedded-resource content
+  blocks.
+- **Bodies.** The large request body (12 MiB) is accepted only where files may flow: a send from a caller that has
+  `files` with that bot now, a native reply for a bot that offers `files`. A large body gets `read_timeout_seconds`
+  plus its size at 64 KiB/s; the client's total deadline grows the same way with the bytes actually moving.
 - **Names.** A name must be a plain file name:
   - no separators, traversal, leading dot or dash, or trailing dot or space;
   - no control, format, invisible or non-ASCII space characters;
