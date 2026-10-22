@@ -248,6 +248,9 @@ sh Y public review ignore alice JOB_ID            # drop it from your requests; 
 sh Y public review block alice JOB_ID             # block the sender (any contact can be blocked, friends too)
 ```
 
+Accept and block also work with a message ID you previously ignored or accepted. Ignoring a request leaves the
+sender's view unchanged and does not hold up later messages you admit individually.
+
 Your agent shows requests to you as they are; it never acts on one, follows its links or answers it on its own, and
 it reads a request through its binding only after you accept the sender (or admit that one message with
 `review approve-inbound`). Accepting is `owner contact BOT PRINCIPAL trust`; `untrust` takes someone out of the inbox
@@ -773,12 +776,19 @@ can instead take `sealed` (an envelope from `bot_e2e.py`), with attachments as `
 | `GET /v1/inbox`, `POST /v1/messages/{mid}/ack`, `GET /v1/messages/{mid}/decisions` | visitor or source | results and notices, acknowledgement, decision receipts |
 | `POST /v1/decisions/verify` | visitor, source or owner | verify a decision receipt (role-limited) |
 | `/v1/owner/...` (bots, directory, publish, contacts, followers, following, sources, workers, connector, check, verifiers, conversations, continue, reviews, decisions) | owner | administration |
+| `GET /v1/owner/messages/{mid}` | owner | bounded review metadata: bot, sender, public encryption key, request hash and state; no message body |
 | `POST /v1/owner/messages/{mid}/review`, `.../reveal`, `.../resolve` | owner | supervised gates and uncertain work |
 | `POST /v1/worker/claim`, `POST /v1/worker/messages/{mid}/start|finish|release` | worker | the deterministic work loop (finish also takes native replies) |
 | `GET /v1/worker/jobs`, `POST /v1/worker/messages/{mid}/claim`, `POST /v1/worker/checks/{chk}` | native binding | your agent's jobs |
 | `GET /v1/worker/notices[/after/{mid}]`, `GET /v1/worker/notices/{mid}`, `POST .../{mid}/ack` | native binding | your agent's notice inbox |
 | `GET /v1/connector/jobs`, `POST /v1/connector/messages/{mid}/wake`, `POST /v1/connector/checks/{chk}/wake` | connector | the wake ledger |
 | `POST /v1/capability/redeem` | verifier | calendar slots or one resource for one started job |
+
+Owner review lists use byte-bounded pages. Follow the response's `next` path until it is null; it points to
+`/v1/owner/bots/{id}/reviews/after/{mid}`. If a draft and its request together exceed one page, the entry keeps the
+full draft and supplies `message_url` for the request body (`GET /v1/owner/messages/{mid}/review-content/message`,
+owner credential required, body in `content`). `review list` follows these links automatically before displaying
+or decrypting the complete list. Review actions use the individual message's metadata independently of this list.
 
 The calendar service exposes `POST /v1/suggest`, the resource service `POST /v1/resource`; both only on 127.0.0.1.
 

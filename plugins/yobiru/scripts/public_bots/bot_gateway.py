@@ -1440,9 +1440,11 @@ def recheck_bot(db, bot_id, old_pol, new_pol, now):
 def earlier_open_turn(db, msg):
     """The earliest unfinished chat turn before `msg` in its conversation, if any. Turns of one conversation
     are answered one at a time and in order, so each turn's agent sees the replies before it; a later turn
-    never overtakes an earlier queued, started, review or uncertain one (the owner can resolve or reject it)."""
+    never overtakes an earlier queued, started, review or uncertain one. An ignored request still waiting in the
+    queue does not block later turns; if later trusted and started, it participates in ordering again."""
     return db.execute("SELECT id, state FROM messages WHERE conversation_id=? AND author='caller' AND route='agent' "
-                      "AND state IN ('queued','claimed','started','review','uncertain') AND rowid < (SELECT rowid "
+                      "AND state IN ('queued','claimed','started','review','uncertain') "
+                      "AND (state!='queued' OR review_in IS NULL OR review_in!='ignored') AND rowid < (SELECT rowid "
                       "FROM messages WHERE id=?) ORDER BY rowid LIMIT 1", (msg["conversation_id"], msg["id"])).fetchone()
 
 
@@ -3320,16 +3322,41 @@ class Api(object):
         bot = self.own_bot(db, owner, msg["bot_id"])
         return msg, bot
 
+    def owner_message_context(self, db, r):
+        """Bounded owner-only metadata for review actions, including requests no longer in the queue."""
+        msg, bot = self.owned_message(db, r.subject, r.params["mid"])
+        contact = contact_row(db, bot["id"], msg["actor_id"])
+        return 200, {"ok": True, "message_id": msg["id"], "bot_id": bot["id"], "actor_id": msg["actor_id"],
+                     "actor_e2e_key": principal_key(db, msg["actor_id"]), "request_hash": msg["request_hash"],
+                     "route": msg["route"], "state": msg["state"],
+                     "review": {"inbound": inbound_status(msg, contact)}}
+
     def reviews(self, db, r):
         """What waits for the owner: message requests (chat and notices from people outside the inbox, shown in
         full so the owner can accept, ignore or block the sender), drafts to approve, and native work whose outcome
-        is unknown."""
+        is unknown. Full bodies are paged within the shipped client's response limit."""
         bot, now = self.own_bot(db, r.subject, r.params["bid"]), r.now
         expire_due(db, now)
+        after, args = "", [bot["id"]]
+        if r.params.get("after"):
+            cursor = db.execute("SELECT rowid AS rid, created_ts FROM messages WHERE id=? AND bot_id=?",
+                                (r.params["after"], bot["id"])).fetchone()
+            if cursor is None:
+                raise Fail(404, "not_found")
+            after = "AND (created_ts>? OR (created_ts=? AND rowid>?)) "
+            args.extend((cursor["created_ts"], cursor["created_ts"], cursor["rid"]))
         rows = db.execute("SELECT * FROM messages WHERE bot_id=? AND author='caller' AND ((route='agent' AND state IN "
-                          "('queued','review','uncertain')) OR (route='notice' AND state='stored')) "
-                          "ORDER BY created_ts, rowid", (bot["id"],)).fetchall()
-        inbound, replies, uncertain = [], [], []
+                          "('queued','review','uncertain')) OR (route='notice' AND state='stored')) " + after +
+                          "ORDER BY created_ts, rowid", args)
+        page = {"ok": True, "bot_id": bot["id"], "inbound": [], "replies": [], "uncertain": [], "next": None}
+
+        def wire_size(value):
+            return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+        next_prefix = "/v1/owner/bots/%s/reviews/after/" % bot["id"]
+        # Reserve the largest continuation value before adding any entries; all message ids have this length.
+        used = wire_size(dict(page, next=next_prefix + "msg_" + "a" * 16))
+        last = None
         for m in rows:
             contact = contact_row(db, bot["id"], m["actor_id"])
             if m["state"] in ("queued", "stored") and inbound_status(m, contact) == "pending":
@@ -3341,24 +3368,55 @@ class Api(object):
                 shown = dict({"text": content.get("text")}, **sealed_of(content))
                 if content.get("attachments"):
                     shown["attachments"] = attachment_views(content["attachments"])
-                inbound.append(dict(job_view(db, self.cfg, m, bot, contact), request_hash=m["request_hash"],
-                                    notice=m["route"] == "notice", message=shown,
-                                    display_name_untrusted=principal_info(db, m["actor_id"])["display_name"],
-                                    content_trust=REQUEST_TRUST,
-                                    attachments_pending={"count": file_count(content),
-                                                         "bytes": m["content_attachment_bytes"]}))
+                category = "inbound"
+                item = dict(job_view(db, self.cfg, m, bot, contact), request_hash=m["request_hash"],
+                            notice=m["route"] == "notice", message=shown,
+                            display_name_untrusted=principal_info(db, m["actor_id"])["display_name"],
+                            content_trust=REQUEST_TRUST,
+                            attachments_pending={"count": file_count(content),
+                                                 "bytes": m["content_attachment_bytes"]})
             elif m["state"] == "review":
                 view = owner_message_view(m, contact)
-                replies.append({"job_id": m["id"], "conversation_id": m["conversation_id"],
-                                "from": job_view(db, self.cfg, m, bot, contact)["from"],
-                                "message": view["content"], "draft": view.get("draft"),
-                                "draft_hash": m["draft_hash"], "drafted_at": ts_iso(m["draft_ts"]),
-                                "content_trust": "the message is untrusted external text; the draft was written by "
-                                                 "your agent after reading it"})
+                category = "replies"
+                item = {"job_id": m["id"], "conversation_id": m["conversation_id"],
+                        "from": job_view(db, self.cfg, m, bot, contact)["from"],
+                        "message": view["content"], "draft": view.get("draft"),
+                        "draft_hash": m["draft_hash"], "drafted_at": ts_iso(m["draft_ts"]),
+                        "content_trust": "the message is untrusted external text; the draft was written by "
+                                         "your agent after reading it"}
             elif m["state"] == "uncertain":
-                uncertain.append(dict(job_view(db, self.cfg, m, bot, contact),
-                                      next="retry (may repeat host effects), abandon, or wait for the deadline"))
-        return 200, {"ok": True, "bot_id": bot["id"], "inbound": inbound, "replies": replies, "uncertain": uncertain}
+                category = "uncertain"
+                item = dict(job_view(db, self.cfg, m, bot, contact),
+                            next="retry (may repeat host effects), abandon, or wait for the deadline")
+            else:
+                continue
+            size = wire_size(item) + bool(page[category])
+            if used + size > C.MAX_RESPONSE_BYTES:
+                if last is not None:
+                    page["next"] = next_prefix + last
+                    break
+                if category == "replies":
+                    # Two maximum sealed bodies can exceed one response even on a page of their own. Keep the
+                    # exact draft here and let the owner retrieve the complete request independently.
+                    item["message"] = None
+                    item["message_url"] = "/v1/owner/messages/%s/review-content/message" % m["id"]
+                    size = wire_size(item)
+                if used + size > C.MAX_RESPONSE_BYTES:
+                    raise Fail(413, "review_item_too_large", "this review exceeds the client response limit")
+            page[category].append(item)
+            used += size
+            last = m["id"]
+        return 200, page
+
+    def review_message_content(self, db, r):
+        """The full request beside an oversized review draft, separately authorized to its bot's owner."""
+        msg, bot = self.owned_message(db, r.subject, r.params["mid"])
+        if msg["route"] not in GATED_ROUTES:
+            raise Fail(409, "not_reviewable")
+        content = json.loads(msg["content"])
+        if content.get("attachments"):
+            content["attachments"] = attachment_views(content["attachments"])
+        return 200, {"ok": True, "bot_id": bot["id"], "message_id": msg["id"], "content": content}
 
     def decide(self, db, r, bot, contact, msg, action, subject_hash):
         """The decision receipt of one review action, in the review's own transaction."""
@@ -3390,7 +3448,7 @@ class Api(object):
         action = body["action"]
         if msg["route"] not in GATED_ROUTES:
             raise Fail(409, "not_reviewable", "only chat jobs and notices for the owner's agent are reviewed")
-        if msg["route"] == "notice" and action not in ("approve_inbound", "reject_inbound"):
+        if msg["route"] == "notice" and action not in ("approve_inbound", "reject_inbound", "ignore"):
             raise Fail(409, "not_reviewable", "a notice has no reply to review")
         said = self.owner_text(db, bot, msg["actor_id"], body, required=False)
         expire_due(db, now)
@@ -4128,7 +4186,8 @@ class Api(object):
                     more = True
                     break
                 items.append(self.notice_view(db, m, bot, contact))
-        pending = db.execute("SELECT COUNT(*) " + admitted + "NOT (m.review_in IS NOT NULL AND m.review_in='approved') "
+        pending = db.execute("SELECT COUNT(*) " + admitted +
+                             "(m.review_in IS NULL OR m.review_in NOT IN ('approved','ignored')) "
                              "AND c.preapproved=0", (bot["id"],)).fetchone()[0]
         return 200, {"ok": True, "bot_id": bot["id"], "notices": items, "more": more or scanned >= self.NOTICE_SCAN,
                      "next_after": items[-1]["notice_id"] if items else None, "waiting_for_owner_review": pending,
@@ -4185,8 +4244,10 @@ class Api(object):
         worker, now = r.subject, r.now
         bot = db.execute("SELECT * FROM bots WHERE id=?", (worker["bot_id"],)).fetchone()
         expire_due(db, now)
-        rows = db.execute("SELECT * FROM messages WHERE bot_id=? AND author='caller' AND route='agent' AND "
-                          "state='queued' ORDER BY created_ts, rowid LIMIT 200", (bot["id"],)).fetchall()
+        rows = db.execute("SELECT m.* FROM messages m JOIN contacts c ON c.bot_id=m.bot_id AND c.actor_id=m.actor_id "
+                          "WHERE m.bot_id=? AND m.author='caller' AND m.route='agent' AND m.state='queued' "
+                          "AND (m.review_in IS NULL OR m.review_in!='ignored' OR c.preapproved=1) "
+                          "ORDER BY m.created_ts, m.rowid LIMIT 200", (bot["id"],)).fetchall()
         jobs = []
         for m in rows:
             if block_reason(db, m, bot=bot):
@@ -4206,9 +4267,10 @@ class Api(object):
         connector can wake its agent when a friend (or any bot it wrote to) answers, as in a chat app. Ids only: the
         agent reads the reply with its own caller credential (`public inbox --as`), which also acknowledges it."""
         since = int(now) - self.limits.get("reply_wake_window_seconds", 7 * 86400)
+        # Read-without-reply completions cannot be acknowledged and must not consume the candidate limit.
         rows = db.execute("SELECT * FROM messages WHERE actor_id=? AND author='caller' AND caller_ack_ts IS NULL AND "
-                          "state IN ('completed','declined','failed') AND finished_ts>=? ORDER BY finished_ts, rowid "
-                          "LIMIT 50", (bot["id"], since)).fetchall()
+                          "result IS NOT NULL AND state IN ('completed','declined','failed') AND finished_ts>=? "
+                          "ORDER BY finished_ts, rowid LIMIT 50", (bot["id"], since)).fetchall()
         replies = []
         for m in rows:
             target = db.execute("SELECT * FROM bots WHERE id=?", (m["bot_id"],)).fetchone()
@@ -4244,7 +4306,8 @@ class Api(object):
                 return 200, {"ok": True, "job_id": msg["id"], "wake_state": "intent", "duplicate": True}
             phase = body.get("phase")
             if msg["state"] != "queued" or block_reason(db, msg, bot=bot) or phase != self.job_phase(db, msg, bot) or \
-                    not self.wake_due(msg, phase, now) or (phase == "ready" and turn_blocker(db, msg, bot) is not None):
+                    (phase == "review" and msg["review_in"] == "ignored") or not self.wake_due(msg, phase, now) or \
+                    (phase == "ready" and turn_blocker(db, msg, bot) is not None):
                 return 409, {"ok": False, "error": "not_due", "wake_state": msg["wake_state"], "state": msg["state"]}
             db.execute("UPDATE messages SET wake_state='intent', wake_phase=?, wake_id=?, wake_seq=wake_seq+1, "
                        "wake_ts=?, wake_detail=NULL, wake_intent_ts=?, wake_seen_before_ts=?, wake_route=? WHERE id=?",
@@ -4399,10 +4462,13 @@ ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
      ("owner",)),
     ("GET", r"/v1/owner/bots/(?P<bid>%s)/conversations" % BOT_ID, "owner_conversation_list", ("owner",)),
     ("GET", r"/v1/owner/bots/(?P<bid>%s)/reviews" % BOT_ID, "reviews", ("owner",)),
+    ("GET", r"/v1/owner/bots/(?P<bid>%s)/reviews/after/(?P<after>msg_[a-z2-7]{16})" % BOT_ID, "reviews", ("owner",)),
+    ("GET", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/review-content/message", "review_message_content", ("owner",)),
     ("GET", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})", "owner_conversation_get", ("owner",)),
     ("POST", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})/messages", "owner_reply", ("owner",)),
     ("DELETE", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})", "owner_conversation_delete", ("owner",)),
     ("POST", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})/continue", "conversation_continue", ("owner",)),
+    ("GET", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})", "owner_message_context", ("owner",)),
     ("POST", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/review", "review_action", ("owner",)),
     ("POST", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/reveal", "reveal", ("owner",)),
     ("POST", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/resolve", "resolve", ("owner",)),
