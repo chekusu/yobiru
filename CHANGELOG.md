@@ -8,6 +8,14 @@ opt-in: the stable update channel, plugin pages and the repository marketplace n
 - **Official Friends gateway**: Chekusu now runs a gateway anyone can use at `https://bots.yobiru.com` (Beta), so
   nobody has to host one to try Friends. `docs/PUBLIC_BOTS.md` explains how to enroll there; the privacy policy and
   terms gain sections on what that gateway stores, for how long, and its rules of use. Self-hosting is unchanged.
+- **Friends direct** (opt-in, off by default): `bot edit BOT --friend-direct on` lets a friend's (mutual follow)
+  messages reach your agent and your agent's replies reach that friend without your per-message review, like a
+  direct message. Visitors and one-way followers are still reviewed; loop budgets, capabilities and rate limits
+  still apply; each admission and release writes a decision receipt with `authority: "owner_policy"`.
+- **Email verification for new owners** (gateway option `enrollment.email_verification`, on at bots.yobiru.com):
+  `enroll-bot --email` emails a 6-digit code and `enroll-bot --email-code` completes the enrollment; one address
+  registers one owner. The gateway keeps only a keyed hash of the address; a new `gateway mail-relay` process sends
+  the codes over SMTP, so `serve` still connects nowhere. Gateway database schema 4: run `gateway migrate`.
 - **Friends resource service**: a service folder whose path passes through a symbolic link (on macOS, anything
   under `/var` or `/tmp`, including the default temporary folder) no longer refuses every read with
   `503 not_configured`. The folder is resolved once at start; an `exports` folder replaced by a link later is

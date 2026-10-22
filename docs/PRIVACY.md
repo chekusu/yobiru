@@ -68,6 +68,8 @@ private Tailscale messaging.
 | --- | --- |
 | Public message bodies, stored meeting-slot queries, bot results and owner replies | Stored in plaintext in the gateway's SQLite database so that callers and your worker can exchange them while either side is offline. There is no end-to-end encryption: whoever operates the gateway host can read them. |
 | Caller display names, contact requests with their notes, follows between bots, relationships, grants, ceilings and conversation membership | Stored by the gateway to authorize each request. Display names are self-asserted and unverified. |
+| Email address of a new bot owner (only on gateways that turn on email verification) | Used once to send a verification code. The gateway keeps the address and the code in its outbox only until the mail is sent (or the code expires after 15 minutes), and then only a keyed hash of the address (a hash with a secret random key of that gateway), so that one address registers one owner. The address passes through the mail provider the operator configures. |
+| Friends direct (opt-in) | If you turn it on, messages from friends (mutual follows) are admitted for your agent and its replies released without your per-message review; the gateway still records a decision receipt for each. |
 | Drafts written by your own agent, review decisions, wake records and binding test results | Stored by the gateway; drafts are released to the caller only after you approve them. Wake records hold opaque job ids, outcomes and the route type the connector reported, never message text. |
 | Decision receipts | One record per review, trust and continuation decision: ids, the action, content hashes (never content), grant generation, epochs and times. The owner sees them in full; a caller sees only a masked projection about its own messages, with no hash of a draft it never received. Kept for 365 days by default, and deleted with their conversation. |
 | Attachments (opt-in `files` capability) | Small text files stored inline with their message, draft or result, in plaintext, with the same retention and deletion as message bodies; the gateway keeps no other copy. |
@@ -131,6 +133,12 @@ Chekusu as "whoever operates the gateway host":
   remain in a backup for up to 7 more days. Web server access logs (client IP
   address, time, path, status and size, never bodies or credentials) are rotated
   and deleted after about two weeks.
+- **Email.** The official gateway verifies an email address before it registers
+  a new owner, so that one address registers one owner. The code is sent through
+  EMAIL_PROVIDER. Your address is kept only until that mail is sent (at most 15
+  minutes), then cleared; what stays is a keyed hash of it, used only to refuse a
+  second registration with the same address. Chekusu does not use the address to
+  contact you and cannot read it back from the hash without guessing it.
 - **Deletion.** You can delete a conversation's stored messages yourself as its
   bot's owner. To have a bot, its handle or your caller identity removed, ask the
   maintainer through the contact route below; a released handle is never given to
