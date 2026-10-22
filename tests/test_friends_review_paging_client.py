@@ -34,7 +34,7 @@ class ReviewPagingClientTests(FriendsClientCase):
             self.assertEqual(202, status, sent)
             mids.append(sent["message_id"])
 
-        with patch.object(P, "call", wraps=P.call) as calls, patch.object(P, "out", wraps=P.out) as output:
+        with patch.object(P.C, "api_call", wraps=P.C.api_call) as calls, patch.object(P, "out", wraps=P.out) as output:
             shown = self.y("owner", "review", "list", "large-review")
         page_paths = [c.args[2] for c in calls.call_args_list if "/reviews" in c.args[2]]
         self.assertGreater(len(page_paths), 1, "the CLI must follow the byte-bounded review pages")
@@ -97,8 +97,8 @@ class ReviewPageLinkTests(unittest.TestCase):
                      "next": None}, **extra)
 
     def test_split_request_is_hydrated_and_review_categories_survive_pagination(self):
-        first = "/v1/owner/bots/%s/reviews" % self.bot
-        second = first + "/after/" + self.mid
+        first = "/v1/owner/bots/%s/reviews/full" % self.bot
+        second = "/v1/owner/bots/%s/reviews/after/%s" % (self.bot, self.mid)
         body = "/v1/owner/messages/%s/review-content/message" % self.mid
         draft = {"text": "Synthetic draft", "attachments": [{"name": "draft.txt", "content": "draft file"}]}
         content = {"text": "Synthetic request", "attachments": [{"name": "request.txt", "content": "request file"}]}
@@ -109,7 +109,7 @@ class ReviewPageLinkTests(unittest.TestCase):
         responses = {first: self.page(replies=[reply], next=second),
                      body: {"ok": True, "bot_id": self.bot, "message_id": self.mid, "content": content},
                      second: self.page(inbound=[inbound], uncertain=[uncertain])}
-        with patch.object(P, "call", side_effect=lambda base, method, path, payload, token: responses[path]) as calls:
+        with patch.object(P.C, "api_call", side_effect=lambda base, method, path, *args, **kwargs: (200, responses[path])) as calls:
             result = P.owner_reviews("http://127.0.0.1", "synthetic-owner", self.bot)
         self.assertEqual([first, body, second], [c.args[2] for c in calls.call_args_list])
         self.assertEqual([inbound], result["inbound"])
@@ -120,24 +120,39 @@ class ReviewPageLinkTests(unittest.TestCase):
         self.assertNotIn("message_url", result["replies"][0])
         self.assertIsNone(result["next"])
 
+    def test_older_full_body_gateway_still_has_all_pages_after_negotiation_fallback(self):
+        legacy = "/v1/owner/bots/%s/reviews" % self.bot
+        next_path = legacy + "/after/" + self.mid
+        first = {"job_id": self.mid, "message": {"text": "First request"}}
+        last = {"job_id": "msg_" + "c" * 16, "message": {"text": "Last request"}}
+        replies = {legacy + "/full": (404, {"ok": False, "error": "not_found"}),
+                   legacy: (200, self.page(inbound=[first], next=next_path)),
+                   next_path: (200, self.page(inbound=[last]))}
+        with patch.object(P.C, "api_call", side_effect=lambda base, method, path, *args, **kwargs:
+                          replies[path]) as calls:
+            result = P.owner_reviews("http://127.0.0.1", "synthetic-owner", self.bot)
+        self.assertEqual([legacy + "/full", legacy, next_path], [c.args[2] for c in calls.call_args_list])
+        self.assertEqual([first, last], result["inbound"])
+        self.assertIsNone(result["next"])
+
     def test_continuations_cannot_redirect_the_owner_credential(self):
         for link in ("https://example.invalid/reviews", "/v1/owner/bots/bot_" + "c" * 16 +
                      "/reviews/after/" + self.mid):
-            with self.subTest(link=link), patch.object(P, "call", return_value=self.page(next=link)) as calls:
+            with self.subTest(link=link), patch.object(P.C, "api_call", return_value=(200, self.page(next=link))) as calls:
                 with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                     P.owner_reviews("http://127.0.0.1", "synthetic-owner", self.bot)
                 self.assertEqual(1, calls.call_count)
 
     def test_request_body_links_cannot_redirect_the_owner_credential(self):
         item = {"job_id": self.mid, "message": None, "message_url": "https://example.invalid/body"}
-        with patch.object(P, "call", return_value=self.page(replies=[item])) as calls:
+        with patch.object(P.C, "api_call", return_value=(200, self.page(replies=[item]))) as calls:
             with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 P.owner_reviews("http://127.0.0.1", "synthetic-owner", self.bot)
             self.assertEqual(1, calls.call_count)
 
     def test_repeated_continuation_is_rejected_instead_of_looping(self):
         link = "/v1/owner/bots/%s/reviews/after/%s" % (self.bot, self.mid)
-        with patch.object(P, "call", side_effect=[self.page(next=link), self.page(next=link)]) as calls:
+        with patch.object(P.C, "api_call", side_effect=[(200, self.page(next=link)), (200, self.page(next=link))]) as calls:
             with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 P.owner_reviews("http://127.0.0.1", "synthetic-owner", self.bot)
             self.assertEqual(2, calls.call_count)

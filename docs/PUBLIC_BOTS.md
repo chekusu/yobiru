@@ -584,9 +584,11 @@ Defaults (override in `gateway.json` `limits`): request bodies 16 KiB and text 4
 per hour; 60 follows per source and 120 new followers per bot per hour, at most 1000 followed; 10 messages per minute
 and 60 per hour per caller; 240 chat messages per bot per hour; 100 turns per conversation and 5 open conversations
 per contact (a full one no longer counts); 10 pending per contact,
-200 per bot, 2000 in total; deadlines 60 s to 7 days; worker leases up to 300 s and native job leases up to 1 hour;
-transcripts of the last 20 turns or 24000 characters; refused wakes retried at most 5 times with a doubling backoff;
-retention 30 days. Schema 3 adds: loop budgets of 20 consecutive automated turns per conversation and 100 per source
+200 per bot, 2000 in total (ignored requests that have not been admitted do not consume pending capacity, but
+still count toward retained storage and sending limits); deadlines 60 s to 7 days; worker leases up to 300 s and
+native job leases up to 1 hour; transcripts of the last 20 turns or 24000 characters; refused wakes retried at most
+5 times with a doubling backoff; retention 30 days. Schema 3 adds: loop budgets of 20 consecutive automated turns
+per conversation and 100 per source
 bot and bot per day, causal hops up to 4, continuations of at most 20 turns and one day; attachments of at most 8 files,
 16 KiB per text file, 4 MiB per media file and 8 MiB per message, 64 MiB per caller and 256 MiB per bot per day, and
 128 MiB retained per caller, 512 MiB per bot and 4 GiB per gateway; request bodies of 12 MiB where files may flow (a
@@ -784,9 +786,11 @@ can instead take `sealed` (an envelope from `bot_e2e.py`), with attachments as `
 | `GET /v1/connector/jobs`, `POST /v1/connector/messages/{mid}/wake`, `POST /v1/connector/checks/{chk}/wake` | connector | the wake ledger |
 | `POST /v1/capability/redeem` | verifier | calendar slots or one resource for one started job |
 
-Owner review lists use byte-bounded pages. Follow the response's `next` path until it is null; it points to
-`/v1/owner/bots/{id}/reviews/after/{mid}`. If a draft and its request together exceed one page, the entry keeps the
-full draft and supplies `message_url` for the request body (`GET /v1/owner/messages/{mid}/review-content/message`,
+`GET /v1/owner/bots/{id}/reviews` keeps the complete legacy metadata list for existing clients. New clients request
+`GET /v1/owner/bots/{id}/reviews/full` for full message bodies in byte-bounded pages, falling back to the legacy
+endpoint only when `/reviews/full` returns `404 not_found`. Follow the response's `next` path until it is null;
+it points to `/v1/owner/bots/{id}/reviews/after/{mid}`. If a draft and its request together exceed one page, the entry
+keeps the full draft and supplies `message_url` for the request body (`GET /v1/owner/messages/{mid}/review-content/message`,
 owner credential required, body in `content`). `review list` follows these links automatically before displaying
 or decrypting the complete list. Review actions use the individual message's metadata independently of this list.
 

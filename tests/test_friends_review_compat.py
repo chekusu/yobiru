@@ -1,12 +1,20 @@
-"""Current review commands remain usable with a gateway's pre-metadata review API."""
+"""Review commands remain usable across gateway-only and client-only upgrades."""
+import base64
 import io
+import json
 import re
+import subprocess
+import sys
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from test_friends_client import FriendsClientCase, cli
 from test_friends_e2e import E2ECase
+from support.public_harness import PUBLIC, plain_env
+from fixtures.review_client_pr33_base import cmd_review as base_cmd_review
+
+import bot_gateway as G
 
 import bot_client as P
 
@@ -17,6 +25,8 @@ def legacy_review_api():
 
     def legacy(base, method, path, *args, **kwargs):
         if method == "GET" and re.fullmatch(r"/v1/owner/messages/msg_[a-z2-7]{16}", path):
+            return 404, {"ok": False, "error": "not_found"}
+        if method == "GET" and path.endswith("/reviews/full"):
             return 404, {"ok": False, "error": "not_found"}
         status, obj = api_call(base, method, path, *args, **kwargs)
         if method == "GET" and re.fullmatch(r"/v1/owner/bots/bot_[a-z2-7]{16}/reviews", path):
@@ -64,6 +74,70 @@ class LegacyReviewTests(FriendsClientCase):
         self.assertEqual([mid], [x["job_id"] for x in self.y("owner", "review", "list", "alice")["inbound"]])
 
 
+class BaseClientReviewTests(FriendsClientCase):
+    """Old owner commands still see and act on every request after a gateway-only upgrade."""
+    base_commit = "0154a9375d9b7a2d3da70b8ebf074eeb12cf5cb1"
+
+    def large_requests(self):
+        bot = self.owner_bot("legacy-review")
+        self.gw.policy(bot, offered=["chat", "files"], visitor=["chat", "files"])
+        _, caller = self.gw.actor()
+        cid = self.gw.conversation(bot, caller)
+        size = G.LIMIT_DEFAULTS["attachment_media_max_bytes"]
+        raw = b"%PDF-1.7\n" + b"0" * (size - len(b"%PDF-1.7\n"))
+        data = base64.b64encode(raw).decode("ascii")
+        attachments = [{"name": name, "data": data} for name in ("first.pdf", "second.pdf")]
+        mids = []
+        for i in range(3):
+            status, sent = self.gw.send(cid, caller, kind="chat", text="legacy request %d" % i,
+                                       attachments=attachments)
+            self.assertEqual(202, status, sent)
+            mids.append(sent["message_id"])
+        return bot, mids, size
+
+    def check_legacy_commands(self, old_cli, mids, size):
+        listed = old_cli("review", "list", "legacy-review")
+        self.assertEqual(mids, [item["job_id"] for item in listed["inbound"]])
+        self.assertNotIn("next", listed, "the original endpoint returns the entire metadata queue")
+        for item in listed["inbound"]:
+            self.assertNotIn("message", item)
+            self.assertNotIn("display_name_untrusted", item)
+            self.assertEqual({"count": 2, "bytes": 2 * size}, item["attachments_pending"])
+        approved = old_cli("review", "approve-inbound", "legacy-review", mids[-1])
+        self.assertEqual("approved", approved["inbound"])
+
+    def test_legacy_commands_list_and_approve_beyond_first_full_body_page(self):
+        bot, mids, size = self.large_requests()
+        first_page = self.gw.ok("GET", "/v1/owner/bots/%s/reviews/full" % bot, None, self.gw.owner_token)
+        self.assertEqual(mids[:2], [item["job_id"] for item in first_page["inbound"]])
+        self.assertIsNotNone(first_page["next"])
+        with patch.object(P, "cmd_review", base_cmd_review):
+            self.check_legacy_commands(lambda *args: self.y("owner", *args), mids, size)
+        self.assert_no_credentials_printed()
+
+    def test_exact_base_client_lists_and_approves_beyond_first_full_body_page(self):
+        # Also run the complete, unmodified base client and its base dependencies when Git history is present.
+        legacy = self.root / "base-client"
+        legacy.mkdir()
+        for name in ("bot_client.py", "bot_common.py", "bot_e2e.py", "bot_mcp.py"):
+            try:
+                source = subprocess.run(["git", "show", self.base_commit + ":public_bots/" + name],
+                                        cwd=PUBLIC.parent, capture_output=True, check=True).stdout
+            except (FileNotFoundError, subprocess.CalledProcessError):
+                self.skipTest("the public PR base commit is unavailable (for example, a source archive)")
+            (legacy / name).write_bytes(source)
+        _, mids, size = self.large_requests()
+
+        def old_cli(*args):
+            result = subprocess.run([sys.executable, str(legacy / "bot_client.py"),
+                                     "--home", str(self.homes["owner"]), *args],
+                                    env=plain_env(self.root), capture_output=True, text=True, timeout=30)
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            return json.loads(result.stdout)
+
+        self.check_legacy_commands(old_cli, mids, size)
+
+
 class LegacySealedReviewTests(E2ECase):
     def test_decline_note_uses_legacy_sender_key_and_stays_encrypted(self):
         self.bot_with_host(files=False)
@@ -86,6 +160,19 @@ class MessageContextFailureTests(unittest.TestCase):
                 with self.assertRaises(SystemExit) as raised:
                     P.owner_message_context("http://127.0.0.1", "synthetic-owner", "bot_" + "a" * 16,
                                             "msg_" + "b" * 16)
+                self.assertEqual(2, raised.exception.code)
+                self.assertEqual(1, calls.call_count)
+                self.assertIn(code, output.getvalue())
+
+
+class ReviewNegotiationFailureTests(unittest.TestCase):
+    def test_only_missing_full_review_endpoint_can_fall_back(self):
+        for status, code in ((401, "unauthorized"), (403, "forbidden"), (429, "rate_limited"),
+                             (500, "internal_error"), (404, "response_too_large"), (None, "unreachable")):
+            with self.subTest(status=status, code=code), redirect_stdout(io.StringIO()) as output, \
+                    patch.object(P.C, "api_call", side_effect=P.C.ApiError(status, code)) as calls:
+                with self.assertRaises(SystemExit) as raised:
+                    P.owner_reviews("http://127.0.0.1", "synthetic-owner", "bot_" + "a" * 16)
                 self.assertEqual(2, raised.exception.code)
                 self.assertEqual(1, calls.call_count)
                 self.assertIn(code, output.getvalue())

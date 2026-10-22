@@ -2317,13 +2317,23 @@ def owner_message_context(base, token, bot_id, mid):
 
 def owner_reviews(base, token, bot_id):
     """Collect bounded review pages and fetch a split request body before displaying or decrypting it."""
-    path = "/v1/owner/bots/%s/reviews" % bot_id
+    legacy_path = "/v1/owner/bots/%s/reviews" % bot_id
+    full_path = path = legacy_path + "/full"
     seen, result = set(), None
     while path:
         if path in seen:
             die("invalid review pagination")
         seen.add(path)
-        page = call(base, "GET", path, None, token)
+        try:
+            _, page = C.api_ok(base, "GET", path, None, token)
+        except C.ApiError as e:
+            if path != full_path or e.status != 404 or e.code != "not_found":
+                fail(e)
+            # Older gateways have only the original review endpoint. Its response may be a complete
+            # metadata list or the earlier full-body pagination contract; both remain readable here.
+            page = call(base, "GET", legacy_path, None, token)
+        except ValueError as e:
+            die(str(e))
         for item in page["inbound"] + page["replies"]:
             body_path = item.get("message_url")
             if body_path:

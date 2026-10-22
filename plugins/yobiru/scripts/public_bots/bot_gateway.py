@@ -2578,8 +2578,10 @@ class Api(object):
             raise Fail(429, "conversation_turn_limit", "start a new conversation")
         hop = cause_hop(db, L, cause, pid) if cause is not None else 0
         if kind != "notice":
+            # Ignored requests stay stored and silent, but consume active capacity again if later admitted.
             pend = lambda where, args: db.execute(  # noqa: E731
                 "SELECT COUNT(*) FROM messages WHERE state IN ('queued','claimed','started','review','uncertain') AND " +
+                "(state!='queued' OR review_in IS NULL OR review_in!='ignored' OR admitted_ts IS NOT NULL) AND " +
                 where, args).fetchone()[0]
             if pend("bot_id=? AND actor_id=?", (bot["id"], pid)) >= L["pending_per_contact"]:
                 raise Fail(429, "too_many_pending", "wait for earlier messages to finish")
@@ -3337,9 +3339,11 @@ class Api(object):
     def reviews(self, db, r):
         """What waits for the owner: message requests (chat and notices from people outside the inbox, shown in
         full so the owner can accept, ignore or block the sender), drafts to approve, and native work whose outcome
-        is unknown. Full bodies are paged within the shipped client's response limit."""
+        is unknown. /reviews preserves the legacy complete metadata list; /reviews/full opts into full bodies
+        paged within the shipped client's response limit."""
         bot, now = self.own_bot(db, r.subject, r.params["bid"]), r.now
         expire_due(db, now)
+        full = bool(r.params.get("full") or r.params.get("after"))
         after, args = "", [bot["id"]]
         if r.params.get("after"):
             cursor = db.execute("SELECT rowid AS rid, created_ts FROM messages WHERE id=? AND bot_id=?",
@@ -3351,7 +3355,9 @@ class Api(object):
         rows = db.execute("SELECT * FROM messages WHERE bot_id=? AND author='caller' AND ((route='agent' AND state IN "
                           "('queued','review','uncertain')) OR (route='notice' AND state='stored')) " + after +
                           "ORDER BY created_ts, rowid", args)
-        page = {"ok": True, "bot_id": bot["id"], "inbound": [], "replies": [], "uncertain": [], "next": None}
+        page = {"ok": True, "bot_id": bot["id"], "inbound": [], "replies": [], "uncertain": []}
+        if full:
+            page["next"] = None
 
         def wire_size(value):
             return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -3368,16 +3374,17 @@ class Api(object):
                 if m["review_in"] == "ignored":
                     continue                  # the owner ignored this request; it stays unanswered
                 content = json.loads(m["content"])
-                shown = dict({"text": content.get("text")}, **sealed_of(content))
-                if content.get("attachments"):
-                    shown["attachments"] = attachment_views(content["attachments"])
                 category = "inbound"
                 item = dict(job_view(db, self.cfg, m, bot, contact), request_hash=m["request_hash"],
-                            notice=m["route"] == "notice", message=shown,
-                            display_name_untrusted=principal_info(db, m["actor_id"])["display_name"],
-                            content_trust=REQUEST_TRUST,
+                            notice=m["route"] == "notice",
                             attachments_pending={"count": file_count(content),
                                                  "bytes": m["content_attachment_bytes"]})
+                if full:
+                    shown = dict({"text": content.get("text")}, **sealed_of(content))
+                    if content.get("attachments"):
+                        shown["attachments"] = attachment_views(content["attachments"])
+                    item.update(message=shown, content_trust=REQUEST_TRUST,
+                                display_name_untrusted=principal_info(db, m["actor_id"])["display_name"])
             elif m["state"] == "review":
                 view = owner_message_view(m, contact)
                 category = "replies"
@@ -3394,7 +3401,7 @@ class Api(object):
             else:
                 continue
             size = wire_size(item) + bool(page[category])
-            if used + size > C.MAX_RESPONSE_BYTES:
+            if full and used + size > C.MAX_RESPONSE_BYTES:
                 if last is not None:
                     page["next"] = next_prefix + last
                     break
@@ -4464,7 +4471,7 @@ ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
     ("POST", r"/v1/owner/bots/(?P<bid>%s)/verifiers/(?P<vid>ver_[a-z2-7]{16})/revoke" % BOT_ID, "verifier_revoke",
      ("owner",)),
     ("GET", r"/v1/owner/bots/(?P<bid>%s)/conversations" % BOT_ID, "owner_conversation_list", ("owner",)),
-    ("GET", r"/v1/owner/bots/(?P<bid>%s)/reviews" % BOT_ID, "reviews", ("owner",)),
+    ("GET", r"/v1/owner/bots/(?P<bid>%s)/reviews(?P<full>/full)?" % BOT_ID, "reviews", ("owner",)),
     ("GET", r"/v1/owner/bots/(?P<bid>%s)/reviews/after/(?P<after>msg_[a-z2-7]{16})" % BOT_ID, "reviews", ("owner",)),
     ("GET", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/review-content/message", "review_message_content", ("owner",)),
     ("GET", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})", "owner_conversation_get", ("owner",)),

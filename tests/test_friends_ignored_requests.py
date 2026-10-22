@@ -98,5 +98,130 @@ class IgnoredRequestTests(unittest.TestCase):
         self.gw.ok("POST", "/v1/worker/notices/%s/ack" % mid, {}, worker)
 
 
+class IgnoredPendingCapacityTests(unittest.TestCase):
+    def gateway(self, **limits):
+        tmp = tempfile.TemporaryDirectory(prefix="yobiru ignored capacity ")
+        self.addCleanup(tmp.cleanup)
+        self.gw = FriendsGateway(Path(tmp.name), limits=limits).start()
+        self.addCleanup(self.gw.stop)
+        return self.gw
+
+    def sender(self, bot, trusted=False):
+        actor, caller = self.gw.actor()
+        cid = self.gw.conversation(bot, caller)
+        if trusted:
+            self.assertEqual(200, self.gw.contact(bot, actor, "trust")[0])
+        return actor, caller, cid
+
+    def ignore(self, mid):
+        self.gw.ok("POST", "/v1/owner/messages/%s/review" % mid, {"action": "ignore"}, self.gw.owner_token)
+
+    def assert_send_error(self, cid, caller, expected):
+        status, result = self.gw.send(cid, caller, kind="chat", text="another request")
+        self.assertEqual(expected, (status, result.get("error")), result)
+
+    def test_ignoring_full_contact_queue_allows_more_requests_silently(self):
+        gw = self.gateway(pending_per_contact=2)
+        bot = gw.bot("ignored-contact-capacity")
+        _, caller, cid = self.sender(bot)
+        mids = [gw.chat(cid, caller, "request %d" % i) for i in range(2)]
+        before = [gw.ok("GET", "/v1/messages/%s" % mid, None, caller) for mid in mids]
+        self.assert_send_error(cid, caller, (429, "too_many_pending"))
+        for mid in mids:
+            self.ignore(mid)
+        self.assertEqual([], gw.reviews(bot)["inbound"])
+        self.assertEqual(before, [gw.ok("GET", "/v1/messages/%s" % mid, None, caller) for mid in mids])
+        for i in range(2):
+            gw.chat(cid, caller, "new request %d" % i)
+        self.assert_send_error(cid, caller, (429, "too_many_pending"))
+        self.assertEqual(4, len(gw.owner_view(cid)["messages"]))
+
+    def test_ignoring_full_bot_queue_allows_a_trusted_sender(self):
+        gw = self.gateway(pending_per_bot=2)
+        bot = gw.bot("ignored-bot-capacity")
+        _, trusted, trusted_cid = self.sender(bot, trusted=True)
+        mids = []
+        for i in range(2):
+            _, caller, cid = self.sender(bot)
+            mids.append(gw.chat(cid, caller, "request %d" % i))
+        self.assert_send_error(trusted_cid, trusted, (503, "mailbox_full"))
+        for mid in mids:
+            self.ignore(mid)
+        self.assertEqual([], gw.reviews(bot)["inbound"])
+        for i in range(2):
+            gw.chat(trusted_cid, trusted, "inbox message %d" % i)
+        self.assert_send_error(trusted_cid, trusted, (503, "mailbox_full"))
+
+    def test_ignoring_full_gateway_queue_allows_another_bot(self):
+        gw = self.gateway(pending_total=2)
+        mids = []
+        for i in range(2):
+            bot = gw.bot("ignored-total-%d" % i)
+            _, caller, cid = self.sender(bot)
+            mids.append(gw.chat(cid, caller, "request"))
+        recipient = gw.bot("ignored-total-recipient")
+        _, caller, cid = self.sender(recipient, trusted=True)
+        self.assert_send_error(cid, caller, (503, "mailbox_full"))
+        for mid in mids:
+            self.ignore(mid)
+        for i in range(2):
+            gw.chat(cid, caller, "inbox message %d" % i)
+        self.assert_send_error(cid, caller, (503, "mailbox_full"))
+
+    def test_ignored_requests_still_count_toward_stored_message_limit(self):
+        gw = self.gateway(pending_per_contact=2, max_messages=2)
+        bot = gw.bot("ignored-storage-capacity")
+        _, caller, cid = self.sender(bot)
+        key = C.new_token("ticket")[4:24]
+        first = gw.chat(cid, caller, "retained request", op_key=key)
+        second = gw.chat(cid, caller, "another retained request")
+        for mid in (first, second):
+            self.ignore(mid)
+        self.assert_send_error(cid, caller, (503, "capacity"))
+        self.assertEqual(2, len(gw.owner_view(cid)["messages"]))
+        status, retry = gw.send(cid, caller, kind="chat", text="retained request", op_key=key)
+        self.assertEqual((200, first, True), (status, retry.get("message_id"), retry.get("duplicate")))
+
+    def test_ignored_attachments_still_count_toward_retained_byte_limit(self):
+        gw = self.gateway(pending_per_contact=1, attachment_retained_bytes_per_caller=6)
+        bot = gw.bot("ignored-attachment-capacity", policy={
+            "offered": ["chat", "files"], "visitor": ["chat", "files"],
+            "follower": ["chat", "files"], "friend": ["chat", "files"]})
+        _, caller, cid = self.sender(bot)
+        files = [{"name": "request.txt", "content": "abcdef"}]
+        status, sent = gw.send(cid, caller, kind="chat", text="retained file", attachments=files)
+        self.assertEqual(202, status, sent)
+        self.ignore(sent["message_id"])
+        status, result = gw.send(cid, caller, kind="chat", text="another file", attachments=files)
+        self.assertEqual((429, "attachment_quota", "retained"),
+                         (status, result.get("error"), result.get("scope")), result)
+        gw.chat(cid, caller, "text without an attachment still fits")
+
+    def test_accepting_an_ignored_sender_counts_its_pending_work_again(self):
+        gw = self.gateway(pending_per_contact=1)
+        bot = gw.bot("ignored-accepted-capacity")
+        actor, caller, cid = self.sender(bot)
+        mid = gw.chat(cid, caller, "request later accepted")
+        self.ignore(mid)
+        self.assertEqual(200, gw.contact(bot, actor, "trust")[0])
+        worker, _ = gw.native(bot)
+        jobs = gw.ok("GET", "/v1/worker/jobs", None, worker)["jobs"]
+        self.assertTrue(next(job for job in jobs if job["job_id"] == mid)["claimable"])
+        self.assert_send_error(cid, caller, (429, "too_many_pending"))
+
+    def test_admitting_an_ignored_request_counts_toward_global_capacity_again(self):
+        gw = self.gateway(pending_total=1)
+        bot = gw.bot("ignored-admitted-capacity")
+        _, caller, cid = self.sender(bot)
+        mid = gw.chat(cid, caller, "request later admitted")
+        request = gw.reviews(bot)["inbound"][0]
+        self.ignore(mid)
+        gw.ok("POST", "/v1/owner/messages/%s/review" % mid,
+              {"action": "approve_inbound", "request_hash": request["request_hash"]}, gw.owner_token)
+        other = gw.bot("ignored-admitted-other")
+        _, other_caller, other_cid = self.sender(other)
+        self.assert_send_error(other_cid, other_caller, (503, "mailbox_full"))
+
+
 if __name__ == "__main__":
     unittest.main()

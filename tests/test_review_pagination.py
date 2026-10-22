@@ -40,7 +40,7 @@ class ReviewPaginationTests(unittest.TestCase):
             self.assertEqual(202, status, sent)
             mids.append(sent["message_id"])
 
-        path, pages, received = "/v1/owner/bots/%s/reviews" % bot, 0, []
+        path, pages, received = "/v1/owner/bots/%s/reviews/full" % bot, 0, []
         while path:
             page = self.gw.ok("GET", path, None, self.gw.owner_token)
             wire = json.dumps(page, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -115,7 +115,7 @@ class ReviewPaginationTests(unittest.TestCase):
         api = G.Api(store)
         with store.tx() as db:
             request = G.Request()
-            request.params, request.now = {"bid": bot}, C.now_ts()
+            request.params, request.now = {"bid": bot, "full": "/full"}, C.now_ts()
             request.subject = api.authenticate(db, ("owner",), self.gw.owner_token, request.now)
             with mock.patch.object(C, "MAX_RESPONSE_BYTES", budget):
                 status, page = api.reviews(db, request)

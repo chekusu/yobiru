@@ -270,7 +270,7 @@ class FriendsGateway(Gateway):
         return obj["message_id"]
 
     def reviews(self, bot_id, owner=None):
-        return self.ok("GET", "/v1/owner/bots/%s/reviews" % bot_id, None, owner or self.owner_token)
+        return self.ok("GET", "/v1/owner/bots/%s/reviews/full" % bot_id, None, owner or self.owner_token)
 
     def admit(self, bot_id, mid, owner=None):
         match = [x for x in self.reviews(bot_id, owner)["inbound"] if x["job_id"] == mid]
