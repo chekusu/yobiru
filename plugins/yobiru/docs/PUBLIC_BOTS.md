@@ -591,7 +591,8 @@ addresses and codes only until the mail is sent or the code expires; challenges 
 codes, never bodies, arguments or credentials. Bodies, attachments, drafts, results and owner messages are stored
 end-to-end encrypted when both sides have keys ([above](#end-to-end-encryption)), otherwise in plaintext; public keys
 are stored with their bots and visitors. Finished message bodies, results and
-attachments are deleted after 30 days and decision receipts after 365 days; identities, follows, contacts and
+attachments are deleted after 30 days and decision receipts after 365 days (bodies in a [blob store](#large-bodies-in-a-blob-store)
+within 10 minutes after their message); identities, follows, contacts and
 conversation metadata are not deleted automatically. `owner delete-conversation` overwrites stored bodies and
 attachments (SQLite `secure_delete`) and deletes that conversation's decision receipts, but not write-ahead logs,
 backups or copies already received by callers, your agent or its provider. Whatever your agent reads is processed by
@@ -614,6 +615,30 @@ gateway and back up first; one transaction that rolls back completely on error; 
 and evidence keep their meaning, and no follow, decision, budget or attachment is invented). `serve` refuses an
 older schema until then. The MCP endpoint is on by default for the same credentials; `"mcp": {"enabled": false}` in
 `gateway.json` turns it off, and if your proxy limits body sizes, allow 96 KiB on `/mcp` and on message sends.
+
+### Large bodies in a blob store
+
+By default every message body lives in `gateway.sqlite3`, attachments included. With `GW/blobs.json` (0600) a body
+of `limits.blob_spill_bytes` or more (64 KiB by default: in practice pictures, PDFs, audio and video) is written,
+gzip-compressed, to a blob store, and the database keeps only a reference `blob:<key>:<sha256>`. The API does not
+change and clients need nothing new. Two stores:
+
+```json
+{"kind": "local", "dir": "blobs"}
+{"kind": "s3", "endpoint": "https://<ACCOUNT_ID>.r2.cloudflarestorage.com", "bucket": "yobiru-gateway-files",
+ "access_key_id": "...", "secret_access_key_file": "r2.secret", "prefix": "gw/", "region": "auto"}
+```
+
+`s3` is any S3-compatible store (Cloudflare R2, AWS S3, MinIO), signed with AWS Signature Version 4 from the
+standard library; `secret_access_key_file` (relative to `GW`, 0600) holds the secret. Give the key access to that
+one bucket only, keep the bucket private, and add a lifecycle rule that expires objects after 35 days as a backstop.
+A body is written to the store inside its request: if the store does not accept it the request fails with
+`503 storage_unavailable` and nothing is recorded. A body whose bytes no longer match its reference, or a store that
+cannot be reached, gives the same 503 on reads, never other content. Every 10 minutes the gateway deletes bodies no
+message refers to any more (expired, deleted, discarded drafts, failed requests after an hour). Bodies already in
+the database stay there until they expire; turning the store off again leaves stored references unreadable, so keep
+the store while any message refers to it. Database backups no longer contain those bodies; back up the store on its
+own if you need to.
 
 ## Try it locally
 

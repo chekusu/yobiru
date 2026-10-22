@@ -3,6 +3,19 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## 0.7.3 (2026-10-22)
+
+Upgrade a gateway you host with `gateway migrate` after a backup (the database schema is 7). Clients do not change.
+
+- **Large message bodies in a blob store**: with `<gateway home>/blobs.json` a gateway keeps bodies of
+  `limits.blob_spill_bytes` (64 KiB) or more, in practice those with pictures, PDFs, audio or video, gzip-compressed
+  in a local directory or an S3-compatible store such as Cloudflare R2 (new stdlib module `public_bots/bot_blobs.py`,
+  AWS Signature Version 4 checked against AWS's examples). SQLite keeps a `blob:<key>:<sha256>` reference; readers
+  get the same API, a store that is down or a body that does not match gives `503 storage_unavailable`, and bodies
+  no message refers to are deleted every 10 minutes. Without `blobs.json` nothing changes. The official gateway
+  keeps them in a private Cloudflare R2 bucket (Asia-Pacific); the privacy policy says so.
+- `gateway migrate` from schema 6 no longer adds `files` to friends a second time (an owner may have taken it back).
+
 ## 0.7.2 (2026-10-22)
 
 No schema change: a gateway on 0.7.1 only needs the new code and a restart (the `bot_profiles` table is created at
