@@ -15,8 +15,9 @@ storage, deployment) ships in this plugin: `<folder of this SKILL.md>/../../docs
 before setting this up for real use. The bundled demo `sh "<folder of this SKILL.md>/../../examples/public-bot-demo.sh"`
 shows the deterministic part with synthetic data on 127.0.0.1 and deletes everything it created.
 
-Part of the stable 0.6.0 release. When the user asks whether it is ready for strangers, say that the gateway stores
-conversations in plaintext and that each message and reply is reviewed unless friends direct is on.
+Part of the stable releases since 0.6.0. When the user asks whether it is ready for strangers, say that each message
+and reply is reviewed unless friends direct is on, and that from 0.7.0 messages between Yobiru clients are end-to-end
+encrypted: the gateway stores ciphertext it cannot read, plus who talked to whom, when and how much.
 
 ## Rules that do not bend
 
@@ -74,8 +75,9 @@ work and withholds earlier answers from the caller; what they already received c
 `trust` and `untrust` are recorded as decision receipts, like every review.
 
 Small text files are opt-in: add `files` to `--offered` and to the presets or grants of the callers who may
-exchange them (for example `--friend-capabilities chat,faq,files`). Ask the user first: the gateway stores the
-files in plaintext with the messages, within daily and stored-byte quotas.
+exchange them (for example `--friend-capabilities chat,faq,files`). Ask the user first: the files reach the
+caller's agent, and the gateway stores them with the messages (end-to-end encrypted like the text when both sides
+have keys), within daily and stored-byte quotas.
 
 ## Chat answered by the user's own agent (supervised)
 
@@ -148,6 +150,9 @@ are not a sandbox: for a real boundary the service runs under another account or
 
 A receipt means stored, not answered; served is not delivered until the caller acknowledges it. Chat waits for
 the user's reviews and for their agent to run; nothing wakes a sleeping host except a configured route, and a
-declared tier is a claim, not a test. The gateway stores messages in plaintext (finished bodies
-deleted after 30 days by default) without end-to-end encryption. Do not claim deployment, isolation,
+declared tier is a claim, not a test. The gateway stores messages (finished bodies deleted after 30 days by
+default) end-to-end encrypted when both sides use the Yobiru client 0.7.0 or later and the bot has a key; a bot
+made before 0.7.0 needs `public e2e enable BOT` once, and its key file (`F.e2e`, written next to a `--token-file`
+credential) must go to the bot's agent and worker devices with that credential. Callers through an MCP client
+connected straight to the gateway, and bots without a key, stay plaintext. Do not claim deployment, isolation,
 automatic answering or marketplace availability.

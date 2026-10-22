@@ -47,6 +47,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 import bot_common as C  # noqa: E402
+import bot_e2e as E  # noqa: E402
 import bot_mcp as M  # noqa: E402
 
 STATE_DIR = "public"
@@ -297,6 +298,457 @@ def token_for(st, base, principal):
     return token
 
 
+# ---------------------------------------------------------------- end-to-end encryption (bot_e2e.py)
+# Secret keys live in credentials.json next to the tokens they go with, per gateway:
+#   bot_keys {bot_id: [{secret, public, created_at}, ...]}   a bot's keys (owner, source and agent devices)
+#   actor.e2e_keys [{secret, public, created_at}, ...]        this device's visitor identity
+#   e2e_peers {principal_id: {key, kid, pinned_at}}           other bots' and callers' keys, pinned at first sight
+# The last key of a list is current; older ones stay to open older messages. Bodies are sealed for the bot's key
+# and the caller's key; the plaintext names what it belongs to (bind), which the reader checks against the view.
+E2E_CTX = "yobiru-e2e/1"
+SEALED_KEYS = ("sealed", "sealed_files", "files")
+SENDER_ROLE = {"msg": "caller", "files": "caller", "reply": "bot", "reply-files": "bot", "owner": "bot"}
+FILES_FIELD = {"msg": "files", "reply": "reply-files"}
+E2E_FILE_SUFFIX = ".e2e"
+
+
+_E2E_GATEWAYS = {}
+
+
+def gateway_e2e(base):
+    """Whether the gateway takes end-to-end keys and sealed bodies (schema 5, 0.7.0 or later). An older gateway
+    refuses the new fields, so nothing sealed is sent to it."""
+    if base not in _E2E_GATEWAYS:
+        try:
+            status, obj = C.api_call(base, "GET", "/.well-known/yobiru")
+            _E2E_GATEWAYS[base] = status == 200 and isinstance(obj.get("e2e"), dict) and obj["e2e"].get("alg") == E.ALG
+        except (C.ApiError, ValueError):
+            return False
+    return _E2E_GATEWAYS[base]
+
+
+def new_keypair():
+    secret, public = E.generate()
+    return {"secret": secret, "public": public, "created_at": C.iso(C.now_ts())}
+
+
+def my_keys(creds, base, principal=None):
+    """{kid: keypair} of the keys this device holds at `base` (all of them, or one principal's)."""
+    entry = creds["gateways"].get(base) or {}
+    pools = []
+    for bot_id, keys in (entry.get("bot_keys") or {}).items():
+        if principal in (None, bot_id):
+            pools.append(keys)
+    actor = entry.get("actor") or {}
+    if principal is None or (actor.get("actor_id") and principal == actor.get("actor_id")):
+        pools.append(actor.get("e2e_keys") or [])
+    return {E.kid(k["public"]): k for keys in pools for k in keys}
+
+
+def current_key(creds, base, principal):
+    """The current keypair this device holds for a principal (a bot's key, or its visitor key), or None."""
+    entry = creds["gateways"].get(base) or {}
+    if principal.startswith("bot_"):
+        keys = (entry.get("bot_keys") or {}).get(principal) or []
+    else:
+        actor = entry.get("actor") or {}
+        keys = actor.get("e2e_keys") or [] if actor.get("actor_id") == principal else []
+    return keys[-1] if keys else None
+
+
+def store_bot_key(st, base, bot_id, pair):
+    def save(creds):
+        keys = creds["gateways"].setdefault(base, {}).setdefault("bot_keys", {}).setdefault(bot_id, [])
+        if all(k["public"] != pair["public"] for k in keys):
+            keys.append(pair)
+    st.update("credentials.json", save)
+
+
+def peer_key(creds, base, principal):
+    return ((creds["gateways"].get(base) or {}).get("e2e_peers") or {}).get(principal)
+
+
+def pin_peer(st, base, principal, key, replace=False):
+    """Pin another principal's public key the first time it is seen (or on an explicit replace).
+    -> "pinned", "same" or "changed" (a different key is pinned: nothing is changed)."""
+    if not key or E.key_error(key):
+        return None
+
+    def save(creds):
+        peers = creds["gateways"].setdefault(base, {}).setdefault("e2e_peers", {})
+        old = peers.get(principal)
+        if old and old["key"] == key:
+            return "same"
+        if old and not replace:
+            return "changed"
+        peers[principal] = {"key": key, "kid": E.kid(key), "pinned_at": C.iso(C.now_ts())}
+        if old:
+            peers[principal]["previous"] = old["key"]
+        return "pinned"
+    return st.update("credentials.json", save)
+
+
+def contact_key(st, base, bot_id):
+    """The pinned key of a bot this device talks to (or its own bot's key). None if it has none pinned."""
+    creds = st.creds()
+    mine = current_key(creds, base, bot_id)
+    if mine:
+        return mine["public"]
+    pin = peer_key(creds, base, bot_id)
+    return pin["key"] if pin else None
+
+
+def e2e_body(field, text, attachments, secret, recipients, bind, seed=None):
+    """Seal text (and attachments) for `recipients` -> the request fields sealed (, sealed_files, files)."""
+    bind = dict(bind, field=field)
+    sub = (lambda label: E.hkdf(seed, b"", label.encode("ascii"))) if seed is not None else (lambda label: None)
+    out = {"sealed": E.seal(E.canonical({"v": 1, "bind": bind, "text": text}), secret, recipients, E2E_CTX,
+                            seed=sub("text"))}
+    if attachments:
+        fbind = dict(bind, field=FILES_FIELD[field])
+        out["sealed_files"] = E.seal(E.canonical({"v": 1, "bind": fbind, "attachments": attachments}), secret,
+                                     recipients, E2E_CTX, seed=sub("files"))
+        out["files"] = {"count": len(attachments), "bytes": C.attachment_bytes(attachments)}
+    return out
+
+
+def opened(st, base, obj):
+    """A copy of a gateway view with its sealed bodies opened (unseal)."""
+    return unseal(st, base, json.loads(json.dumps(obj)))
+
+
+def _view_ids(obj, ids, people):
+    """Ids and principals of the view around a sealed body (its message, conversation and sender)."""
+    ids = set(ids)
+    for key in ("message_id", "conversation_id", "job_id", "notice_id", "in_reply_to"):
+        if isinstance(obj.get(key), str):
+            ids.add(obj[key])
+    people = dict(people)
+    if isinstance(obj.get("actor_id"), str) and not people.get(obj["actor_id"]):
+        people[obj["actor_id"]] = obj.get("actor_e2e_key")
+    sender = obj.get("from")
+    if isinstance(sender, dict):
+        pid = sender.get("principal_id") or sender.get("actor_id")
+        if isinstance(pid, str):
+            people[pid] = sender.get("e2e_key")
+    return ids, people
+
+
+SLOT_FIELDS = {"result": ("reply",), "draft": ("reply",), "content": ("msg", "owner"),
+               "untrusted_content": ("msg",), "message": ("msg",)}
+ROLE_FIELDS = {"caller": ("msg",), "bot": ("reply",), "owner": ("owner",)}
+
+
+def unseal(st, base, obj, ids=(), people=None, slot=None):
+    """Open every sealed body in a gateway view, in place: `text` (and `attachments`) replace the envelopes and
+    `e2e` says who sealed it. Each body must have been sealed by the key expected for its role (the bot's key for
+    replies and owner messages, the caller's for messages), and must name ids that appear in the view around it,
+    so the gateway can neither read it nor move it to another conversation or message unnoticed."""
+    if isinstance(obj, list):
+        for item in obj:
+            unseal(st, base, item, ids, people)
+        return obj
+    if not isinstance(obj, dict):
+        return obj
+    ids, people = _view_ids(obj, ids, people or {})
+    for key, value in list(obj.items()):
+        if key not in SEALED_KEYS and isinstance(value, (dict, list)):
+            unseal(st, base, value, ids, people, key)
+    if isinstance(obj.get("sealed"), dict):
+        fields = ROLE_FIELDS.get(obj.get("role")) or SLOT_FIELDS.get(slot) or ("msg", "reply", "owner")
+        open_into(st, base, obj, ids, people, fields)
+    return obj
+
+
+def expected_keys(st, base, principal, people):
+    """Keys that may have sealed a body for `principal`: this device's own, else the pinned one, else (first
+    sight) the one the view shows, which is then pinned."""
+    creds = st.creds()
+    mine = my_keys(creds, base, principal)
+    if mine:
+        return {kid: k["public"] for kid, k in mine.items()}, None
+    pin = peer_key(creds, base, principal)
+    shown = people.get(principal)
+    if pin:
+        state = "key_changed" if shown and shown != pin["key"] else None
+        return {pin["kid"]: pin["key"]}, state
+    if shown and pin_peer(st, base, principal, shown) == "pinned":
+        return {E.kid(shown): shown}, "pinned_now"
+    return {}, None
+
+
+def open_into(st, base, obj, ids, people, fields):
+    envs = {k: obj.pop(k) for k in SEALED_KEYS if k in obj}
+    obj.setdefault("text", None)
+    creds = st.creds()
+    keys = my_keys(creds, base)
+    env = envs["sealed"]
+    mine = [keys[k] for k in E.recipients_of(env) if k in keys]
+    if not mine:
+        obj["e2e"] = {"sealed": True, "opened": False, "error": "not_sealed_for_this_device",
+                      "detail": "sealed for keys this device does not hold (import the bot key, or this is another "
+                                "identity's message)"}
+        return
+    try:
+        plain = C.strict_loads(E.open_sealed(env, mine[0]["secret"], _sender(st, base, env, people, mine[0]),
+                                             E2E_CTX))
+        bind = plain.get("bind") or {}
+        check_bind(bind, ids, people, fields)
+        sender_key = _sender(st, base, env, people, mine[0], bind)
+        if sender_key is None:
+            raise E.E2EError("sealed by a key that is not %s's pinned key" % (
+                bind.get("bot_id") if SENDER_ROLE[bind["field"]] == "bot" else bind.get("caller")))
+        err = C.text_error(plain.get("text"), 16000, multiline=True, required=False)
+        if err:
+            raise E.E2EError("sealed text %s" % err)
+        obj["text"] = plain.get("text")
+        info = {"sealed": True, "opened": True, "sealed_by": bind.get("bot_id") if SENDER_ROLE[bind["field"]] == "bot"
+                else bind.get("caller"), "key_id": env["from"]}
+        if "sealed_files" in envs:
+            fplain = C.strict_loads(E.open_sealed(envs["sealed_files"], mine[0]["secret"], sender_key, E2E_CTX))
+            fbind = fplain.get("bind") or {}
+            if fbind.get("field") != FILES_FIELD.get(bind["field"]) or \
+                    {k: v for k, v in fbind.items() if k != "field"} != {k: v for k, v in bind.items() if k != "field"}:
+                raise E.E2EError("the sealed attachments belong to another body")
+            items, nbytes, err = C.attachments_error(fplain.get("attachments"), 16, 1 << 20, 1 << 20)
+            if err or len(items) != envs["files"]["count"] or nbytes != envs["files"]["bytes"]:
+                raise E.E2EError("sealed attachments do not match what was declared (%s)" % (err or "count or size"))
+            obj["attachments"] = [C.attachment_view(x) for x in items]
+        elif "files" in envs:
+            obj["attachments_withheld"] = {"count": envs["files"]["count"], "reason": "files_not_granted"}
+        obj["e2e"] = info
+    except (E.E2EError, C.StrictJSONError, ValueError, KeyError, TypeError, AttributeError) as e:
+        obj["text"] = None
+        obj["e2e"] = {"sealed": True, "opened": False, "error": "unverified", "detail": str(e)[:200]}
+
+
+def _sender(st, base, env, people, mine, bind=None):
+    """The public key that sealed `env`. Before the body is open (bind None): any key this device knows under that
+    key id, so the body can be read and its bind checked. After: the key expected for the bind's role, or None."""
+    if bind is None:
+        creds = st.creds()
+        known = {kid: k["public"] for kid, k in my_keys(creds, base).items()}
+        for peer in ((creds["gateways"].get(base) or {}).get("e2e_peers") or {}).values():
+            known.setdefault(peer["kid"], peer["key"])
+        for key in people.values():
+            if key and not E.key_error(key):
+                known.setdefault(E.kid(key), key)
+        if env["from"] not in known:
+            raise E.E2EError("sealed by an unknown key %s" % env["from"])
+        return known[env["from"]]
+    principal = bind.get("bot_id") if SENDER_ROLE[bind["field"]] == "bot" else bind.get("caller")
+    keys, state = expected_keys(st, base, principal, people)
+    if state == "key_changed" and env["from"] not in keys:
+        raise E.E2EError("%s now shows another key than the one pinned here: confirm it with `yobiru public e2e "
+                         "trust %s`" % (principal, principal))
+    return keys.get(env["from"])
+
+
+def check_bind(bind, ids, people, fields):
+    field = bind.get("field")
+    if field not in SENDER_ROLE or not isinstance(bind.get("bot_id"), str) or not isinstance(bind.get("caller"), str):
+        raise E.E2EError("the sealed body does not say what it belongs to")
+    if field not in fields:
+        raise E.E2EError("a sealed %s shown where a %s belongs" % (field, " or ".join(fields)))
+    anchor = bind.get("message_id") if field == "reply" else bind.get("conversation_id")
+    if anchor not in ids:
+        raise E.E2EError("the sealed body belongs to %s, not to this view" % anchor)
+    if people and SENDER_ROLE[field] == "caller" and bind["caller"] not in people:
+        raise E.E2EError("the sealed body was written by %s, not by the sender shown" % bind["caller"])
+
+
+def seal_for_bot(st, base, principal, bot_id, cid, body, op_key):
+    """A caller's chat/notice/faq/message body sealed for the bot and for itself, deterministically per op key so a
+    resend is byte-identical. -> (request body, e2e note). Plain when the bot has no key or this identity cannot
+    hold one."""
+    bot_key = contact_key(st, base, bot_id)
+    if body.get("text") is None and not body.get("attachments"):
+        return body, None
+    if not bot_key:
+        return body, "off: %s has no end-to-end key pinned here (the bot has none, or refresh the contact)" % bot_id
+    if not gateway_e2e(base):
+        return body, "off: this gateway is older than 0.7.0 and takes no end-to-end encrypted messages"
+    mine = current_key(st.creds(), base, principal) or ensure_actor_key(st, base, principal)
+    if not mine:
+        return body, ("off: this device does not hold %s's key (the owner can export it: `yobiru public e2e export "
+                      "%s`)" % (principal, principal))
+    seed = E.seed_for(mine["secret"], "msg", op_key, payload_hash(cid, body))
+    bind = {"bot_id": bot_id, "caller": principal, "conversation_id": cid}
+    sealed = e2e_body("msg", body.get("text"), body.get("attachments"), mine["secret"],
+                      [bot_key, mine["public"]], bind, seed)
+    out = {k: v for k, v in body.items() if k not in ("text", "attachments")}
+    out.update(sealed)
+    return out, "on: sealed for %s's key %s and yours" % (bot_id, E.fingerprint(bot_key))
+
+
+def ensure_actor_key(st, base, principal):
+    """A visitor identity made before E2E gets a key the first time it needs one (registered with the gateway)."""
+    creds = st.creds()
+    actor = (creds["gateways"].get(base) or {}).get("actor") or {}
+    if principal.startswith("bot_") or actor.get("actor_id") != principal:
+        return None
+    pair = new_keypair()
+
+    def save(creds):
+        a = creds["gateways"][base]["actor"]
+        a.setdefault("e2e_keys", []).append(pair)
+    st.update("credentials.json", save)
+    call(base, "POST", "/v1/actor/key", {"e2e_key": pair["public"]}, actor["token"])
+    return pair
+
+
+def seal_from_bot(st, base, bot_id, caller, field, anchor, text, attachments=None, caller_key=None, seed_parts=None):
+    """Text the bot side writes (an agent's reply, an owner message or decline) sealed for the bot and the caller.
+    -> request fields, or None when this device holds no key of the bot or the caller has none (the gateway then
+    takes plain text unless the message was sealed)."""
+    mine = current_key(st.creds(), base, bot_id)
+    if not mine or not gateway_e2e(base):
+        return None
+    pin = peer_key(st.creds(), base, caller)
+    if caller_key and not pin:
+        pin_peer(st, base, caller, caller_key)
+        pin = peer_key(st.creds(), base, caller)
+    if not pin:
+        return None                                   # a caller without a key reads plain text only
+    recipients = [mine["public"], pin["key"]]
+    bind = {"bot_id": bot_id, "caller": caller, ("message_id" if field == "reply" else "conversation_id"): anchor}
+    seed = E.seed_for(mine["secret"], field, anchor, *(seed_parts or ())) if seed_parts else None
+    return e2e_body(field, text, attachments, mine["secret"], recipients, bind, seed)
+
+
+def write_key_file(path, base, bot_id, pairs):
+    target = Path(path).expanduser().absolute()
+    if os.path.lexists(str(target)):
+        die("%s already exists; refusing to overwrite a key file" % target)
+    C.create_private_file(target, json.dumps({"v": 1, "type": "yobiru.e2e-key", "gateway": base, "bot_id": bot_id,
+                                              "keys": pairs}, indent=2) + "\n")
+    return str(target)
+
+
+def read_key_file(path):
+    try:
+        data = C.read_json_file(path, limit=65536, private=True, what="key file")
+    except ValueError as e:
+        die(str(e))
+    if not isinstance(data, dict) or data.get("type") != "yobiru.e2e-key" or not is_bot_id(data.get("bot_id")) or \
+            not isinstance(data.get("keys"), list) or not data["keys"]:
+        die("%s is not a yobiru end-to-end key file" % path)
+    for k in data["keys"]:
+        if not isinstance(k, dict) or E.key_error(k.get("public")) or \
+                E.b64e(E.public_key(E.b64d(k.get("secret"), 32))) != k["public"]:
+            die("%s holds an invalid key" % path)
+    return data
+
+
+def import_key_file_next_to(st, base, token_file, bot_id):
+    """`worker login` / `source login`: a key file next to the credential file (FILE.e2e) is imported too."""
+    path = Path(str(Path(token_file).expanduser()) + E2E_FILE_SUFFIX)
+    if not path.exists():
+        return None
+    data = read_key_file(path)
+    if data["bot_id"] != bot_id:
+        die("%s holds the key of %s, not of %s" % (path, data["bot_id"], bot_id))
+    for pair in data["keys"]:
+        store_bot_key(st, base, bot_id, {k: pair[k] for k in ("secret", "public", "created_at") if k in pair})
+    return str(path)
+
+
+def export_key_next_to(st, base, token_file, bot_id):
+    """`worker bind --token-file F` / `bot source --token-file F`: the bot's keys go to F.e2e for the same device."""
+    keys = ((st.creds()["gateways"].get(base) or {}).get("bot_keys") or {}).get(bot_id)
+    if not keys:
+        return None
+    return write_key_file(str(Path(token_file).expanduser()) + E2E_FILE_SUFFIX, base, bot_id, keys)
+
+
+def enable_bot_key(st, base, token, bot_id, rotate=False):
+    """Make sure the bot has an end-to-end key that this owner device holds and the gateway publishes."""
+    bot = call(base, "GET", "/v1/owner/bots/%s" % bot_id, None, token)
+    published = (bot.get("e2e") or {}).get("key")
+    mine = current_key(st.creds(), base, bot_id)
+    if published and not rotate:
+        held = my_keys(st.creds(), base, bot_id)
+        if E.kid(published) in held:
+            return {"bot_id": bot_id, "e2e": bot["e2e"], "changed": False}
+        die("the gateway publishes key %s for %s, which this device does not hold: import it (`e2e import`) or "
+            "replace it with --rotate (callers then confirm the new key)" % (E.fingerprint(published), bot_id))
+    if not mine or rotate or (published and E.kid(published) == E.kid(mine["public"])):
+        if not mine or rotate:
+            mine = new_keypair()
+            store_bot_key(st, base, bot_id, mine)
+    obj = call(base, "PATCH", "/v1/owner/bots/%s" % bot_id, {"e2e_key": mine["public"]}, token)
+    return {"bot_id": bot_id, "e2e": obj.get("e2e"), "changed": True}
+
+
+def cmd_e2e(st, a):
+    if a.e2e_cmd == "status":
+        creds = st.creds()
+        report = []
+        for base, entry in sorted(creds["gateways"].items()):
+            if a.gateway and norm_url(a.gateway) != base:
+                continue
+            keys = [{"principal": bot_id, "key_id": E.kid(ks[-1]["public"]), "fingerprint": E.fingerprint(ks[-1]["public"]),
+                     "older_keys": len(ks) - 1} for bot_id, ks in sorted((entry.get("bot_keys") or {}).items()) if ks]
+            actor = entry.get("actor") or {}
+            if actor.get("e2e_keys"):
+                pub = actor["e2e_keys"][-1]["public"]
+                keys.append({"principal": actor.get("actor_id"), "key_id": E.kid(pub), "fingerprint": E.fingerprint(pub),
+                             "older_keys": len(actor["e2e_keys"]) - 1})
+            peers = [{"principal": pid, "key_id": p["kid"], "fingerprint": E.fingerprint(p["key"]),
+                      "pinned_at": p["pinned_at"]} for pid, p in sorted((entry.get("e2e_peers") or {}).items())]
+            report.append({"gateway": base, "my_keys": keys, "pinned": peers})
+        out({"ok": True, "gateways": report,
+             "note": "compare fingerprints with the other side over another channel to rule out a key substituted "
+                     "by the gateway; a pinned key never changes without `e2e trust`"})
+        return
+    if a.e2e_cmd == "enable":
+        base, token = owner_session(st, a)
+        bot_id = owner_bot(base, token, a.bot)
+        res = enable_bot_key(st, base, token, bot_id, rotate=a.rotate)
+        res["ok"] = True
+        res["next"] = ("copy the key to the bot's other devices (its native agent, deterministic worker or source "
+                       "devices): `yobiru public e2e export %s --file F` here, `yobiru public e2e import --file F` "
+                       "there" % bot_id)
+        out(res)
+        return
+    if a.e2e_cmd == "export":
+        creds = st.creds()
+        found = [(b, bid) for b, e in creds["gateways"].items() for bid in (e.get("bot_keys") or {})
+                 if a.bot in (bid, "@" + ((e.get("sources") or {}).get(bid, {}).get("handle") or "").lstrip("@"))
+                 and (not a.gateway or norm_url(a.gateway) == b)]
+        if len(found) != 1:
+            die("no single bot key for %s in this data home (pass the bot id, or --gateway URL)" % a.bot)
+        base, bot_id = found[0]
+        path = write_key_file(a.file, base, bot_id, creds["gateways"][base]["bot_keys"][bot_id])
+        out({"ok": True, "bot_id": bot_id, "gateway": base, "file": path,
+             "note": "a secret key: move it only to that bot's own devices, then delete this copy"})
+        return
+    if a.e2e_cmd == "import":
+        data = read_key_file(a.file)
+        base = norm_url(a.gateway or data.get("gateway"))
+        for pair in data["keys"]:
+            store_bot_key(st, base, data["bot_id"], {k: pair[k] for k in ("secret", "public", "created_at") if k in pair})
+        out({"ok": True, "bot_id": data["bot_id"], "gateway": base, "keys": len(data["keys"]),
+             "current": E.fingerprint(data["keys"][-1]["public"])})
+        return
+    if a.e2e_cmd == "trust":
+        if a.key:
+            if E.key_error(a.key):
+                die("--key is not an X25519 public key")
+            if not a.gateway:
+                die("pass --gateway URL with --key")
+            base, principal, key = norm_url(a.gateway), a.principal, a.key
+        else:
+            alias, ct = contact(st, a.principal)
+            base, principal = ct["gateway"], ct["bot_id"]
+            key = (fetch_card(base, principal).get("e2e") or {}).get("key")
+            if not key:
+                die("%s publishes no end-to-end key" % principal)
+        state = pin_peer(st, base, principal, key, replace=True)
+        out({"ok": True, "principal": principal, "gateway": base, "pinned": state, "fingerprint": E.fingerprint(key)})
+        return
+
+
 def cmd_enroll(st, a):
     """A pseudonymous visitor identity. The credential is generated here and saved before the request, so a
     retry after a lost answer keeps the same identity."""
@@ -312,7 +764,7 @@ def cmd_enroll(st, a):
             return None
         if not actor:
             entry["actor"] = {"token": C.new_token("actor"), "pending": True, "display_name": a.name,
-                              "dispatches": 0}
+                              "dispatches": 0, "e2e_keys": [new_keypair()]}
         entry["actor"]["dispatches"] = entry["actor"].get("dispatches", 0) + 1     # durable before it leaves
         return entry["actor"]
     pending = st.update("credentials.json", plan)
@@ -322,8 +774,11 @@ def cmd_enroll(st, a):
              "already_enrolled": True, "verified_person": False})
         return
     token, pending_name = pending["token"], pending["display_name"]
+    body = {"display_name": pending_name}
+    if pending.get("e2e_keys") and gateway_e2e(base):
+        body["e2e_key"] = pending["e2e_keys"][-1]["public"]
     try:
-        status, obj = C.api_call(base, "POST", "/v1/actors", {"display_name": pending_name}, token)
+        status, obj = C.api_call(base, "POST", "/v1/actors", body, token)
     except C.ApiError as e:
         out({"ok": False, "error": e.code, "detail": e.detail,
              "next": "run the same enroll command again: the saved credential is reused, so no second identity is made"})
@@ -338,7 +793,8 @@ def cmd_enroll(st, a):
 
     def done(creds):
         creds["gateways"][base]["actor"] = {"actor_id": obj["actor_id"], "token": token,
-                                            "display_name": obj["display_name"], "enrolled_at": C.iso(C.now_ts())}
+                                            "display_name": obj["display_name"], "enrolled_at": C.iso(C.now_ts()),
+                                            "e2e_keys": (pending.get("e2e_keys") or []) if "e2e_key" in body else []}
     st.update("credentials.json", done)
     out({"ok": True, "gateway": base, "actor_id": obj["actor_id"], "display_name": obj["display_name"],
          "verified_person": False, "credential_file": str(st.path("credentials.json")),
@@ -393,7 +849,7 @@ def cmd_enroll_bot(st, a):
         if not entry.get("pending_bot"):
             entry["pending_bot"] = {"owner_token": C.new_token("owner"), "source_token": C.new_token("source"),
                                     "display_name": a.name, "handle": a.handle, "description": a.description,
-                                    "dispatches": 0}
+                                    "dispatches": 0, "e2e": new_keypair()}
         entry["pending_bot"]["dispatches"] = entry["pending_bot"].get("dispatches", 0) + 1
         return entry["pending_bot"]
     pending = st.update("credentials.json", plan)
@@ -405,6 +861,8 @@ def cmd_enroll_bot(st, a):
         body["handle"] = pending["handle"].lstrip("@").lower()
     if pending.get("description"):
         body["description"] = pending["description"]
+    if pending.get("e2e") and gateway_e2e(base):
+        body["e2e_key"] = pending["e2e"]["public"]
     if a.email_code is not None:
         challenge = (st.creds()["gateways"].get(base) or {}).get("email_challenge")
         if not challenge:
@@ -438,6 +896,10 @@ def cmd_enroll_bot(st, a):
                                                           "credential_id": C.token_hash(pending["source_token"])[:16],
                                                           "added_at": C.iso(C.now_ts())}
         entry.setdefault("default_identity", obj["bot_id"])
+        if pending.get("e2e") and "e2e_key" in body:
+            keys = entry.setdefault("bot_keys", {}).setdefault(obj["bot_id"], [])
+            if all(k["public"] != pending["e2e"]["public"] for k in keys):
+                keys.append(pending["e2e"])
         entry.pop("pending_bot", None)
         entry.pop("email_challenge", None)
     st.update("credentials.json", done)
@@ -509,7 +971,7 @@ def resolve_address(st, address, gateway):
 
 
 CARD_KEYS = ("bot_id", "handle", "address", "id_address", "display_name", "description", "capabilities",
-             "accepts_visitors", "accepts_followers", "accepts_contact_requests", "chat", "issuer")
+             "accepts_visitors", "accepts_followers", "accepts_contact_requests", "chat", "e2e", "issuer")
 
 
 def fetch_card(base, ref):
@@ -534,7 +996,7 @@ def cmd_lookup(st, a):
 
 
 def save_contact(st, base, card, alias, principal):
-    """Save a contact by (gateway, bot_id). Without an explicit alias, a bot already saved under some alias keeps
+    """Save a contact by (gateway, bot_id), pinning the bot's end-to-end key the first time it is seen. Without an explicit alias, a bot already saved under some alias keeps
     that alias (and its conversations) even when its handle changed, so a rename never splits a contact. An alias
     that names another bot is never retargeted."""
     if alias is not None and not ALIAS_RE.match(alias.lower()):
@@ -558,7 +1020,15 @@ def save_contact(st, base, card, alias, principal):
             entry["as"] = principal
         book["contacts"][chosen] = entry
         return chosen
-    return st.update("contacts.json", save)
+    chosen = st.update("contacts.json", save)
+    key = (card.get("e2e") or {}).get("key")
+    if key and not current_key(st.creds(), base, card["bot_id"]):
+        card["e2e_pin"] = pin_peer(st, base, card["bot_id"], key)
+        if card["e2e_pin"] == "changed":
+            card["e2e_warning"] = ("this card shows another end-to-end key than the one pinned for %s: compare "
+                                   "fingerprints with the owner, then `yobiru public e2e trust %s`" % (card["bot_id"],
+                                                                                                   chosen))
+    return chosen
 
 
 def cmd_add(st, a):
@@ -663,8 +1133,13 @@ def cmd_contacts(st, a):
             cur.update(handle=card["handle"], display_name=card["display_name"])
             return True
         st.update("contacts.json", refresh)
+        key = (card.get("e2e") or {}).get("key")
+        pin = peer_key(st.creds(), ct["gateway"], ct["bot_id"])
+        if key and not pin:
+            pin_peer(st, ct["gateway"], ct["bot_id"], key)
+        e2e = "none" if not key and not pin else ("key_changed" if pin and key != pin["key"] else "pinned")
         report.append(dict(entry, status="handle_changed" if card["handle"] != ct.get("handle") else "current",
-                           handle=card["handle"], display_name=card["display_name"],
+                           handle=card["handle"], display_name=card["display_name"], e2e=e2e,
                            chat={k: card.get("chat", {}).get(k) for k in ("binding_configured", "declared_tier",
                                                                           "wake_evidence")}))
     out({"ok": True, "contacts": report,
@@ -1005,7 +1480,7 @@ def cmd_attachments(st, a):
             token = token_for(st, base, record_principal(st, record))
         else:
             base, _, token = caller_session(st, a)
-        obj = call(base, "GET", "/v1/messages/%s" % mid, None, token)
+        obj = unseal(st, base, call(base, "GET", "/v1/messages/%s" % mid, None, token))
         files = (obj.get("result") or {}).get("attachments") or []
         if not files:
             die("no released attachments on %s (a withheld result, or none were sent)" % mid)
@@ -1230,11 +1705,13 @@ def deliver(st, log, op, wait):
     op key whenever the outcome is not a confirmed message id."""
     record = log.get(op)
     base, cid = record["gateway"], record["conversation_id"]
-    token = token_for(st, base, record_principal(st, record))
+    principal = record_principal(st, record)
+    token = token_for(st, base, principal)
+    payload, e2e = seal_for_bot(st, base, principal, record["bot_id"], cid, record["payload"], op)
     seq, clean = log.begin(op)                            # durable before the request leaves
     try:
         status, obj = C.api_call(base, "POST", "/v1/conversations/%s/messages" % cid,
-                                 dict(record["payload"], op_key=op), token)
+                                 dict(payload, op_key=op), token)
     except C.ApiError as e:
         log.finish(op, seq, clean, error=e.code)
         out({"ok": False, "error": "unknown_outcome", "detail": e.detail, "op_key": op, "conversation_id": cid,
@@ -1254,12 +1731,19 @@ def deliver(st, log, op, wait):
         else:
             note = ("this attempt was refused, but an earlier attempt's outcome is unknown and this refusal cannot "
                     "settle it; check `yobiru public status --op-key %s`" % op)
+        if obj.get("error") == "sealed_recipient_missing":
+            note = ("not stored: the bot's end-to-end key changed since you pinned it. Compare its fingerprint with "
+                    "the owner, then `yobiru public e2e trust %s` and `resend %s`" % (record["alias"], op))
+        elif obj.get("error") == "e2e_required":
+            note = "not stored: this bot accepts only end-to-end encrypted messages; %s" % (e2e or "")
         out({"ok": False, "error": obj.get("error"), "detail": obj.get("detail"), "http_status": status, "op_key": op,
              "outcome": outcome, "note": note})
         sys.exit(2)
     result = dict(obj, alias=record["alias"], op_key=op)
+    if e2e:
+        result["e2e"] = e2e
     if wait:
-        result["status"] = wait_final(base, token, obj["message_id"], wait)
+        result["status"] = unseal(st, base, wait_final(base, token, obj["message_id"], wait))
         if result["status"].get("result"):
             result["status"]["result_trust"] = REPLY_NOTICE
     out(result)
@@ -1354,7 +1838,7 @@ def cmd_status(st, a):
                 out(dict(obj, stored=True))
                 return
             record = log.get(a.op_key)
-        out(dict(wait_final(base, token, record["message_id"], a.wait or 0), op_key=a.op_key))
+        out(dict(unseal(st, base, wait_final(base, token, record["message_id"], a.wait or 0)), op_key=a.op_key))
         return
     record = log.by_message(a.message_id)
     if record:
@@ -1371,7 +1855,7 @@ def cmd_status(st, a):
         if principal is None:
             die("no caller identity for %s" % base)
     token = token_for(st, base, principal)
-    obj = wait_final(base, token, a.message_id, a.wait or 0)
+    obj = unseal(st, base, wait_final(base, token, a.message_id, a.wait or 0))
     if obj.get("result"):
         obj["result_trust"] = REPLY_NOTICE
     if not a.no_ack:
@@ -1414,7 +1898,7 @@ def cmd_inbox(st, a):
     if not a.no_ack:
         obj["client_ack"] = acknowledge(base, token, obj["items"])
     obj["content_trust"] = REPLY_NOTICE
-    out(obj)
+    out(unseal(st, base, obj))
 
 
 def cmd_ack(st, a):
@@ -1435,6 +1919,8 @@ def canonical_json(obj):
 
 def stored_result(view):
     """A released result as the gateway stored and hashed it: text, plus attachments as {name, content}."""
+    if "sealed" in view:
+        return {k: view[k] for k in SEALED_KEYS if k in view}
     result = {"text": view.get("text")} if "text" in view else {}
     if view.get("attachments"):
         result["attachments"] = [{"name": x["name"], "content": x["content"]} for x in view["attachments"]]
@@ -1478,8 +1964,8 @@ def cmd_history(st, a):
     cid = a.conversation or conv_slot(ct, principal)[0]
     if not cid:
         die("no conversation with %s yet; send a message with chat first" % alias)
-    out(dict(call(base, "GET", "/v1/conversations/%s" % cid, None, token), alias=alias, as_principal=principal,
-             content_trust=REPLY_NOTICE))
+    out(dict(unseal(st, base, call(base, "GET", "/v1/conversations/%s" % cid, None, token)), alias=alias,
+             as_principal=principal, content_trust=REPLY_NOTICE))
 
 
 # ---------------------------------------------------------------- owner
@@ -1582,11 +2068,16 @@ def cmd_owner(st, a):
     elif a.owner_cmd == "conversations":
         out(call(base, "GET", "/v1/owner/bots/%s/conversations" % owner_bot(base, token, a.bot), None, token))
     elif a.owner_cmd == "conversation":
-        out(call(base, "GET", "/v1/owner/conversations/%s" % a.conversation_id, None, token))
+        out(unseal(st, base, call(base, "GET", "/v1/owner/conversations/%s" % a.conversation_id, None, token)))
     elif a.owner_cmd == "reply":
         op = a.op_key or new_op()
-        out(dict(call(base, "POST", "/v1/owner/conversations/%s/messages" % a.conversation_id,
-                      {"op_key": op, "text": a.text}, token), op_key=op))
+        conv = call(base, "GET", "/v1/owner/conversations/%s" % a.conversation_id, None, token)
+        if conv.get("actor_e2e_key"):
+            pin_peer(st, base, conv["actor_id"], conv["actor_e2e_key"])
+        body = seal_from_bot(st, base, conv["bot_id"], conv["actor_id"], "owner", a.conversation_id, a.text,
+                             seed_parts=(op, payload_hash(a.conversation_id, {"text": a.text}))) or {"text": a.text}
+        out(unseal(st, base, dict(call(base, "POST", "/v1/owner/conversations/%s/messages" % a.conversation_id,
+                                       dict(body, op_key=op), token), op_key=op)))
     elif a.owner_cmd == "delete-conversation":
         out(call(base, "DELETE", "/v1/owner/conversations/%s" % a.conversation_id, None, token))
 
@@ -1624,6 +2115,7 @@ def cmd_bot(st, a):
         if a.description is not None:
             body["description"] = a.description
         obj = call(base, "POST", "/v1/owner/bots", body, token)
+        obj["e2e"] = enable_bot_key(st, base, token, obj["bot_id"])["e2e"] if gateway_e2e(base) else None
         if not a.no_source:
             obj["source_credential"] = register_source(st, base, token, obj["bot_id"], obj["handle"], "owner device")
         out(obj)
@@ -1650,8 +2142,11 @@ def cmd_bot(st, a):
             C.create_private_file(target, secret + "\n")
             obj = call(base, "POST", "/v1/owner/bots/%s/sources" % bot_id,
                        {"credential_sha256": C.token_hash(secret), "label": a.label}, token)
-            out(dict(obj, token_file=str(target), note="give this file to the agent that should speak as the bot; "
-                                                        "it stores it with: yobiru public source login URL --token-file F"))
+            key_file = export_key_next_to(st, base, target, bot_id)
+            out(dict(obj, token_file=str(target), e2e_key_file=key_file,
+                     note="give this file (and %s, the bot's end-to-end key, if written) to the agent that should "
+                          "speak as the bot; it stores both with: yobiru public source login URL --token-file F"
+                          % (key_file or "no key file")))
         else:
             bot = call(base, "GET", "/v1/owner/bots/%s" % bot_id, None, token)
             out(dict(register_source(st, base, token, bot_id, bot["handle"], a.label), ok=True))
@@ -1672,7 +2167,7 @@ def cmd_bot(st, a):
         if a.visitors == "off":
             policy["visitor"] = []
         for key, flag in (("accept_followers", a.accept_followers), ("contact_requests", a.contact_requests),
-                          ("friend_direct", a.friend_direct)):
+                          ("friend_direct", a.friend_direct), ("require_e2e", a.require_e2e)):
             if flag is not None:
                 policy[key] = flag == "on"
         if policy:
@@ -1700,7 +2195,9 @@ def cmd_source(st, a):
                                                                "added_at": C.iso(C.now_ts())}
         entry.setdefault("default_identity", me["principal_id"])
     st.update("credentials.json", save)
-    out({"ok": True, "gateway": base, "bot_id": me["principal_id"], "handle": me["handle"]})
+    key_file = import_key_file_next_to(st, base, a.token_file, me["principal_id"])
+    out({"ok": True, "gateway": base, "bot_id": me["principal_id"], "handle": me["handle"],
+         "e2e_key_imported_from": key_file})
 
 
 def write_new_token(path, token):
@@ -1729,12 +2226,12 @@ def cmd_review(st, a):
         obj = call(base, "GET", "/v1/owner/bots/%s/reviews" % bot_id, None, token)
         obj["note"] = ("inbound: a chat body reaches your agent only after you approve it (metadata shown, never the "
                        "text). replies: your agent's drafts; approving releases exactly that text to the caller.")
-        out(obj)
+        out(unseal(st, base, obj))
         return
     if not C.ID_RE.match(a.job or "") or not a.job.startswith("msg_"):
         die("JOB is a message id (msg_...)")
     if a.review_cmd == "reveal":
-        out(dict(call(base, "POST", "/v1/owner/messages/%s/reveal" % a.job, {}, token),
+        out(dict(unseal(st, base, call(base, "POST", "/v1/owner/messages/%s/reveal" % a.job, {}, token)),
                  content_trust="untrusted external text; reading it does not approve it"))
         return
     if a.review_cmd == "resolve":
@@ -1758,7 +2255,23 @@ def cmd_review(st, a):
         body["draft_hash"] = a.draft_hash
     if getattr(a, "text", None):
         body["text"] = a.text
+        sealed = owner_decline(st, base, token, owner_bot(base, token, a.bot), a.job, a.text)
+        if sealed:
+            body.pop("text")
+            body.update(sealed)
     out(call(base, "POST", "/v1/owner/messages/%s/review" % a.job, body, token))
+
+
+def owner_decline(st, base, token, bot_id, mid, text):
+    """An owner's decline note, sealed for the caller when both sides have keys (the gateway stores it as the
+    message's result)."""
+    reviews = call(base, "GET", "/v1/owner/bots/%s/reviews" % bot_id, None, token)
+    for item in reviews["inbound"] + reviews["replies"]:
+        if item["job_id"] == mid:
+            sender = item.get("from") or {}
+            return seal_from_bot(st, base, bot_id, sender.get("principal_id"), "reply", mid, text,
+                                 caller_key=sender.get("e2e_key"), seed_parts=("decline", text))
+    return None
 
 
 # ---------------------------------------------------------------- deterministic worker and native binding
@@ -1801,6 +2314,7 @@ def cmd_worker(st, a):
         if a.token_file:
             write_new_token(a.token_file, wtoken)
             obj["token_file"] = str(Path(a.token_file).expanduser().absolute())
+            obj["e2e_key_file"] = export_key_next_to(st, base, a.token_file, bot_id)
         else:
             store_worker(st, base, bot_id, {"worker_id": obj["worker_id"], "token": wtoken, "epoch": obj["epoch"],
                                             "handle": bot["handle"], "adapter": a.adapter})
@@ -1816,8 +2330,9 @@ def cmd_worker(st, a):
         me = call(base, "GET", "/v1/worker", None, token)
         store_worker(st, base, me["bot_id"], {"worker_id": me["worker_id"], "token": token, "epoch": me["epoch"],
                                               "handle": a.handle or me.get("handle"), "adapter": me.get("adapter")})
+        key_file = import_key_file_next_to(st, base, a.token_file, me["bot_id"])
         out({"ok": True, "gateway": base, "bot_id": me["bot_id"], "worker_id": me["worker_id"],
-             "adapter": me.get("adapter"), "mode": me.get("mode")})
+             "adapter": me.get("adapter"), "mode": me.get("mode"), "e2e_key_imported_from": key_file})
         return
     if a.worker_cmd == "revoke":
         base, token = owner_session(st, a)
@@ -1844,7 +2359,7 @@ def cmd_worker(st, a):
 
 def worker_step(st, a, base, bot_id, token):
     if a.worker_cmd == "claim":
-        out({"ok": True, "items": claim(st, base, bot_id, token, a.lease_seconds, a.max)})
+        out({"ok": True, "items": unseal(st, base, claim(st, base, bot_id, token, a.lease_seconds, a.max))})
     elif a.worker_cmd == "start":
         out(start(st, base, token, a.message_id, lease_of(st, a.message_id, bot_id)))
     elif a.worker_cmd == "respond":
@@ -1941,11 +2456,11 @@ def cmd_job(st, a):
     base, bot_id, token = worker_session(st, a)
     if a.job_cmd == "show":
         lease = lease_of(st, a.job, bot_id)
-        out(dict(redact_job(lease["job"]), ok=True, local=True))
+        out(dict(opened(st, base, redact_job(lease["job"])), ok=True, local=True))
         return
     if a.job_cmd == "attachments":
         lease = lease_of(st, a.job, bot_id)
-        files = (lease["job"].get("untrusted_content") or {}).get("attachments") or []
+        files = (opened(st, base, lease["job"]).get("untrusted_content") or {}).get("attachments") or []
         if not files:
             die("job %s carries no attachments" % a.job)
         out(dict(export_attachments(st, files, {"job_id": a.job}), ok=True))
@@ -1962,7 +2477,7 @@ def cmd_job(st, a):
             save_lease(st, a.job, {"gateway": base, "bot_id": bot_id, "lease_id": res["lease"]["lease_id"],
                                    "fence": res["lease"]["fence"], "state": "started", "native": True,
                                    "ticket": res.get("capability_ticket"), "job": redact_job(res)})
-            res = redact_job(res)
+            res = opened(st, base, redact_job(res))
         out(res)
         if not res.get("ok"):
             sys.exit(2)
@@ -1995,6 +2510,17 @@ def cmd_job(st, a):
             reply = {"text": text}
             if a.attach:
                 reply["attachments"] = attachments_from(st, a.attach)
+            job = lease.get("job") or {}
+            caller = (job.get("from") or {}).get("principal_id")
+            sealed = seal_from_bot(st, base, bot_id, caller, "reply", a.job, text, reply.get("attachments"),
+                                   caller_key=(job.get("from") or {}).get("e2e_key"),
+                                   seed_parts=(lease["lease_id"], payload_hash(a.job, reply))) \
+                if caller and job.get("e2e") else None      # a sealed message gets a sealed answer
+            if sealed:
+                reply = sealed
+            elif job.get("e2e"):
+                die("this job was end-to-end encrypted, but this device does not hold %s's key to seal the reply "
+                    "(yobiru public e2e import --file F)" % bot_id)
             body.update(outcome="completed", reply=reply)
         else:
             body.update(outcome="declined" if a.decline else "failed", code=a.code)
@@ -2031,9 +2557,9 @@ def cmd_job(st, a):
         path = "/v1/worker/notices" + ("/after/%s" % a.after if a.after else "")
         obj = call(base, "GET", path, None, token)
         obj["handling"] = "notices expect no reply; read one, then acknowledge it; never answer one automatically"
-        out(obj)
+        out(unseal(st, base, obj))
     elif a.job_cmd == "notice":
-        out(call(base, "GET", "/v1/worker/notices/%s" % a.notice_id, None, token))
+        out(unseal(st, base, call(base, "GET", "/v1/worker/notices/%s" % a.notice_id, None, token)))
     elif a.job_cmd == "notice-ack":
         out(call(base, "POST", "/v1/worker/notices/%s/ack" % a.notice_id, {}, token))
 
@@ -2367,6 +2893,13 @@ def cmd_mcp(st, a):
             continue
         if msg["method"] == "initialize" and isinstance(answer.get("result"), dict):
             version = answer["result"].get("protocolVersion")
+        result = answer.get("result")
+        if msg["method"] == "tools/call" and isinstance(result, dict) and not result.get("isError") and \
+                json.dumps(result.get("structuredContent")).find('"sealed"') >= 0:
+            # sealed bodies are opened here, with this device's keys: the agent reads text, never envelopes
+            data = unseal(st, base, result["structuredContent"])
+            answer["result"] = dict(result, structuredContent=data, content=[
+                {"type": "text", "text": json.dumps(data, ensure_ascii=False, sort_keys=True)}])
         send(answer)
 
 
@@ -2484,7 +3017,19 @@ def process(st, base, bot_id, token, mid, cfg):
     res = start(st, base, token, mid, lease)
     if not res.get("ok"):
         return dict(res, message_id=mid, step="start")
-    outcome, code, reply = compute(st, bot_id, cfg, lease)
+    item = opened(st, base, lease["item"])
+    e2e = (item.get("untrusted_content") or {}).get("e2e") or {}
+    if e2e.get("sealed") and not e2e.get("opened"):
+        outcome, code, reply = "failed", "internal_error", {"text": "The bot could not open this end-to-end "
+                                                                    "encrypted message."}
+    else:
+        outcome, code, reply = compute(st, bot_id, cfg, dict(lease, item=item))
+    sender = item.get("from") or {}
+    sealed = seal_from_bot(st, base, bot_id, sender.get("actor_id"), "reply", mid, reply["text"],
+                           caller_key=sender.get("e2e_key"), seed_parts=(lease["lease_id"], reply["text"])) \
+        if e2e.get("sealed") else None
+    if sealed:
+        reply = dict({k: v for k, v in reply.items() if k != "text"}, **sealed)
     body = {"lease_id": lease["lease_id"], "fence": lease["fence"], "outcome": outcome, "reply": reply}
     if code:
         body["code"] = code
@@ -2781,6 +3326,8 @@ def main(argv=None):
     p.add_argument("--contact-requests", choices=("on", "off"))
     p.add_argument("--friend-direct", choices=("on", "off"),
                    help="friends (mutual follows) reach your agent and get its replies without your review")
+    p.add_argument("--require-e2e", choices=("on", "off"),
+                   help="refuse messages that are not end-to-end encrypted (MCP clients without a key cannot write)")
     p.add_argument("--gateway")
 
     pw = sp.add_parser("worker", help="per-bot workers: the deterministic responder, or the native agent binding")
@@ -2934,6 +3481,27 @@ def main(argv=None):
     p.add_argument("action", choices=("retry", "abandon", "rewake"))
     p.add_argument("--gateway")
 
+    pe = sp.add_parser("e2e", help="end-to-end encryption keys: status, enable (owner), export, import, trust")
+    es = pe.add_subparsers(dest="e2e_cmd")
+    es.required = True
+    p = es.add_parser("status", help="this device's keys and the keys it pinned for others")
+    p.add_argument("--gateway")
+    p = es.add_parser("enable", help="owner: give a bot an end-to-end key (or --rotate it)")
+    p.add_argument("bot")
+    p.add_argument("--rotate", action="store_true")
+    p.add_argument("--gateway")
+    p = es.add_parser("export", help="write a bot's secret key to a 0600 file for its other devices")
+    p.add_argument("bot")
+    p.add_argument("--file", required=True)
+    p.add_argument("--gateway")
+    p = es.add_parser("import", help="store a bot key exported on another device")
+    p.add_argument("--file", required=True)
+    p.add_argument("--gateway")
+    p = es.add_parser("trust", help="accept a changed key: a contact's current card key, or --key for a caller")
+    p.add_argument("principal", help="a contact alias, or with --key a caller's principal id")
+    p.add_argument("--key")
+    p.add_argument("--gateway")
+
     pv = sp.add_parser("verifier", help="owner: credential for a private capability service")
     vs = pv.add_subparsers(dest="verifier_cmd")
     vs.required = True
@@ -2964,6 +3532,7 @@ def main(argv=None):
                 "slots": cmd_slots, "status": cmd_status, "pending": cmd_pending, "resend": cmd_resend,
                 "history": cmd_history, "owner": cmd_owner, "bot": cmd_bot, "worker": cmd_worker, "job": cmd_job,
                 "connector": cmd_connector, "binding": cmd_binding, "review": cmd_review, "verifier": cmd_verifier,
+                "e2e": cmd_e2e,
                 "responder": cmd_responder, "inbox": cmd_inbox, "ack": cmd_ack, "decisions": cmd_decisions,
                 "verify": cmd_verify, "attachments": cmd_attachments, "mcp": cmd_mcp}
     handlers[a.cmd](st, a)

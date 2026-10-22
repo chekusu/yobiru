@@ -45,12 +45,13 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 import bot_common as C  # noqa: E402
+import bot_e2e as E  # noqa: E402
 import bot_mcp as M  # noqa: E402
 
 HOME_ENV = "YOBIRU_GATEWAY_HOME"
 DEFAULT_HOME = "~/.yobiru-gateway"
 DEFAULT_PORT = 7780
-SCHEMA_VERSION = "4"
+SCHEMA_VERSION = "5"
 CONFIG_KEYS = {"v", "bind", "port", "public_base_url", "allow_non_loopback_bind", "trust_forwarded_for", "limits",
                "enrollment", "mcp"}
 # The MCP endpoint: the same API for MCP clients, under the same credentials. Browsers never need it, so a request
@@ -147,9 +148,10 @@ DEFAULT_POLICY = {"offered": ["faq", "leave_message", "calendar_slots", "chat"],
                   "visitor": ["faq", "leave_message", "chat"],
                   "follower": ["faq", "leave_message", "chat"],
                   "friend": ["faq", "leave_message", "chat"],
-                  "accept_followers": True, "contact_requests": True, "friend_direct": False}
-POLICY_KEYS = ("offered",) + LEVELS + ("accept_followers", "contact_requests", "friend_direct")
-POLICY_BOOLS = ("accept_followers", "contact_requests", "friend_direct")
+                  "accept_followers": True, "contact_requests": True, "friend_direct": False,
+                  "require_e2e": False}
+POLICY_KEYS = ("offered",) + LEVELS + ("accept_followers", "contact_requests", "friend_direct", "require_e2e")
+POLICY_BOOLS = ("accept_followers", "contact_requests", "friend_direct", "require_e2e")
 PENDING = ("queued", "claimed", "started", "review", "uncertain")
 FINAL = ("completed", "declined", "failed", "expired", "cancelled", "delivered", "stored")
 WORKER_CODES = ("no_answer", "budget_exhausted", "policy_denied", "invalid_query", "capability_unavailable",
@@ -242,9 +244,10 @@ CREATE TABLE IF NOT EXISTS bots (
     id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, handle TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
     description TEXT NOT NULL, policy TEXT NOT NULL, state TEXT NOT NULL, worker_epoch INTEGER NOT NULL,
     created_ts INTEGER NOT NULL, updated_ts INTEGER NOT NULL, published_ts INTEGER,
-    agent_epoch INTEGER NOT NULL DEFAULT 0);
+    agent_epoch INTEGER NOT NULL DEFAULT 0, e2e_key TEXT, e2e_key_ts INTEGER);
 CREATE TABLE IF NOT EXISTS handles (handle TEXT PRIMARY KEY, owner_id TEXT NOT NULL, claimed_ts INTEGER NOT NULL);
-CREATE TABLE IF NOT EXISTS actors (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, created_ts INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS actors (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, created_ts INTEGER NOT NULL,
+    e2e_key TEXT, e2e_key_ts INTEGER);
 CREATE TABLE IF NOT EXISTS contacts (
     bot_id TEXT NOT NULL, actor_id TEXT NOT NULL, level TEXT NOT NULL, status TEXT NOT NULL,
     grants TEXT, request_state TEXT, request_note TEXT, requested_ts INTEGER, decided_ts INTEGER,
@@ -393,6 +396,13 @@ MIGRATION_3_4 = [
     "lang TEXT, created_ts INTEGER NOT NULL, expires_ts INTEGER NOT NULL, sent_ts INTEGER, attempts INTEGER NOT NULL "
     "DEFAULT 0, error TEXT)",
 ]
+# Schema 5: end-to-end encryption keys (public halves only) of bots and visitors.
+MIGRATION_4_5 = [
+    "ALTER TABLE bots ADD COLUMN e2e_key TEXT",
+    "ALTER TABLE bots ADD COLUMN e2e_key_ts INTEGER",
+    "ALTER TABLE actors ADD COLUMN e2e_key TEXT",
+    "ALTER TABLE actors ADD COLUMN e2e_key_ts INTEGER",
+]
 
 
 def log(*parts):
@@ -496,7 +506,7 @@ class Store(object):
         if not self.path.is_file():
             raise ValueError("%s has no database (run: init)" % home)
         version = schema_version(self.path)
-        if version in ("1", "2", "3"):
+        if version in ("1", "2", "3", "4"):
             raise ValueError("%s uses gateway schema %s; stop the gateway, back up the home, then run: migrate"
                              % (home, version))
         if version != SCHEMA_VERSION:
@@ -574,7 +584,105 @@ def stored_json(value):
 def needs_files(msg):
     """Attachments anywhere in a caller message (its content, draft or result) need the `files` capability for every
     release: to the agent, in a transcript, back to the caller."""
-    return any(stored_json(msg[col]).get("attachments") for col in ("content", "draft", "result"))
+    return any(has_files(stored_json(msg[col])) for col in ("content", "draft", "result"))
+
+
+# ---------------------------------------------------------------- sealed (end-to-end encrypted) bodies
+# A sealed body replaces `text` (and `attachments`) with envelopes the gateway cannot open (bot_e2e.py). The gateway
+# checks their shape and size, that they are addressed to the keys that must read them, and the declared attachment
+# count and bytes it uses for capabilities and quotas; the recipients' clients check the rest after decrypting.
+def has_files(obj):
+    return bool(obj.get("attachments") or obj.get("sealed_files"))
+
+
+def file_count(obj):
+    if obj.get("sealed_files"):
+        return obj["files"]["count"]
+    return len(obj.get("attachments") or [])
+
+
+def withhold_files(obj):
+    """Drop attachments (plain or sealed) from a body view, leaving a count."""
+    count = file_count(obj)
+    for key in ("attachments", "sealed_files", "files"):
+        obj.pop(key, None)
+    obj["attachments_withheld"] = {"count": count, "reason": "files_not_granted"}
+    return obj
+
+
+def sealed_of(obj):
+    """The sealed parts of a stored body, for a view that passes them on to a key holder."""
+    return {k: obj[k] for k in ("sealed", "sealed_files", "files") if k in obj}
+
+
+def sealed_size(obj):
+    """Plaintext-sized estimate of a sealed body for transcript budgets."""
+    return sum(E.ciphertext_bytes(obj[k]) for k in ("sealed", "sealed_files") if k in obj)
+
+
+def sealed_text_bytes(limits):
+    return 4 * max(limits["max_text_chars"], limits["max_reply_chars"]) + 64     # UTF-8 worst case, JSON framing
+
+
+def principal_key(db, pid):
+    """The current public E2E key of a principal (a bot's key for a source bot, or a visitor's own), or None."""
+    table = "bots" if pid.startswith("bot_") else "actors"
+    row = db.execute("SELECT e2e_key FROM %s WHERE id=?" % table, (pid,)).fetchone()
+    return row["e2e_key"] if row else None
+
+
+def key_view(key, ts=None):
+    if not key:
+        return None
+    v = {"alg": E.ALG, "key": key, "kid": E.kid(key), "fingerprint": E.fingerprint(key)}
+    if ts:
+        v["since"] = ts_iso(ts)
+    return v
+
+
+def e2e_key_field(body):
+    """An optional public X25519 key (base64url) in a request -> the key or None."""
+    key = body.get("e2e_key")
+    if key is None:
+        return None
+    err = E.key_error(key)
+    if err:
+        raise Fail(400, "invalid_e2e_key", "e2e_key is a base64url X25519 public key: %s" % err)
+    return key
+
+
+def sealed_field(body, key, max_bytes, must_reach):
+    env = body.get(key)
+    err = E.envelope_error(env, max_bytes)
+    if err is None and E.ciphertext_bytes(env) > max_bytes:
+        err = "sealed body too large"
+    if err:
+        raise Fail(400, "invalid_" + key, err)
+    kids = E.recipients_of(env)
+    for pub in must_reach:
+        if E.kid(pub) not in kids:
+            raise Fail(409, "sealed_recipient_missing", "%s is not sealed for the current key %s (refresh the "
+                                                        "contact and retry)" % (key, E.kid(pub)))
+    return env
+
+
+def sealed_parts(body, limits, must_reach, files_ok):
+    """`sealed` (required) and optionally `sealed_files` with its declared `files` {count, bytes} -> (stored
+    content, declared attachment bytes)."""
+    out = {"sealed": sealed_field(body, "sealed", sealed_text_bytes(limits), must_reach)}
+    if "sealed_files" not in body and "files" not in body:
+        return out, 0
+    if not files_ok:
+        raise Fail(400, "attachments_not_supported", "attachments go with chat messages only")
+    files = body.get("files")
+    if not isinstance(files, dict) or set(files) != {"count", "bytes"} or \
+            not C.int_in(files["count"], 1, limits["attachment_max_files"]) or \
+            not C.int_in(files["bytes"], 1, limits["attachment_total_bytes"]):
+        raise Fail(400, "invalid_attachments", "files is {count, bytes} within this gateway's attachment limits")
+    room = 2 * files["bytes"] + files["count"] * (2 * C.ATTACHMENT_NAME_BYTES + 64)
+    out["sealed_files"] = sealed_field(body, "sealed_files", room, must_reach)
+    out["files"] = {"count": files["count"], "bytes": files["bytes"]}
+    return out, files["bytes"]
 
 
 def attachment_views(items, content=True):
@@ -1263,14 +1371,15 @@ def note_evidence(db, worker_id, key, now, at=None, extra=None):
 def principal_info(db, pid):
     """Who a principal is, as far as this gateway knows: never a verified person."""
     if pid.startswith("bot_"):
-        bot = db.execute("SELECT id, handle, display_name FROM bots WHERE id=?", (pid,)).fetchone()
+        bot = db.execute("SELECT id, handle, display_name, e2e_key FROM bots WHERE id=?", (pid,)).fetchone()
         return {"principal_id": pid, "kind": "bot", "handle": "@" + bot["handle"] if bot else None,
                 "display_name": bot["display_name"] if bot else None, "display_name_verified": False,
-                "verified_source_bot": bot is not None, "verified_person": False}
-    actor = db.execute("SELECT display_name FROM actors WHERE id=?", (pid,)).fetchone()
+                "verified_source_bot": bot is not None, "verified_person": False,
+                "e2e_key": bot["e2e_key"] if bot else None}
+    actor = db.execute("SELECT display_name, e2e_key FROM actors WHERE id=?", (pid,)).fetchone()
     return {"principal_id": pid, "kind": "actor", "handle": None,
             "display_name": actor["display_name"] if actor else None, "display_name_verified": False,
-            "verified_source_bot": False, "verified_person": False}
+            "verified_source_bot": False, "verified_person": False, "e2e_key": actor["e2e_key"] if actor else None}
 
 
 def public_levels(pol):
@@ -1300,6 +1409,7 @@ def bot_card(cfg, db, bot, now=None):
             "accepts_visitors": bool(effective_caps(pol, None, "visitor")),
             "accepts_followers": pol["accept_followers"], "accepts_contact_requests": pol["contact_requests"],
             "chat": public_chat(cfg["limits"], bot, agent, now),
+            "e2e": key_view(bot["e2e_key"]),
             "identity": {"issuer_scoped": True, "verified_person": False, "stable_id": "bot_id",
                          "continuity": "contacts are saved by bot_id; a handle can be renamed or later name another bot",
                          "callers": "pseudonymous visitors or source bots enrolled on this same gateway"},
@@ -1332,11 +1442,11 @@ def caller_message_view(row, withheld=None, files_ok=True):
     """`files_ok`: whether the reader may receive attachments now. Without it, attachment names and contents stay at
     the gateway (a count is shown)."""
     content = json.loads(row["content"])
-    if content.get("attachments"):
-        if files_ok:
+    if has_files(content):
+        if not files_ok:
+            withhold_files(content)
+        elif content.get("attachments"):
             content["attachments"] = attachment_views(content["attachments"])
-        else:
-            content["attachments_withheld"] = {"count": len(content.pop("attachments")), "reason": "files_not_granted"}
     v = {"message_id": row["id"], "conversation_id": row["conversation_id"], "author": row["author"],
          "kind": row["kind"], "state": row["state"], "code": row["code"], "created_at": ts_iso(row["created_ts"]),
          "deadline": ts_iso(row["deadline_ts"]), "started_at": ts_iso(row["started_ts"]),
@@ -1348,7 +1458,7 @@ def caller_message_view(row, withheld=None, files_ok=True):
     if row["author"] == "owner" and withheld:
         v.update(content=None, content_withheld=withheld, explanation=WITHHELD_TEXT)
     if row["result"] and row["state"] in ("completed", "declined", "failed"):
-        if not withheld and not files_ok and json.loads(row["result"]).get("attachments"):
+        if not withheld and not files_ok and has_files(json.loads(row["result"])):
             withheld = "capability_withdrawn"            # enforced here too, whatever the caller passed
         if withheld:
             v.update(result_withheld=withheld, explanation=WITHHELD_TEXT)
@@ -1391,9 +1501,10 @@ def owner_message_view(row, contact=None):
               "attempts": row["attempts"], "route": row["route"], "automated": bool(row["automated"]),
               "cause": row["cause_id"],
               "decisions": {"admission": row["admission_decision"], "release": row["release_decision"]},
-              "attachments": {"count": len(content.get("attachments") or []), "bytes": row["content_attachment_bytes"],
+              "attachments": {"count": file_count(content), "bytes": row["content_attachment_bytes"],
                               "reply_bytes": row["reply_attachment_bytes"]},
-              "content_trust": "untrusted_external" if row["author"] == "caller" else "owner"})
+              "content_trust": "untrusted_external" if row["author"] == "caller" else "owner",
+              "e2e": "sealed" in content})
     if row["route"] in GATED_ROUTES and row["author"] == "caller":
         v["review"] = {"inbound": inbound_status(row, contact),
                        "reply": "pending" if row["state"] == "review" else None,
@@ -1425,7 +1536,8 @@ def owner_bot_view(cfg, db, bot):
     return {"bot_id": bot["id"], "handle": "@" + bot["handle"],
             "address": "%s/@%s" % (cfg["public_base_url"], bot["handle"]),
             "id_address": "%s/@%s" % (cfg["public_base_url"], bot["id"]), "display_name": bot["display_name"],
-            "description": bot["description"], "state": bot["state"], "policy": policy_of(bot),
+            "description": bot["description"], "state": bot["state"],
+            "policy": dict(DEFAULT_POLICY, **policy_of(bot)), "e2e": key_view(bot["e2e_key"], bot["e2e_key_ts"]),
             "self_enrolled": owner is not None and owner["kind"] == "self_enrolled",
             "worker_epoch": bot["worker_epoch"], "agent_epoch": bot["agent_epoch"],
             "created_at": ts_iso(bot["created_ts"]), "updated_at": ts_iso(bot["updated_ts"]),
@@ -1499,10 +1611,11 @@ def worker_item(db, row, contact, lease_id, lease_expires):
             "lease": {"lease_id": lease_id, "fence": row["fence"], "expires_at": C.iso(lease_expires)},
             "from": {"actor_id": row["actor_id"], "kind": info["kind"], "handle": info["handle"],
                      "display_name": info["display_name"], "display_name_verified": False,
-                     "verified_source_bot": info["verified_source_bot"]},
+                     "verified_source_bot": info["verified_source_bot"], "e2e_key": info["e2e_key"]},
             "relationship": {"level": relation_of(db, row["bot_id"], row["actor_id"]),
                              "generation": contact["generation"]},
-            "untrusted_content": {"text": content.get("text"), "query": content.get("query")},
+            "untrusted_content": dict({"text": content.get("text"), "query": content.get("query")},
+                                      **({"sealed": content["sealed"]} if "sealed" in content else {})),
             "handling": UNTRUSTED_NOTICE, "deadline": ts_iso(row["deadline_ts"]), "attempt": row["attempts"],
             "previously_started": row["started_attempts"] > 0}
 
@@ -1523,7 +1636,8 @@ def transcript(db, limits, msg, bot, contact):
             if result_block(db, bot, contact, m):
                 reset = True
             else:
-                turns.append([{"role": "owner", "text": content.get("text"), "at": ts_iso(m["created_ts"])}])
+                turns.append([dict({"role": "owner", "text": content.get("text"), "at": ts_iso(m["created_ts"])},
+                                   **sealed_of(content))])
             continue
         if m["route"] == "notice" or m["state"] != "completed" or not m["result"]:
             continue                      # notices are read through the agent's notice inbox, never as turns
@@ -1533,13 +1647,14 @@ def transcript(db, limits, msg, bot, contact):
             reset = True
             continue
         result = json.loads(m["result"])
-        if (content.get("attachments") or result.get("attachments")) and not files_ok:
+        if (has_files(content) or has_files(result)) and not files_ok:
             reset = True                  # result_block covers this too; kept explicit for the transcript
             continue
-        said = content.get("text") or "(structured %s request)" % m["kind"]
-        caller_turn = {"role": "caller", "message_id": m["id"], "kind": m["kind"], "text": said,
-                       "at": ts_iso(m["created_ts"])}
-        bot_turn = {"role": "bot", "in_reply_to": m["id"], "text": result.get("text"), "at": ts_iso(m["finished_ts"])}
+        said = content.get("text") or (None if "sealed" in content else "(structured %s request)" % m["kind"])
+        caller_turn = dict({"role": "caller", "message_id": m["id"], "kind": m["kind"], "text": said,
+                            "at": ts_iso(m["created_ts"])}, **sealed_of(content))
+        bot_turn = dict({"role": "bot", "in_reply_to": m["id"], "text": result.get("text"),
+                         "at": ts_iso(m["finished_ts"])}, **sealed_of(result))
         if content.get("attachments"):
             caller_turn["attachments"] = attachment_views(content["attachments"])
         if result.get("attachments"):
@@ -1547,7 +1662,8 @@ def transcript(db, limits, msg, bot, contact):
         turns.append([caller_turn, bot_turn])
     kept, used = [], 0
     for turn in reversed(turns[-limits["transcript_turns"]:]):
-        size = sum(len(e.get("text") or "") + sum(len(a["content"]) for a in e.get("attachments", [])) for e in turn)
+        size = sum(len(e.get("text") or "") + sum(len(a["content"]) for a in e.get("attachments", [])) +
+                   sealed_size(e) for e in turn)
         if used + size > limits["transcript_chars"]:
             reset = True
             break
@@ -1565,19 +1681,21 @@ def job_view(db, cfg, msg, bot, contact, body=None):
     v = {"job_id": msg["id"], "message_id": msg["id"], "conversation_id": msg["conversation_id"],
          "bot_id": msg["bot_id"], "kind": msg["kind"], "state": msg["state"], "code": msg["code"],
          "from": {"principal_id": msg["actor_id"], "kind": info["kind"], "handle": info["handle"],
-                  "verified_source_bot": info["verified_source_bot"], "verified_person": False},
+                  "verified_source_bot": info["verified_source_bot"], "verified_person": False,
+                  "e2e_key": info["e2e_key"]},
          "relationship": relation_of(db, msg["bot_id"], msg["actor_id"]),
          "review": {"inbound": inbound_status(msg, contact),
                     "reply": "friend_direct" if direct else "owner_approval_required"},
          "created_at": ts_iso(msg["created_ts"]), "deadline": ts_iso(msg["deadline_ts"]),
          "attempt": msg["attempts"], "previously_started": msg["started_attempts"] > 0,
-         "size": len(content.get("text") or ""), "causal_hop": msg["hop"]}
-    if content.get("attachments") and (inbound_status(msg, contact) != "pending" or msg["started_ts"] is not None):
-        v["attachments"] = len(content["attachments"])
+         "size": len(content.get("text") or "") or sealed_size(content), "causal_hop": msg["hop"],
+         "e2e": "sealed" in content}
+    if has_files(content) and (inbound_status(msg, contact) != "pending" or msg["started_ts"] is not None):
+        v["attachments"] = file_count(content)
     if body is not None:
         turns, reset = transcript(db, cfg["limits"], msg, bot, contact)
         caps = current_caps(db, bot, msg["actor_id"], contact)
-        untrusted = {"text": content.get("text")}
+        untrusted = dict({"text": content.get("text")}, **sealed_of(content))
         if content.get("attachments"):
             untrusted["attachments"] = attachment_views(content["attachments"])
         v.update({"untrusted_content": untrusted,
@@ -1713,17 +1831,20 @@ class Api(object):
         """Routes that may carry attachments accept the larger body only for a bot that offers `files`: elsewhere the
         general limit stays, as before attachments existed."""
         L = self.limits
-        if name == "message_send":
-            row = db.execute("SELECT b.policy FROM conversations c JOIN bots b ON b.id=c.bot_id WHERE c.id=?",
-                             (params["cid"],)).fetchone()
-        elif name == "worker_finish":
-            row = db.execute("SELECT b.policy FROM messages m JOIN bots b ON b.id=m.bot_id WHERE m.id=?",
+        if name in ("message_send", "owner_reply"):
+            row = db.execute("SELECT b.policy, b.e2e_key FROM conversations c JOIN bots b ON b.id=c.bot_id WHERE "
+                             "c.id=?", (params["cid"],)).fetchone()
+        elif name in ("worker_finish", "review_action"):
+            row = db.execute("SELECT b.policy, b.e2e_key FROM messages m JOIN bots b ON b.id=m.bot_id WHERE m.id=?",
                              (params["mid"],)).fetchone()
         else:
             return L["max_body_bytes"]
-        if row is not None and "files" in json.loads(row["policy"])["offered"]:
-            return max(L["max_body_bytes"], L["max_attachment_body_bytes"])
-        return L["max_body_bytes"]
+        # Sealed text arrives base64url-encoded in an envelope: a bot with an E2E key gets that much more room.
+        sealed = sealed_text_bytes(L) * 4 // 3 + 1024 if row is not None and row["e2e_key"] else 0
+        if name in ("message_send", "worker_finish") and row is not None and \
+                "files" in json.loads(row["policy"])["offered"]:
+            return max(L["max_body_bytes"], L["max_attachment_body_bytes"]) + sealed
+        return L["max_body_bytes"] + sealed
 
     # ---- auth
     def authenticate(self, db, kinds, token, now):
@@ -1798,6 +1919,7 @@ class Api(object):
                                     "email_code": "POST /v1/enroll/email" if self.enrollment["email_verification"]
                                     else None},
                      "federation": "none: identities are scoped to this gateway",
+                     "e2e": {"alg": E.ALG, "sealed_bodies": True},
                      "identity": {"verified_person": False}}
 
     def public_profile(self, db, r):
@@ -1812,8 +1934,9 @@ class Api(object):
         """A pseudonymous visitor. With a client-generated actor credential as the bearer (saved by the client
         before sending), a retry after a lost response returns the same identity; nothing secret is echoed."""
         body = r.body
-        fields(body, ("display_name",), ("display_name",))
+        fields(body, ("display_name", "e2e_key"), ("display_name",))
         name = C.clean_label(text_field(body, "display_name", 60))
+        e2e_key = e2e_key_field(body)
         L, now, token = self.limits, r.now, r.token
         if token is not None:
             if C.token_kind(token) != "actor":
@@ -1834,7 +1957,8 @@ class Api(object):
             return 429, {"ok": False, "error": "rate_limited", "detail": "too many new caller identities; retry later"}
         actor_id = C.new_id("act")
         secret = token or C.new_token("actor")
-        db.execute("INSERT INTO actors(id, display_name, created_ts) VALUES(?,?,?)", (actor_id, name, int(now)))
+        db.execute("INSERT INTO actors(id, display_name, created_ts, e2e_key, e2e_key_ts) VALUES(?,?,?,?,?)",
+                   (actor_id, name, int(now), e2e_key, int(now) if e2e_key else None))
         db.execute("INSERT INTO credentials(hash, kind, subject, created_ts) VALUES(?,?,?,?)",
                    (C.token_hash(secret), "actor", actor_id, int(now)))
         out = {"ok": True, "actor_id": actor_id, "display_name": name, "verified_person": False, "duplicate": False,
@@ -1920,8 +2044,9 @@ class Api(object):
         token, body, now, L = r.token, r.body, r.now, self.limits
         if C.token_kind(token) != "owner":
             raise Fail(401, "unauthorized", "send a new client-generated owner credential as the bearer token")
-        fields(body, ("display_name", "handle", "description", "source_credential_sha256", "email_challenge"),
-               ("display_name", "source_credential_sha256"))
+        fields(body, ("display_name", "handle", "description", "source_credential_sha256", "email_challenge",
+                      "e2e_key"), ("display_name", "source_credential_sha256"))
+        e2e_key = e2e_key_field(body)
         source_hash = body["source_credential_sha256"]
         if not isinstance(source_hash, str) or not C.HASH_RE.match(source_hash):
             raise Fail(400, "invalid_source_credential", "source_credential_sha256: 64 lowercase hex digits")
@@ -1970,8 +2095,9 @@ class Api(object):
                    (owner_hash, "owner", owner_id, int(now), "self-enrollment"))
         db.execute("INSERT INTO handles(handle, owner_id, claimed_ts) VALUES(?,?,?)", (handle, owner_id, int(now)))
         db.execute("INSERT INTO bots(id, owner_id, handle, display_name, description, policy, state, worker_epoch, "
-                   "created_ts, updated_ts) VALUES(?,?,?,?,?,?,'draft',0,?,?)",
-                   (bot_id, owner_id, handle, name, desc, canonical(DEFAULT_POLICY), int(now), int(now)))
+                   "created_ts, updated_ts, e2e_key, e2e_key_ts) VALUES(?,?,?,?,?,?,'draft',0,?,?,?,?)",
+                   (bot_id, owner_id, handle, name, desc, canonical(DEFAULT_POLICY), int(now), int(now), e2e_key,
+                    int(now) if e2e_key else None))
         db.execute("INSERT INTO credentials(hash, kind, subject, created_ts, label) VALUES(?,?,?,?,?)",
                    (source_hash, "source", bot_id, int(now), "self-enrollment"))
         owner = db.execute("SELECT * FROM owners WHERE id=?", (owner_id,)).fetchone()
@@ -1985,7 +2111,19 @@ class Api(object):
         if r.subject["kind"] == "bot":
             out.update(handle="@" + r.subject["handle"], verified_source_bot=True,
                        credential_id=r.subject["credential_id"])
+        out["e2e"] = key_view(principal_key(db, r.subject["id"]))
         return 200, out
+
+    def actor_key(self, db, r):
+        """A visitor sets (or replaces) its own public E2E key. A source bot speaks with its bot's key, which only
+        the bot's owner sets."""
+        if r.subject["kind"] != "actor":
+            raise Fail(409, "owner_managed", "a source bot uses its bot's key; the owner sets it (bot e2e)")
+        fields(r.body, ("e2e_key",), ("e2e_key",))
+        key = e2e_key_field(r.body)
+        if key != principal_key(db, r.subject["id"]):
+            db.execute("UPDATE actors SET e2e_key=?, e2e_key_ts=? WHERE id=?", (key, int(r.now), r.subject["id"]))
+        return 200, {"ok": True, "actor_id": r.subject["id"], "e2e": key_view(key)}
 
     def admit_contact(self, db, bot, pid, now):
         """First contact between a caller and a bot: a per-bot admission limit bounds how many new callers one
@@ -2196,13 +2334,31 @@ class Api(object):
         if contact["epoch"] != conv["epoch"]:
             raise Fail(409, "conversation_closed", "this conversation belongs to an earlier grant; start a new one")
         body, now, L = r.body, r.now, self.limits
-        fields(body, ("op_key", "kind", "text", "query", "deadline_seconds", "attachments", "cause"), ("op_key", "kind"))
+        fields(body, ("op_key", "kind", "text", "query", "deadline_seconds", "attachments", "cause", "sealed",
+                      "sealed_files", "files"), ("op_key", "kind"))
         op_key = op_key_field(body)
         kind = body["kind"]
         if kind not in KIND_CAPABILITY:
             raise Fail(400, "unknown_kind", "kind must be one of %s" % ", ".join(sorted(KIND_CAPABILITY)))
         content, nbytes = {}, 0
-        if kind == "slots":
+        sealed = "sealed" in body
+        if sealed:
+            # End-to-end encrypted: the text (and attachments) are sealed for the bot's key on the caller's device.
+            if "text" in body or "attachments" in body:
+                raise Fail(400, "invalid_sealed", "a sealed message carries its text and attachments inside sealed")
+            if not bot["e2e_key"]:
+                raise Fail(409, "e2e_unavailable", "this bot has no end-to-end key; send it unsealed or ask its owner")
+            content, nbytes = sealed_parts(body, L, [bot["e2e_key"]], files_ok=kind == "chat")
+            if kind == "slots":
+                content["query"] = slots_query(body.get("query"))
+            elif "query" in body:
+                raise Fail(400, "unknown_field", "query is only for kind slots")
+        elif "sealed_files" in body or "files" in body:
+            raise Fail(400, "invalid_sealed", "sealed_files and files go with a sealed message")
+        elif policy_of(bot).get("require_e2e") and (kind != "slots" or body.get("text") is not None):
+            raise Fail(403, "e2e_required", "this bot accepts only end-to-end encrypted messages: send it with the "
+                                            "yobiru client, which seals it for the bot's key")
+        elif kind == "slots":
             content["query"] = slots_query(body.get("query"))
             if body.get("text") is not None:
                 content["text"] = text_field(body, "text", L["max_text_chars"], multiline=True)
@@ -2250,7 +2406,7 @@ class Api(object):
         caps = current_caps(db, bot, pid, contact)
         if capability not in caps:
             raise Fail(403, "capability_not_granted", "this bot does not offer %s to you" % capability)
-        if "attachments" in content and "files" not in caps:
+        if has_files(content) and "files" not in caps:
             raise Fail(403, "capability_not_granted", "this bot does not exchange files with you")
         if conv["turns"] >= L["turns_per_conversation"]:
             raise Fail(429, "conversation_turn_limit", "start a new conversation")
@@ -2268,7 +2424,7 @@ class Api(object):
         # Prechecks of the loop budgets and attachment quotas: they refuse with a rollback, before anything moves.
         automated = pid.startswith("bot_") and kind != "notice"
         plan = automation_precheck(db, L, conv, contact, bot, pid, now) if automated else None
-        charges = attachment_precheck(db, L, bot["id"], nbytes, now, caller=pid) if "attachments" in content else []
+        charges = attachment_precheck(db, L, bot["id"], nbytes, now, caller=pid) if has_files(content) else []
         if not take(db, "msg:m:%s" % pid, L["messages_per_minute_per_actor"], 60, now) or \
                 not take(db, "msg:h:%s" % pid, L["messages_per_hour_per_actor"], 3600, now):
             return 429, {"ok": False, "error": "rate_limited", "detail": "too many messages; retry later"}
@@ -2399,7 +2555,8 @@ class Api(object):
 
     def bot_create(self, db, r):
         body, now = r.body, r.now
-        fields(body, ("handle", "display_name", "description", "policy"), ("handle", "display_name"))
+        fields(body, ("handle", "display_name", "description", "policy", "e2e_key"), ("handle", "display_name"))
+        e2e_key = e2e_key_field(body)
         if r.subject["kind"] == "self_enrolled" and db.execute(
                 "SELECT COUNT(*) FROM bots WHERE owner_id=?", (r.subject["id"],)).fetchone()[0] >= \
                 self.limits["bots_per_self_enrolled_owner"]:
@@ -2411,8 +2568,9 @@ class Api(object):
         bot_id = C.new_id("bot")
         self.claim_handle(db, r.subject, handle, bot_id, now)
         db.execute("INSERT INTO bots(id, owner_id, handle, display_name, description, policy, state, worker_epoch, "
-                   "created_ts, updated_ts) VALUES(?,?,?,?,?,?,'draft',0,?,?)",
-                   (bot_id, r.subject["id"], handle, name, desc, canonical(pol), int(now), int(now)))
+                   "created_ts, updated_ts, e2e_key, e2e_key_ts) VALUES(?,?,?,?,?,?,'draft',0,?,?,?,?)",
+                   (bot_id, r.subject["id"], handle, name, desc, canonical(pol), int(now), int(now), e2e_key,
+                    int(now) if e2e_key else None))
         bot = db.execute("SELECT * FROM bots WHERE id=?", (bot_id,)).fetchone()
         return 201, dict(owner_bot_view(self.cfg, db, bot), ok=True)
 
@@ -2425,9 +2583,14 @@ class Api(object):
 
     def bot_edit(self, db, r):
         bot, body, now = self.own_bot(db, r.subject, r.params["bid"]), r.body, r.now
-        fields(body, ("handle", "display_name", "description", "policy"))
+        fields(body, ("handle", "display_name", "description", "policy", "e2e_key"))
         if not body:
             raise Fail(400, "missing_field", "nothing to change")
+        e2e_key = e2e_key_field(body)
+        if e2e_key and e2e_key != bot["e2e_key"]:
+            # Set or replaced (a lost or rotated key). Callers that pinned the old key see the change and must accept
+            # it; there is no way to remove a key: a bot that had one keeps end-to-end encryption.
+            db.execute("UPDATE bots SET e2e_key=?, e2e_key_ts=? WHERE id=?", (e2e_key, int(now), bot["id"]))
         handle, name, desc, pol = bot["handle"], bot["display_name"], bot["description"], policy_of(bot)
         if "handle" in body:
             handle = handle_field(body["handle"])
@@ -2875,6 +3038,7 @@ class Api(object):
                           (conv["id"],)).fetchall()
         contact = contact_row(db, bot["id"], conv["actor_id"])
         return 200, {"ok": True, "conversation_id": conv["id"], "bot_id": bot["id"], "actor_id": conv["actor_id"],
+                     "actor_e2e_key": principal_key(db, conv["actor_id"]),
                      "contact": contact_owner_view(db, contact, bot),
                      "conversation_readable_by_caller": contact["epoch"] == conv["epoch"] and contact["status"] != "revoked",
                      "messages": [owner_message_view(m, contact) for m in rows], "notice": UNTRUSTED_NOTICE}
@@ -2884,10 +3048,9 @@ class Api(object):
         expected). Allowed only while the relationship and conversation are current."""
         conv, bot = self.owner_conversation(db, r.subject, r.params["cid"])
         body, now = r.body, r.now
-        fields(body, ("op_key", "text"), ("op_key", "text"))
+        fields(body, ("op_key", "text", "sealed"), ("op_key",))
         op_key = op_key_field(body)
-        text = text_field(body, "text", self.limits["max_text_chars"], multiline=True)
-        content = {"text": text}
+        content = self.owner_text(db, bot, conv["actor_id"], body, required=True)
         request_hash = sha(canonical({"kind": "owner", "content": content}))
         prior = db.execute("SELECT * FROM messages WHERE conversation_id=? AND op_key=?",
                            (conv["id"], "o:" + op_key)).fetchone()
@@ -2907,6 +3070,23 @@ class Api(object):
                     contact["generation"], int(now), int(now)))
         row = db.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
         return 201, dict(owner_message_view(row), ok=True, duplicate=False)
+
+    def owner_text(self, db, bot, pid, body, required):
+        """Owner-written text: `text`, or `sealed` for the caller's and the bot's keys. A bot that requires E2E
+        sends its owner's words sealed whenever the caller has a key. -> {"text"} / {"sealed"} / {} (not given)."""
+        if "sealed" in body:
+            if "text" in body:
+                raise Fail(400, "invalid_sealed", "send text or sealed, not both")
+            if not bot["e2e_key"]:
+                raise Fail(409, "e2e_unavailable", "this bot has no end-to-end key")
+            reach = [k for k in (bot["e2e_key"], principal_key(db, pid)) if k]
+            return sealed_parts(body, self.limits, reach, files_ok=False)[0]
+        text = text_field(body, "text", self.limits["max_text_chars"], multiline=True, required=required)
+        if text is None:
+            return {}
+        if policy_of(bot).get("require_e2e") and bot["e2e_key"] and principal_key(db, pid):
+            raise Fail(403, "e2e_required", "this bot sends only end-to-end encrypted text to callers with a key")
+        return {"text": text}
 
     def owner_conversation_delete(self, db, r):
         """Deletes the gateway's stored copy: pending work is cancelled and every message body and result in
@@ -2946,7 +3126,7 @@ class Api(object):
                 content = json.loads(m["content"])
                 inbound.append(dict(job_view(db, self.cfg, m, bot, contact), request_hash=m["request_hash"],
                                     notice=m["route"] == "notice",
-                                    attachments_pending={"count": len(content.get("attachments") or []),
+                                    attachments_pending={"count": file_count(content),
                                                          "bytes": m["content_attachment_bytes"]}))
             elif m["state"] == "review":
                 view = owner_message_view(m, contact)
@@ -2987,13 +3167,13 @@ class Api(object):
         same transaction; a retry returns the same receipt."""
         msg, bot = self.owned_message(db, r.subject, r.params["mid"])
         body, now = r.body, r.now
-        fields(body, ("action", "request_hash", "draft_hash", "text"), ("action",))
+        fields(body, ("action", "request_hash", "draft_hash", "text", "sealed"), ("action",))
         action = body["action"]
         if msg["route"] not in GATED_ROUTES:
             raise Fail(409, "not_reviewable", "only chat jobs and notices for the owner's agent are reviewed")
         if msg["route"] == "notice" and action not in ("approve_inbound", "reject_inbound"):
             raise Fail(409, "not_reviewable", "a notice has no reply to review")
-        text = text_field(body, "text", self.limits["max_text_chars"], multiline=True, required=False)
+        said = self.owner_text(db, bot, msg["actor_id"], body, required=False)
         expire_due(db, now)
         msg = db.execute("SELECT * FROM messages WHERE id=?", (msg["id"],)).fetchone()
         contact = contact_row(db, bot["id"], msg["actor_id"])
@@ -3028,7 +3208,7 @@ class Api(object):
             if msg["state"] != waiting:
                 raise Fail(409, "not_pending", "state %s" % msg["state"])
             dec = self.decide(db, r, bot, contact, msg, "reject_inbound", msg["request_hash"])
-            result = {"text": text or "The owner did not accept this message."}
+            result = said or {"text": "The owner did not accept this message."}
             db.execute("UPDATE messages SET state='declined', code='owner_declined', result=?, finished_ts=?, "
                        "admitted_ts=NULL, admission_decision=?, " + DROP_DRAFT + ", " + CLEAR_WORK + " WHERE id=?",
                        (canonical(result), int(now), dec["id"], msg["id"]))
@@ -3061,7 +3241,7 @@ class Api(object):
             if msg["state"] != "review":
                 raise Fail(409, "not_in_review", "state %s" % msg["state"])
             dec = self.decide(db, r, bot, contact, msg, "reject_reply", msg["draft_hash"])
-            result = {"text": text or "The owner did not release an answer to this message."}
+            result = said or {"text": "The owner did not release an answer to this message."}
             db.execute("UPDATE messages SET state='declined', code='reply_rejected', result=?, " + DROP_DRAFT +
                        ", finished_ts=?, release_decision=NULL WHERE id=?", (canonical(result), int(now), msg["id"]))
             return 200, {"ok": True, "job_id": msg["id"], "state": "declined", "duplicate": False,
@@ -3074,7 +3254,8 @@ class Api(object):
         fields(r.body, ())
         db.execute("UPDATE messages SET revealed_ts=COALESCE(revealed_ts, ?) WHERE id=?", (int(r.now), msg["id"]))
         msg = db.execute("SELECT * FROM messages WHERE id=?", (msg["id"],)).fetchone()
-        return 200, dict(owner_message_view(msg, contact_row(db, bot["id"], msg["actor_id"])), ok=True)
+        return 200, dict(owner_message_view(msg, contact_row(db, bot["id"], msg["actor_id"])), ok=True,
+                         bot_id=bot["id"], actor_e2e_key=principal_key(db, msg["actor_id"]))
 
     def resolve(self, db, r):
         """Owner decisions for native work: `retry` re-dispatches uncertain work (it may repeat what the host
@@ -3383,9 +3564,9 @@ class Api(object):
             raise Fail(400, "invalid_code", "completed results carry no code")
         if outcome != "completed" and code not in WORKER_CODES:
             raise Fail(400, "invalid_code", "code must be one of %s" % ", ".join(WORKER_CODES))
-        result = self.validate_reply(reply, msg, outcome)
+        result = self.validate_reply(db, bot, reply, msg, outcome)
         if msg["route"] == "agent" and outcome != "completed":
-            result = {"text": SUPERVISED_DECLINE_TEXT[outcome]}     # host text leaves only through a reviewed draft
+            result = {"text": SUPERVISED_DECLINE_TEXT[outcome]}     # gateway text: never sealed     # host text leaves only through a reviewed draft
         lease = body.get("lease_id")
         lease_hash = sha(lease) if isinstance(lease, str) and len(lease) <= 128 else ""
         if msg["state"] in FINAL or (msg["route"] == "agent" and msg["state"] == "review"):
@@ -3403,8 +3584,8 @@ class Api(object):
         if msg["state"] != "started":
             raise Fail(409, "not_started", "report start before a final outcome")
         if msg["route"] == "agent" and outcome == "completed":
-            nbytes = C.attachment_bytes(result.get("attachments"))
-            if "attachments" in result:
+            nbytes = C.attachment_bytes(result.get("attachments")) + (result.get("files") or {}).get("bytes", 0)
+            if has_files(result):
                 caps = current_caps(db, bot, msg["actor_id"])
                 if "files" not in caps:
                     raise Fail(403, "files_not_granted", "this caller may not receive files; reply without attachments")
@@ -3432,9 +3613,32 @@ class Api(object):
                    " WHERE id=?", (outcome, code, canonical(result), int(r.now), lease_hash, msg["id"]))
         return 200, {"ok": True, "message_id": msg["id"], "state": outcome, "duplicate": False}
 
-    def validate_reply(self, reply, msg, outcome):
+    def validate_reply(self, db, bot, reply, msg, outcome):
         if not isinstance(reply, dict):
             raise Fail(400, "invalid_reply")
+        inbound_sealed = "sealed" in json.loads(msg["content"])
+        if "sealed" in reply:
+            # Sealed for the caller's and the bot's keys on the answering device; slots stay structured and plain.
+            if "text" in reply or "attachments" in reply:
+                raise Fail(400, "invalid_sealed", "a sealed reply carries its text and attachments inside sealed")
+            if not bot["e2e_key"]:
+                raise Fail(409, "e2e_unavailable", "this bot has no end-to-end key")
+            structured = ("slots", "as_of") if msg["capability"] == "calendar_slots" else ()
+            fields(reply, ("sealed", "sealed_files", "files") + structured)
+            out = {}
+            if any(k in reply for k in structured):
+                out = self.validate_reply(db, bot, dict({k: reply[k] for k in structured if k in reply}, text="-"),
+                                          msg, outcome)
+                out.pop("text", None)
+            reach = [k for k in (bot["e2e_key"], principal_key(db, msg["actor_id"])) if k]
+            out.update(sealed_parts(reply, self.limits, reach,
+                                    files_ok=msg["route"] == "agent" and outcome == "completed")[0])
+            return out
+        if "sealed_files" in reply or "files" in reply:
+            raise Fail(400, "invalid_sealed", "sealed_files and files go with a sealed reply")
+        if inbound_sealed and reply.get("text") is not None and msg["route"] == "agent":
+            raise Fail(409, "e2e_required", "this message was end-to-end encrypted: answer it with `yobiru public "
+                                            "job reply`, which seals the reply for the caller")
         if msg["route"] == "agent":
             fields(reply, ("text", "attachments"))
             out, L = {}, self.limits
@@ -3602,12 +3806,14 @@ class Api(object):
         info = principal_info(db, msg["actor_id"])
         v = {"notice_id": msg["id"], "message_id": msg["id"], "conversation_id": msg["conversation_id"],
              "from": {"principal_id": msg["actor_id"], "kind": info["kind"], "handle": info["handle"],
-                      "verified_source_bot": info["verified_source_bot"], "verified_person": False},
+                      "verified_source_bot": info["verified_source_bot"], "verified_person": False,
+                      "e2e_key": info["e2e_key"]},
              "relationship": relation_of(db, bot["id"], msg["actor_id"]), "received_at": ts_iso(msg["created_ts"]),
              "admitted": inbound_status(msg, contact) != "pending", "acknowledged_at": ts_iso(msg["agent_ack_ts"]),
              "causal_hop": msg["hop"], "reply_expected": False}
         if body:
-            v.update(untrusted_content={"text": json.loads(msg["content"]).get("text")},
+            content = json.loads(msg["content"])
+            v.update(untrusted_content=dict({"text": content.get("text")}, **sealed_of(content)),
                      display_name_untrusted=info["display_name"], handling=NOTICE_HANDLING)
         return v
 
@@ -3847,6 +4053,7 @@ ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
     ("POST", r"/v1/enroll/email", "enroll_email", None),
     ("GET", r"/v1/bots/(?P<ref>[^/]{1,64})", "public_profile", None),
     ("GET", r"/v1/actor", "actor_me", CALLER),
+    ("POST", r"/v1/actor/key", "actor_key", CALLER),
     ("GET", r"/v1/bots/(?P<ref>[^/]{1,64})/contact", "contact_view", CALLER),
     ("POST", r"/v1/bots/(?P<ref>[^/]{1,64})/contact-request", "contact_request", CALLER),
     ("POST", r"/v1/bots/(?P<ref>[^/]{1,64})/follow", "follow", ("source",)),
@@ -4572,20 +4779,21 @@ def migrate_policy(old):
 
 
 def migrate_db(path):
-    """Schema 1, 2 or 3 -> 4 in one IMMEDIATE transaction: on any error everything rolls back and the old schema stays.
+    """Schema 1, 2, 3 or 4 -> 5 in one IMMEDIATE transaction: on any error everything rolls back and the old schema stays.
     From 1: explicit friend grants keep their exact meaning (they also become that contact's ceiling); no follow
     edge, source credential or source bot is invented. From 2: only additive columns and the decisions table; no
     decision, admission time, budget or attachment is invented for existing rows, and every grant, follow,
     generation, queue and piece of evidence keeps its meaning. From 3: the owners' email column, the email challenges
-    and the mail outbox; existing owners keep working without an email."""
+    and the mail outbox; existing owners keep working without an email. From 4: the public E2E key columns; existing
+    bots and visitors have no key (their messages stay plaintext until a key is set) and no stored message changes."""
     db = open_db(path)
     try:
         db.execute("BEGIN IMMEDIATE")
         try:
             row = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
             start = row["value"] if row else None
-            if start not in ("1", "2", "3"):
-                raise ValueError("expected schema 1, 2 or 3, found %s" % (start or "none"))
+            if start not in ("1", "2", "3", "4"):
+                raise ValueError("expected schema 1, 2, 3 or 4, found %s" % (start or "none"))
             summary = {"from_schema": start}
             if start == "1":
                 for statement in MIGRATION_1_2:
@@ -4602,7 +4810,10 @@ def migrate_db(path):
             if start in ("1", "2"):
                 for statement in MIGRATION_2_3:
                     db.execute(statement)
-            for statement in MIGRATION_3_4:
+            if start in ("1", "2", "3"):
+                for statement in MIGRATION_3_4:
+                    db.execute(statement)
+            for statement in MIGRATION_4_5:
                 db.execute(statement)
             summary["bots"] = db.execute("SELECT COUNT(*) FROM bots").fetchone()[0]
             db.execute("UPDATE meta SET value=? WHERE key='schema_version'", (SCHEMA_VERSION,))
@@ -4629,7 +4840,7 @@ def cmd_migrate(home, a):
     if version == SCHEMA_VERSION:
         print(json.dumps({"ok": True, "schema": version, "migrated": False, "note": "already current"}, indent=2))
         return 0
-    if version not in ("1", "2", "3"):
+    if version not in ("1", "2", "3", "4"):
         die("unsupported gateway database schema %r" % version)
     try:
         lock = C.FileLock(home / ".migrate.lock", blocking=False)

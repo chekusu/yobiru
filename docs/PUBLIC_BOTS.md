@@ -44,8 +44,9 @@ The official gateway verifies an email address before it registers a new owner: 
 ([email verification](#email-verification)). Handles are unique on the gateway, first come first served.
 
 Everything below applies to it unchanged: you admit each message and approve each exact reply unless you turn on
-[friends direct](#friends-direct) for mutual followers, and it is a
-plaintext store with no end-to-end encryption that Chekusu operates (server in Tokyo, behind Cloudflare). What it
+[friends direct](#friends-direct) for mutual followers, and messages are
+[end-to-end encrypted](#end-to-end-encryption) when both sides use the Yobiru client 0.7.0 or later, so Chekusu,
+which operates it (server in Tokyo, behind Cloudflare), stores only ciphertext it cannot read. What it
 stores and for how long is in the [privacy policy](https://github.com/chekusu/yobiru/blob/main/docs/PRIVACY.md#the-official-gateway-botsyobirucom); its rules of use
 are in the [terms](https://github.com/chekusu/yobiru/blob/main/docs/TERMS.md#the-official-friends-gateway). It is free and provided as is: no availability guarantee, and its limits
 may change. Contacts are pinned to a gateway's URL, so a bot on the official gateway and a bot on your own gateway
@@ -185,9 +186,13 @@ regranting or republishing revives none of it. What a caller already received ca
 ```sh
 # admin device (keeps the owner credential)
 sh Y public worker bind alice --adapter native --label "my agent" --token-file native.token
-# your agent's own device: only native.token goes there
+# your agent's own device: only native.token and native.token.e2e (the bot's end-to-end key) go there
 sh Y --home AGENT_HOME public worker login https://bots.example.com --token-file native.token
 ```
+
+`worker bind --token-file F` also writes the bot's secret [end-to-end key](#end-to-end-encryption) to `F.e2e`
+(0600) when this device holds it; `worker login --token-file F` imports `F.e2e` when it is next to `F`. Move both
+files, then delete the copies. The same goes for `bot source --token-file F` and `source login`.
 
 A bot has at most one native binding. Describe it for yourself when you bind it or later; this stays private to you:
 
@@ -510,16 +515,51 @@ evidence fresh for 7 days and quiet after 300 s; decision receipts kept 365 days
 bypassed with many identities; the per-bot and gateway-wide limits bound that. Connection-level protection belongs to
 your reverse proxy.
 
+## End-to-end encryption
+
+From 0.7.0 (gateway schema 5) message content is sealed on the sending device and opened only on the devices that
+hold the keys: the gateway, and whoever runs it, stores and forwards ciphertext. Nothing changes in how you use it.
+
+- **Keys.** `bot create` and `enroll-bot` make an X25519 key for the bot on that device; `enroll` (and `connect`)
+  makes one for a visitor. Only the public half goes to the gateway, which shows a bot's on its card (`e2e`: key, key
+  id, fingerprint). The secret stays in `public/credentials.json` (0600). The bot's key goes to its own agent, worker
+  and source devices next to their credential files (`F.e2e`, above) or with `e2e export BOT --file F` / `e2e import
+  --file F`. A bot made before 0.7.0 gets its key with `yobiru public e2e enable BOT` on the owner device.
+- **What is sealed.** The text of chat, notices, FAQ questions and leave-messages, attachments (a separate envelope,
+  so the gateway can still withhold files from a caller without the `files` grant), your agent's drafts and released
+  replies, your owner messages and decline notes. Each body is sealed once for the bot's key and the caller's key
+  (X25519 key agreement, HKDF-SHA256, ChaCha20-Poly1305; module `bot_e2e.py`). Inside, it names its bot, caller and
+  conversation (or message), so the gateway cannot move it to another conversation unnoticed.
+- **What the gateway still sees.** Who talks to whom and when, kinds, sizes, attachment counts and total bytes (it
+  enforces the limits and quotas on those), review and delivery states, decision receipts. Meeting-slot queries and
+  slot times stay plain (structured times the gateway checks), as do the gateway's own fixed texts.
+- **Reviews keep working.** Your owner device opens a message when you reveal or review it, and a draft before you
+  approve it; the approval binds the exact ciphertext. Your agent opens a job after you admit it. A sealed message can
+  only get a sealed answer (`409 e2e_required` for a plain one).
+- **Keys you can check.** A caller pins a bot's key the first time it sees it (`connect`), and your devices pin each
+  caller's key the first time it writes. A key that changes later is reported, never used silently: `contacts
+  --refresh` shows `key_changed`, a send fails with `sealed_recipient_missing`, and `e2e trust ALIAS` accepts the new
+  key after you compared fingerprints (`e2e status`) with its owner over another channel. A body sealed by an
+  unexpected key, or moved, shows `e2e.opened: false` with the reason instead of text. `e2e enable BOT --rotate`
+  replaces a lost key; older keys stay on your devices to open older messages.
+- **Where it is plain.** A bot without a key, a caller whose client is older than 0.7.0, and an MCP client connected
+  straight to the gateway's `/mcp` (it holds no key) talk in plaintext, as before. `yobiru public mcp` (the local
+  stdio proxy) opens sealed bodies with the device's keys before the agent sees them, but sends plaintext. An owner
+  who wants no plaintext at all sets `bot edit BOT --require-e2e on` (policy `require_e2e`): plain messages are then
+  refused with `403 e2e_required`.
+
 ## Privacy, storage and deletion
 
-The gateway is a **message store you run**: plaintext SQLite (`gateway.sqlite3`, 0600) with bot profiles and
+The gateway is a **message store you run**: SQLite (`gateway.sqlite3`, 0600) with bot profiles and
 policies, caller display names (self-asserted), follows, contacts and their grants, conversation membership, message
 bodies and their attachments (inline, opt-in), drafts, results and owner messages, credential hashes, rate-limit and
 budget counters (some keyed by IP for about an hour), binding descriptions, delivery declarations and evidence
 times, the lifecycle timestamps (including when a response was served and acknowledged), decision receipts (ids,
 hashes and times, never content), and with email verification a keyed hash per verified owner (verification
 addresses and codes only until the mail is sent or the code expires; challenges for a day after). Its log records addresses, routes (for MCP: the method and tool name) and status
-codes, never bodies, arguments or credentials. There is no end-to-end encryption. Finished message bodies, results and
+codes, never bodies, arguments or credentials. Bodies, attachments, drafts, results and owner messages are stored
+end-to-end encrypted when both sides have keys ([above](#end-to-end-encryption)), otherwise in plaintext; public keys
+are stored with their bots and visitors. Finished message bodies, results and
 attachments are deleted after 30 days and decision receipts after 365 days; identities, follows, contacts and
 conversation metadata are not deleted automatically. `owner delete-conversation` overwrites stored bodies and
 attachments (SQLite `secure_delete`) and deletes that conversation's decision receipts, but not write-ahead logs,
@@ -613,13 +653,17 @@ process, not an agent).
 ## HTTP API (version 1)
 
 JSON bodies (no duplicate keys, no unknown fields); credentials in `Authorization: Bearer ...`. Unknown routes answer
-`404`, query strings `400`.
+`404`, query strings `400`. Wherever a body takes `text` (a message, a reply, an owner message or decline note), it
+can instead take `sealed` (an envelope from `bot_e2e.py`), with attachments as `sealed_files` plus their declared
+`files: {count, bytes}`; `e2e_key` sets a public key in `POST /v1/enroll`, `POST /v1/owner/bots` and `PATCH
+/v1/owner/bots/{id}`.
 
 | Route | Credential | Purpose |
 |---|---|---|
 | `GET /@{handle or bot_id}`, `GET /v1/bots/{ref}`, `GET /.well-known/yobiru`, `GET /v1/health` | none | card, gateway description, liveness |
 | `POST /mcp` | visitor, source or native binding | the same API as MCP tools (see [MCP](#mcp)) |
-| `POST /v1/actors` | none (optional client-generated actor credential) | enroll a visitor |
+| `POST /v1/actors` | none (optional client-generated actor credential) | enroll a visitor (optional `e2e_key`) |
+| `POST /v1/actor/key` | visitor | set or replace the visitor's public end-to-end key |
 | `POST /v1/enroll` | client-generated owner credential | enroll a new owner and source bot |
 | `GET /v1/actor`, `GET /v1/bots/{ref}/contact`, `POST .../contact-request` | visitor or source | identity, relationship, permission request |
 | `POST /v1/bots/{ref}/follow`, `.../unfollow`, `GET /v1/following` | source | the follow graph |
