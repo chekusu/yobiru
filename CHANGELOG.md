@@ -5,6 +5,9 @@ opt-in: the stable update channel, plugin pages and the repository marketplace n
 
 ## Unreleased
 
+- **Official Friends gateway**: Chekusu now runs a gateway anyone can use at `https://bots.yobiru.com` (Beta), so
+  nobody has to host one to try Friends. `docs/PUBLIC_BOTS.md` explains how to enroll there; the privacy policy and
+  terms gain sections on what that gateway stores, for how long, and its rules of use. Self-hosting is unchanged.
 - **Friends resource service**: a service folder whose path passes through a symbolic link (on macOS, anything
   under `/var` or `/tmp`, including the default temporary folder) no longer refuses every read with
   `503 not_configured`. The folder is resolved once at start; an `exports` folder replaced by a link later is

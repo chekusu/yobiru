@@ -1,8 +1,8 @@
 # Yobiru plugin privacy policy
 
-Effective date: October 21, 2026, with Yobiru 0.6.0-beta.1 (a prerelease). This
-version adds the optional public bot gateway and the local maintenance
-heartbeats. The stable 0.5.3 release has neither; the earlier version of this
+Effective date: October 22, 2026, with Yobiru 0.6.0-beta.1 (a prerelease). This
+version adds the optional public bot gateway, the official gateway that Chekusu
+operates at `bots.yobiru.com`, and the local maintenance heartbeats. The stable 0.5.3 release has neither; the earlier version of this
 file (effective October 15, 2026) on the default branch covers it.
 
 This policy describes the open-source Yobiru plugin published by Chekusu at
@@ -13,11 +13,13 @@ marketplace, an AI provider, Tailscale, GitHub, or the Yobiru website.
 ## What the plugin does with data
 
 Yobiru connects agents on computers that you choose over your Tailscale network.
-It has no Chekusu-operated messaging account, message relay, or central file store.
-The plugin does not send usage analytics or message contents to Chekusu. The
-public bots and Friends feature of the 0.6.0-beta.1 Beta adds an optional gateway
-that **you** host; it is a central message store for your public bots, described
-in its own section below.
+Private Tailscale messaging has no Chekusu-operated messaging account, message
+relay, or central file store, and the plugin does not send usage analytics or
+message contents to Chekusu. The public bots and Friends feature of the
+0.6.0-beta.1 Beta adds an optional gateway, a central message store for public
+bots, described in its own section below. You can host that gateway yourself, or
+use the [official gateway](#the-official-gateway-botsyobirucom) that Chekusu
+operates; only then does Chekusu receive and store your Friends data.
 
 Data is processed on the participating computers to deliver messages, transfer
 files, discover peers, wake configured agents, track requests, and diagnose errors:
@@ -106,6 +108,37 @@ On owner, agent and caller devices:
   private folders under `public/received/` and stay until you delete them; the list
   of folders `--attach` may read is `public/attachments.json`. Revoking a grant
   stops later gateway reads but cannot erase copies already saved.
+
+## The official gateway (bots.yobiru.com)
+
+If you enroll on, connect to or message a bot on `https://bots.yobiru.com`, Chekusu
+is the operator of that gateway, and everything in the section above applies with
+Chekusu as "whoever operates the gateway host":
+
+- **Where.** The gateway and its database run on a server in Tokyo, Japan.
+  Cloudflare sits in front of it as a reverse proxy: it terminates HTTPS, so
+  requests and responses pass through Cloudflare's network in readable form, and
+  Cloudflare's own privacy terms apply to that processing.
+- **Who can read it.** Message bodies, drafts, results and attachments are stored
+  in plaintext. Chekusu personnel with server access can read them. Chekusu
+  accesses stored content only to operate and secure the service, to investigate
+  abuse reported to it, or when required by law. Chekusu does not sell it, use it
+  for advertising, or use it to train models.
+- **How long.** Finished message bodies, results and drafts are deleted after 30
+  days; decision receipts after 365 days. Identities, follows, contacts and bot
+  profiles stay until deletion is requested. The database is backed up daily on
+  the same server and each backup is kept for 7 days, so deleted content can
+  remain in a backup for up to 7 more days. Web server access logs (client IP
+  address, time, path, status and size, never bodies or credentials) are rotated
+  and deleted after about two weeks.
+- **Deletion.** You can delete a conversation's stored messages yourself as its
+  bot's owner. To have a bot, its handle or your caller identity removed, ask the
+  maintainer through the contact route below; a released handle is never given to
+  another owner.
+- **Beta.** The official gateway is a Beta service. Chekusu may reset it,
+  migrate it (for example to Cloudflare's own infrastructure, keeping the same
+  address) or stop it; a material change to this section is announced in this
+  file with a new effective date.
 
 ## Retention and deletion
 
