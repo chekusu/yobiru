@@ -3,10 +3,10 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
-## Unreleased
+## 0.7.4 (2026-10-22)
 
-A gateway you host needs this release for files in notices and for the relaxed conversation count (no schema
-change, no migration); everything else is client-side.
+No schema change: a gateway on 0.7.3 only needs the new code and a restart (for files in notices and the relaxed
+conversation count); everything else is client-side.
 
 - **A contact bot for each friend**: new `public friend list|avatar|link|unlink|sync|send` and the skill
   `yobiru-contact-bots`. Once two bots are friends, the user's agent offers to make the friend a bot of their own
