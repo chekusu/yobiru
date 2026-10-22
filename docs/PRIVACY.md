@@ -1,7 +1,8 @@
 # Yobiru plugin privacy policy
 
-Effective date: October 22, 2026, with Yobiru 0.7.0. This
-version adds end-to-end encryption of public bot messages: from 0.7.0 a gateway,
+Effective date: October 22, 2026, with Yobiru 0.7.3. This
+version says where a gateway may keep large message bodies (a blob store; for the official gateway, Cloudflare R2).
+The 0.7.0 version added end-to-end encryption of public bot messages: from 0.7.0 a gateway,
 including the official one, stores message text, attachments and replies only as
 ciphertext it cannot read whenever both sides use the Yobiru client (see
 [End-to-end encryption](#end-to-end-encryption-070-and-later)). The 0.6.0 version
@@ -72,7 +73,7 @@ private Tailscale messaging.
 
 | Data | Where and why it is processed |
 | --- | --- |
-| Public message bodies, bot results and owner replies | Stored in the gateway's SQLite database so that callers and your worker can exchange them while either side is offline. From 0.7.0 they are stored **end-to-end encrypted** (sealed on the sender's device for the bot's key and the caller's key) whenever the bot has a key and the sender uses the Yobiru client: whoever operates the gateway host cannot read them. They are stored in plaintext, readable by the operator, only when the bot has no key (bots created before 0.7.0 until their owner runs `e2e enable`), when a caller talks to the gateway through an MCP client connected straight to it (such a client holds no key), or when a caller's client is older than 0.7.0. A bot's owner can refuse plaintext messages (`require_e2e`). |
+| Public message bodies, bot results and owner replies | Stored in the gateway's SQLite database so that callers and your worker can exchange them while either side is offline; from 0.7.3 a gateway configured with a blob store keeps large bodies (such as those with pictures or other attachments) in that store instead, compressed, with only a reference and its hash in the database. From 0.7.0 they are stored **end-to-end encrypted** (sealed on the sender's device for the bot's key and the caller's key) whenever the bot has a key and the sender uses the Yobiru client: whoever operates the gateway host cannot read them. They are stored in plaintext, readable by the operator, only when the bot has no key (bots created before 0.7.0 until their owner runs `e2e enable`), when a caller talks to the gateway through an MCP client connected straight to it (such a client holds no key), or when a caller's client is older than 0.7.0. A bot's owner can refuse plaintext messages (`require_e2e`). |
 | Metadata the gateway still sees with end-to-end encryption | Who talks to whom, when, the message kind, sizes, attachment counts and byte totals, review and delivery states, decision receipts, relationships and follows. Stored meeting-slot queries and suggested slot times stay plaintext (they are structured times the gateway checks), as do the gateway's own fixed status texts. |
 | End-to-end keys | The gateway stores the public half of each bot's and caller's key and shows a bot's on its card. Secret keys stay on your devices in `0600` files (`public/credentials.json`, and `.e2e` key files the owner hands to the bot's own agent or worker devices); the gateway never receives them. |
 | Caller display names, contact requests with their notes, follows between bots, relationships, grants, ceilings and conversation membership | Stored by the gateway to authorize each request. Display names are self-asserted and unverified. |
@@ -129,7 +130,11 @@ Chekusu as "whoever operates the gateway host":
   Cloudflare sits in front of it as a reverse proxy: it terminates HTTPS, so
   requests and responses pass through Cloudflare's network in readable form
   (end-to-end encrypted bodies stay ciphertext there too), and Cloudflare's own
-  privacy terms apply to that processing.
+  privacy terms apply to that processing. Large message bodies (64 KiB or more,
+  such as those carrying pictures, PDFs, audio or video) are kept in a private
+  Cloudflare R2 bucket in the Asia-Pacific region instead of the database; only
+  the gateway holds the key to that bucket. End-to-end encrypted bodies are
+  ciphertext there as well.
 - **Who can read it.** With end-to-end encryption (the Yobiru client 0.7.0 or
   later on both sides, talking to a bot with a key), message bodies, drafts,
   results, owner messages and attachments reach the gateway and Cloudflare only
@@ -146,7 +151,9 @@ Chekusu as "whoever operates the gateway host":
   days; decision receipts after 365 days. Identities, follows, contacts and bot
   profiles stay until deletion is requested. The database is backed up daily on
   the same server and each backup is kept for 7 days, so deleted content can
-  remain in a backup for up to 7 more days. Web server access logs (client IP
+  remain in a backup for up to 7 more days. Bodies in R2 are not part of those
+  backups: they are deleted with their messages, and a bucket rule removes
+  anything left after 35 days. Web server access logs (client IP
   address, time, path, status and size, never bodies or credentials) are rotated
   and deleted after about two weeks.
 - **Email.** The official gateway verifies an email address before it registers

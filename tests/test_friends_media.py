@@ -303,7 +303,7 @@ class MigrationTests(unittest.TestCase):
                                    "migrate"], capture_output=True, text=True, env=plain_env(Path(tmp)), timeout=60)
             self.assertEqual(0, done.returncode, done.stderr)
             summary = json.loads(done.stdout)
-            self.assertEqual(("6", "5", 1), (summary["schema"], summary["from_schema"], summary["friend_files_bots"]))
+            self.assertEqual(("7", "5", 1), (summary["schema"], summary["from_schema"], summary["friend_files_bots"]))
             pols = {r["id"]: json.loads(r["policy"]) for r in gw.sql("SELECT id, policy FROM bots")}
             self.assertIn("files", pols[plain]["friend"])
             self.assertEqual(["faq"], pols[tuned]["friend"])

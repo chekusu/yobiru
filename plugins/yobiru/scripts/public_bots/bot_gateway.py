@@ -47,6 +47,7 @@ from pathlib import Path
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
+import bot_blobs as B  # noqa: E402
 import bot_common as C  # noqa: E402
 import bot_e2e as E  # noqa: E402
 import bot_mcp as M  # noqa: E402
@@ -55,7 +56,7 @@ import bot_profile as P  # noqa: E402
 HOME_ENV = "YOBIRU_GATEWAY_HOME"
 DEFAULT_HOME = "~/.yobiru-gateway"
 DEFAULT_PORT = 7780
-SCHEMA_VERSION = "6"
+SCHEMA_VERSION = "7"
 CONFIG_KEYS = {"v", "bind", "port", "public_base_url", "allow_non_loopback_bind", "trust_forwarded_for", "limits",
                "enrollment", "mcp"}
 # The MCP endpoint: the same API for MCP clients, under the same credentials. Browsers never need it, so a request
@@ -135,6 +136,7 @@ LIMIT_DEFAULTS = {
     "attachment_retained_bytes_total": 4294967296,
     "max_attachment_body_bytes": 16777216,      # request bodies of routes that may carry attachments (sealed media
                                                 # is base64 inside base64: about 1.8x its raw bytes)
+    "blob_spill_bytes": 65536,       # with a blob store (blobs.json), bodies this large live in the store
     "attachment_body_bytes_per_second": 65536,  # a large body gets read_timeout_seconds plus this rate's time
     # delivery evidence of a native binding
     "delivery_evidence_ttl_seconds": 604800,    # older evidence is stale
@@ -316,6 +318,8 @@ CREATE TABLE IF NOT EXISTS decisions (
     decided_ts INTEGER NOT NULL, expires_ts INTEGER, scope TEXT, digest TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS decisions_bot ON decisions(bot_id, decided_ts);
 CREATE INDEX IF NOT EXISTS decisions_message ON decisions(message_id);
+CREATE TABLE IF NOT EXISTS blobs (key TEXT PRIMARY KEY, bytes INTEGER NOT NULL, stored_bytes INTEGER NOT NULL,
+    created_ts INTEGER NOT NULL);
 """
 
 # The owner's presentation extras for the human page (links, avatar). An additive table outside the schema version: created
@@ -418,6 +422,11 @@ MIGRATION_4_5 = [
     "ALTER TABLE actors ADD COLUMN e2e_key TEXT",
     "ALTER TABLE actors ADD COLUMN e2e_key_ts INTEGER",
 ]
+# Schema 7: large message bodies in a blob store (R2 or a directory). Existing bodies stay in the database.
+MIGRATION_6_7 = [
+    "CREATE TABLE IF NOT EXISTS blobs (key TEXT PRIMARY KEY, bytes INTEGER NOT NULL, stored_bytes INTEGER NOT NULL, "
+    "created_ts INTEGER NOT NULL)",
+]
 
 
 def log(*parts):
@@ -496,9 +505,30 @@ def load_config(home):
             "trust_forwarded_for": cfg.get("trust_forwarded_for", False), "mcp": mcp}
 
 
-def open_db(path):
+BODY_COLUMNS = ("content", "result", "draft")
+
+
+class _Row(sqlite3.Row):
+    """A message row whose body columns resolve blob references (`blob:<key>:<sha256>`) on first access."""
+    blobs = None
+
+    def __getitem__(self, key):
+        value = sqlite3.Row.__getitem__(self, key)
+        if key in BODY_COLUMNS and isinstance(value, str) and value.startswith(B.PREFIX):
+            try:
+                return self.blobs.read(value)
+            except (B.BlobError, AttributeError):
+                raise Fail(503, "storage_unavailable", "a message body could not be read from the blob store")
+        return value
+
+
+def row_factory(blobs):
+    return type("Row", (_Row,), {"blobs": blobs})
+
+
+def open_db(path, blobs=None):
     db = sqlite3.connect(str(path), timeout=15, isolation_level=None)
-    db.row_factory = sqlite3.Row
+    db.row_factory = row_factory(blobs)
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA synchronous=FULL")
     db.execute("PRAGMA secure_delete=ON")     # deleted message bodies are overwritten in the database file
@@ -518,10 +548,11 @@ class Store(object):
     def __init__(self, home, cfg):
         self.home, self.cfg, self.limits = Path(home), cfg, cfg["limits"]
         self.path = self.home / "gateway.sqlite3"
+        self.blobs = B.load(self.home)
         if not self.path.is_file():
             raise ValueError("%s has no database (run: init)" % home)
         version = schema_version(self.path)
-        if version in ("1", "2", "3", "4"):
+        if version in ("1", "2", "3", "4", "5", "6"):
             raise ValueError("%s uses gateway schema %s; stop the gateway, back up the home, then run: migrate"
                              % (home, version))
         if version != SCHEMA_VERSION:
@@ -533,15 +564,15 @@ class Store(object):
             db.close()
 
     def tx(self):
-        return _Tx(self.path)
+        return _Tx(self.path, self.blobs)
 
 
 class _Tx(object):
-    def __init__(self, path):
-        self.path = path
+    def __init__(self, path, blobs=None):
+        self.path, self.blobs = path, blobs
 
     def __enter__(self):
-        self.db = open_db(self.path)
+        self.db = open_db(self.path, self.blobs)
         self.db.execute("BEGIN IMMEDIATE")
         return self.db
 
@@ -554,6 +585,21 @@ class _Tx(object):
 
 def canonical(obj):
     return json.dumps(obj, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+
+
+def stored_body(db, blobs, limits, obj, now):
+    """The column value of a message body: its canonical JSON, or with a blob store a reference to it once it
+    reaches blob_spill_bytes. A body the store cannot take fails the request (nothing is half-written)."""
+    text = canonical(obj)
+    if blobs is None or len(text) < limits["blob_spill_bytes"]:
+        return text
+    try:
+        key, ref, stored = blobs.write(text)
+    except B.BlobError:
+        raise Fail(503, "storage_unavailable", "the blob store did not accept this message body; try again")
+    db.execute("INSERT INTO blobs(key, bytes, stored_bytes, created_ts) VALUES(?,?,?,?)",
+               (key, len(text), stored, int(now)))
+    return ref
 
 
 def sha(text):
@@ -1888,6 +1934,9 @@ class Api(object):
         self.store, self.cfg, self.limits = store, store.cfg, store.limits
         self.enrollment = store.cfg["enrollment"]
 
+    def body(self, db, obj, now):
+        return stored_body(db, getattr(self.store, "blobs", None), self.limits, obj, now)
+
     def body_limit(self, db, name, params, subject=None):
         """Routes that may carry attachments accept the larger body only where files may flow: a send only from a
         caller that currently has `files` with that bot (its own conversation), a native reply only for a bot that
@@ -2517,7 +2566,7 @@ class Api(object):
                    "replay_safe, hop, cause_id, automated, admitted_ts, admission_decision, content_attachment_bytes) "
                    "VALUES(?,?,?,?,'caller',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                    (mid, conv["id"], bot["id"], pid, "c:" + op_key, request_hash, kind, capability,
-                    canonical(content), relation_of(db, bot["id"], pid), contact["generation"],
+                    self.body(db, content, now), relation_of(db, bot["id"], pid), contact["generation"],
                     "stored" if route == "notice" else "queued", int(now),
                     int(now) + deadline_s if deadline_s is not None else None,
                     int(now) if route == "notice" else None, route, 0 if route == "agent" else 1, hop, cause,
@@ -3185,7 +3234,7 @@ class Api(object):
         db.execute("INSERT INTO messages(id, conversation_id, bot_id, actor_id, author, op_key, request_hash, kind, "
                    "content, generation, state, created_ts, finished_ts) "
                    "VALUES(?,?,?,?,'owner',?,?,'owner',?,?,'delivered',?,?)",
-                   (mid, conv["id"], bot["id"], conv["actor_id"], "o:" + op_key, request_hash, canonical(content),
+                   (mid, conv["id"], bot["id"], conv["actor_id"], "o:" + op_key, request_hash, self.body(db, content, now),
                     contact["generation"], int(now), int(now)))
         row = db.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
         return 201, dict(owner_message_view(row), ok=True, duplicate=False)
@@ -3330,7 +3379,7 @@ class Api(object):
             result = said or {"text": "The owner did not accept this message."}
             db.execute("UPDATE messages SET state='declined', code='owner_declined', result=?, finished_ts=?, "
                        "admitted_ts=NULL, admission_decision=?, " + DROP_DRAFT + ", " + CLEAR_WORK + " WHERE id=?",
-                       (canonical(result), int(now), dec["id"], msg["id"]))
+                       (self.body(db, result, now), int(now), dec["id"], msg["id"]))
             return 200, {"ok": True, "job_id": msg["id"], "state": "declined", "duplicate": False,
                          "decision": decision_owner_view(dec)}
         if action == "approve_reply":
@@ -3362,7 +3411,8 @@ class Api(object):
             dec = self.decide(db, r, bot, contact, msg, "reject_reply", msg["draft_hash"])
             result = said or {"text": "The owner did not release an answer to this message."}
             db.execute("UPDATE messages SET state='declined', code='reply_rejected', result=?, " + DROP_DRAFT +
-                       ", finished_ts=?, release_decision=NULL WHERE id=?", (canonical(result), int(now), msg["id"]))
+                       ", finished_ts=?, release_decision=NULL WHERE id=?", (self.body(db, result, now), int(now),
+                                                                             msg["id"]))
             return 200, {"ok": True, "job_id": msg["id"], "state": "declined", "duplicate": False,
                          "decision": decision_owner_view(dec)}
         raise Fail(400, "unknown_action", "action: approve_inbound, reject_inbound, approve_reply, reject_reply")
@@ -3713,7 +3763,8 @@ class Api(object):
             draft = canonical(result)
             db.execute("UPDATE messages SET state='review', draft=?, draft_hash=?, draft_ts=?, draft_worker=?, "
                        "final_lease_hash=?, reply_attachment_bytes=?, " + CLEAR_WORK + " WHERE id=?",
-                       (draft, sha(draft), int(r.now), r.subject["id"], lease_hash, nbytes, msg["id"]))
+                       (self.body(db, result, r.now), sha(draft), int(r.now), r.subject["id"], lease_hash, nbytes,
+                        msg["id"]))
             msg = db.execute("SELECT * FROM messages WHERE id=?", (msg["id"],)).fetchone()
             contact = contact_row(db, bot["id"], msg["actor_id"])
             if friend_direct(db, bot, msg["actor_id"], contact) and block_reason(db, msg, bot=bot) is None:
@@ -3729,7 +3780,7 @@ class Api(object):
             return 200, {"ok": True, "message_id": msg["id"], "state": "review", "duplicate": False,
                          "draft_hash": sha(draft), "note": "a draft: released only after the owner approves it"}
         db.execute("UPDATE messages SET state=?, code=?, result=?, finished_ts=?, final_lease_hash=?, " + CLEAR_WORK +
-                   " WHERE id=?", (outcome, code, canonical(result), int(r.now), lease_hash, msg["id"]))
+                   " WHERE id=?", (outcome, code, self.body(db, result, r.now), int(r.now), lease_hash, msg["id"]))
         return 200, {"ok": True, "message_id": msg["id"], "state": outcome, "duplicate": False}
 
     def validate_reply(self, db, bot, reply, msg, outcome):
@@ -4916,8 +4967,43 @@ class BoundedServer(ThreadingHTTPServer):
             self._slots.release()
 
 
+BLOB_SWEEP_SECONDS = 600
+BLOB_GRACE_SECONDS = 3600       # a body written by a request that then failed is collected after this
+
+
+def sweep_blobs(store, now):
+    """Delete store bodies that no message references any more (expired, deleted, discarded or replaced). Rows go
+    first, in one transaction; the store deletes follow. A crash in between leaves objects for the store's own
+    lifecycle rule, never a reference without its body."""
+    blobs = getattr(store, "blobs", None)
+    if blobs is None:
+        return 0
+    with store.tx() as db:
+        raw = db.execute("SELECT content, result, draft FROM messages WHERE content LIKE 'blob:%' OR "
+                         "result LIKE 'blob:%' OR draft LIKE 'blob:%'")
+        live = set()
+        for row in raw:
+            for value in tuple(row):
+                parsed = B.parse_ref(value)
+                if parsed:
+                    live.add(parsed[0])
+        dead = [r[0] for r in db.execute("SELECT key FROM blobs WHERE created_ts<?",
+                                          (int(now) - BLOB_GRACE_SECONDS,)) if r[0] not in live]
+        for key in dead:
+            db.execute("DELETE FROM blobs WHERE key=?", (key,))
+    for key in dead:
+        try:
+            blobs.delete(key)
+        except B.BlobError as e:
+            log("blob delete failed:", str(e))
+    return len(dead)
+
+
 def maintenance(store):
     now = C.now_ts()
+    if now - getattr(store, "blob_swept", 0) >= BLOB_SWEEP_SECONDS:
+        store.blob_swept = now
+        sweep_blobs(store, now)
     with store.tx() as db:
         expire_due(db, now)
         quarantine_expired(db, now)
@@ -5034,15 +5120,16 @@ def migrate_db(path):
     generation, queue and piece of evidence keeps its meaning. From 3: the owners' email column, the email challenges
     and the mail outbox; existing owners keep working without an email. From 4: the public E2E key columns; existing
     bots and visitors have no key (their messages stay plaintext until a key is set) and no stored message changes.
-    From 5: friends get `files` where the friend preset is still the old default (friend_files_policy)."""
+    From 5: friends get `files` where the friend preset is still the old default (friend_files_policy). From 6: the
+    blob table; stored bodies stay where they are (a blob store, when configured, takes only new large bodies)."""
     db = open_db(path)
     try:
         db.execute("BEGIN IMMEDIATE")
         try:
             row = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
             start = row["value"] if row else None
-            if start not in ("1", "2", "3", "4", "5"):
-                raise ValueError("expected schema 1, 2, 3, 4 or 5, found %s" % (start or "none"))
+            if start not in ("1", "2", "3", "4", "5", "6"):
+                raise ValueError("expected schema 1-6, found %s" % (start or "none"))
             summary = {"from_schema": start}
             if start == "1":
                 for statement in MIGRATION_1_2:
@@ -5062,16 +5149,19 @@ def migrate_db(path):
             if start in ("1", "2", "3"):
                 for statement in MIGRATION_3_4:
                     db.execute(statement)
-            if start != "5":
+            if start not in ("5", "6"):
                 for statement in MIGRATION_4_5:
                     db.execute(statement)
-            changed = 0
-            for bot in db.execute("SELECT id, policy FROM bots").fetchall():
-                pol = json.loads(bot["policy"])
-                if friend_files_policy(pol):
-                    db.execute("UPDATE bots SET policy=? WHERE id=?", (canonical(pol), bot["id"]))
-                    changed += 1
-            summary["friend_files_bots"] = changed
+            if start != "6":                # once only: an owner may have taken `files` back from friends since
+                changed = 0
+                for bot in db.execute("SELECT id, policy FROM bots").fetchall():
+                    pol = json.loads(bot["policy"])
+                    if friend_files_policy(pol):
+                        db.execute("UPDATE bots SET policy=? WHERE id=?", (canonical(pol), bot["id"]))
+                        changed += 1
+                summary["friend_files_bots"] = changed
+            for statement in MIGRATION_6_7:
+                db.execute(statement)
             summary["bots"] = db.execute("SELECT COUNT(*) FROM bots").fetchone()[0]
             db.execute("UPDATE meta SET value=? WHERE key='schema_version'", (SCHEMA_VERSION,))
             db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('migrated_at', ?)", (C.iso(C.now_ts()),))
@@ -5097,7 +5187,7 @@ def cmd_migrate(home, a):
     if version == SCHEMA_VERSION:
         print(json.dumps({"ok": True, "schema": version, "migrated": False, "note": "already current"}, indent=2))
         return 0
-    if version not in ("1", "2", "3", "4", "5"):
+    if version not in ("1", "2", "3", "4", "5", "6"):
         die("unsupported gateway database schema %r" % version)
     try:
         lock = C.FileLock(home / ".migrate.lock", blocking=False)
