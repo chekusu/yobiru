@@ -26,6 +26,8 @@ source bots can enroll themselves over HTTP within rate limits. See docs/PUBLIC_
 trust model and deployment. Python 3.8+, stdlib only.
 """
 import argparse
+import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -34,6 +36,7 @@ import re
 import secrets
 import socket
 import sqlite3
+import struct
 import sys
 import threading
 import time
@@ -315,6 +318,11 @@ CREATE INDEX IF NOT EXISTS decisions_bot ON decisions(bot_id, decided_ts);
 CREATE INDEX IF NOT EXISTS decisions_message ON decisions(message_id);
 """
 
+# The owner's presentation extras for the human page (links, avatar). An additive table inside schema 4: created
+# when missing at start, ignored by gateways that predate it, so neither a migration nor a rollback touches it.
+PROFILE_TABLE = ("CREATE TABLE IF NOT EXISTS bot_profiles (bot_id TEXT PRIMARY KEY, links TEXT NOT NULL DEFAULT '[]', "
+                 "avatar BLOB, avatar_type TEXT, avatar_sha256 TEXT, updated_ts INTEGER NOT NULL)")
+
 # schema 1 -> 2: new columns with defaults, the follow graph and binding checks. Run as single statements
 # inside one IMMEDIATE transaction (never executescript, which commits on its own).
 MIGRATION_1_2 = [
@@ -518,6 +526,11 @@ class Store(object):
                              % (home, version))
         if version != SCHEMA_VERSION:
             raise ValueError("unsupported gateway database schema")
+        db = open_db(self.path)
+        try:
+            db.execute(PROFILE_TABLE)
+        finally:
+            db.close()
 
     def tx(self):
         return _Tx(self.path)
@@ -1424,6 +1437,20 @@ def native_binding(db, bot_id):
                       (bot_id,)).fetchone()
 
 
+def bot_profile(db, bot_id):
+    return db.execute("SELECT links, avatar_sha256 FROM bot_profiles WHERE bot_id=?", (bot_id,)).fetchone()
+
+
+def profile_fields(cfg, db, bot):
+    """The owner's links and the avatar URL (versioned by content, so caches never show an old picture)."""
+    row = bot_profile(db, bot["id"])
+    links = json.loads(row["links"]) if row is not None else []
+    avatar = None
+    if row is not None and row["avatar_sha256"]:
+        avatar = "%s/@%s/avatar/%s" % (cfg["public_base_url"], bot["id"], row["avatar_sha256"][:16])
+    return {"links": links, "avatar": avatar}
+
+
 def bot_card(cfg, db, bot, now=None):
     """The machine-readable card behind a share link: public facts only, no machine, session, agent, routine,
     resource or owner details. Chat delivery is a coarse projection: binding configured, declared tier, and how
@@ -1451,7 +1478,8 @@ def bot_card(cfg, db, bot, now=None):
                     "follow": "POST /v1/bots/%s/follow" % bot["id"],
                     "conversations": "POST /v1/bots/%s/conversations" % bot["id"],
                     "mcp": base + "/mcp" if cfg["mcp"]["enabled"] else None},
-            "connect": "yobiru public connect %s/@%s" % (base, bot["handle"])}
+            "connect": "yobiru public connect %s/@%s" % (base, bot["handle"]),
+            **profile_fields(cfg, db, bot)}
 
 
 def relationship_view(db, bot, contact, pid):
@@ -1570,6 +1598,7 @@ def owner_bot_view(cfg, db, bot):
             "id_address": "%s/@%s" % (cfg["public_base_url"], bot["id"]), "display_name": bot["display_name"],
             "description": bot["description"], "state": bot["state"],
             "policy": dict(DEFAULT_POLICY, **policy_of(bot)), "e2e": key_view(bot["e2e_key"], bot["e2e_key_ts"]),
+            **profile_fields(cfg, db, bot),
             "self_enrolled": owner is not None and owner["kind"] == "self_enrolled",
             "worker_epoch": bot["worker_epoch"], "agent_epoch": bot["agent_epoch"],
             "created_at": ts_iso(bot["created_ts"]), "updated_at": ts_iso(bot["updated_ts"]),
@@ -1865,6 +1894,8 @@ class Api(object):
         offers `files`. Elsewhere the general limit stays, as before attachments existed. A bot with an E2E key adds
         room for its sealed text."""
         L = self.limits
+        if name == "avatar_set":                # one small picture as base64, never the media limit
+            return max(L["max_body_bytes"], P.AVATAR_MAX_BYTES * 4 // 3 + 4096)
         if name in ("message_send", "owner_reply"):
             row = db.execute("SELECT b.*, c.actor_id AS conv_actor FROM conversations c JOIN bots b ON "
                              "b.id=c.bot_id WHERE c.id=? AND c.deleted_ts IS NULL", (params["cid"],)).fetchone()
@@ -2624,7 +2655,7 @@ class Api(object):
 
     def bot_edit(self, db, r):
         bot, body, now = self.own_bot(db, r.subject, r.params["bid"]), r.body, r.now
-        fields(body, ("handle", "display_name", "description", "policy", "e2e_key"))
+        fields(body, ("handle", "display_name", "description", "policy", "e2e_key", "links"))
         if not body:
             raise Fail(400, "missing_field", "nothing to change")
         e2e_key = e2e_key_field(body)
@@ -2632,6 +2663,14 @@ class Api(object):
             # Set or replaced (a lost or rotated key). Callers that pinned the old key see the change and must accept
             # it; there is no way to remove a key: a bot that had one keeps end-to-end encryption.
             db.execute("UPDATE bots SET e2e_key=?, e2e_key_ts=? WHERE id=?", (e2e_key, int(now), bot["id"]))
+        if "links" in body:
+            try:
+                links = P.clean_links(body["links"])
+            except ValueError as e:
+                raise Fail(400, "invalid_links", str(e))
+            db.execute("INSERT INTO bot_profiles(bot_id, links, updated_ts) VALUES(?,?,?) ON CONFLICT(bot_id) DO "
+                       "UPDATE SET links=excluded.links, updated_ts=excluded.updated_ts",
+                       (bot["id"], canonical(links), int(now)))
         handle, name, desc, pol = bot["handle"], bot["display_name"], bot["description"], policy_of(bot)
         if "handle" in body:
             handle = handle_field(body["handle"])
@@ -2647,6 +2686,45 @@ class Api(object):
                    (handle, name, desc, canonical(pol), int(now), bot["id"]))
         recheck_bot(db, bot["id"], old_pol, pol, now)
         return 200, dict(owner_bot_view(self.cfg, db, self.own_bot(db, r.subject, bot["id"])), ok=True)
+
+    def avatar_set(self, db, r):
+        """Replace the bot's avatar: {"data_base64": PNG, JPEG or WebP}. The type is read from the bytes, metadata
+        (EXIF, XMP, text) is removed before storing, and the page serves it from this gateway's own origin."""
+        bot, body = self.own_bot(db, r.subject, r.params["bid"]), r.body
+        fields(body, ("data_base64",), ("data_base64",))
+        raw = body["data_base64"]
+        if not isinstance(raw, str) or len(raw) > (P.AVATAR_MAX_BYTES * 4) // 3 + 8:
+            raise Fail(400, "invalid_avatar", "data_base64: at most %d bytes of image" % P.AVATAR_MAX_BYTES)
+        try:
+            data = base64.b64decode(raw, validate=True)
+            kind = P.image_info(data)[0]
+            data = P.strip_metadata(data, kind)
+            P.image_info(data)
+        except (ValueError, binascii.Error, struct.error, IndexError) as e:
+            raise Fail(400, "invalid_avatar", "avatar: %s" % (str(e) or "unreadable image")[:120])
+        sha = hashlib.sha256(data).hexdigest()
+        db.execute("INSERT INTO bot_profiles(bot_id, avatar, avatar_type, avatar_sha256, updated_ts) VALUES(?,?,?,?,?) "
+                   "ON CONFLICT(bot_id) DO UPDATE SET avatar=excluded.avatar, avatar_type=excluded.avatar_type, "
+                   "avatar_sha256=excluded.avatar_sha256, updated_ts=excluded.updated_ts",
+                   (bot["id"], sqlite3.Binary(data), kind, sha, int(r.now)))
+        return 200, dict(owner_bot_view(self.cfg, db, self.own_bot(db, r.subject, bot["id"])), ok=True,
+                         avatar_bytes=len(data), avatar_type=kind)
+
+    def avatar_remove(self, db, r):
+        bot = self.own_bot(db, r.subject, r.params["bid"])
+        db.execute("UPDATE bot_profiles SET avatar=NULL, avatar_type=NULL, avatar_sha256=NULL, updated_ts=? "
+                   "WHERE bot_id=?", (int(r.now), bot["id"]))
+        return 200, dict(owner_bot_view(self.cfg, db, self.own_bot(db, r.subject, bot["id"])), ok=True)
+
+    def avatar_image(self, db, ref):
+        """(content type, bytes, sha256) of a published bot's avatar, or None."""
+        try:
+            bot = self.published_bot(db, ref if ref.startswith("bot_") else "@" + ref)
+        except Fail:
+            return None
+        row = db.execute("SELECT avatar, avatar_type, avatar_sha256 FROM bot_profiles WHERE bot_id=? AND avatar IS "
+                         "NOT NULL", (bot["id"],)).fetchone()
+        return (row["avatar_type"], bytes(row["avatar"]), row["avatar_sha256"]) if row is not None else None
 
     def bot_publish(self, db, r):
         bot, now = self.own_bot(db, r.subject, r.params["bid"]), r.now
@@ -4105,6 +4183,7 @@ BOT_ID = r"bot_[a-z2-7]{16}"
 PRINCIPAL = r"(?:act|bot)_[a-z2-7]{16}"
 CALLER = ("actor", "source")
 SHARE_RE = re.compile(r"/@(?P<ref>[^/]{1,64}?)(?P<json>\.json)?\Z")
+AVATAR_RE = re.compile(r"/@(?P<ref>[^/]{1,64})/avatar(?:/(?P<v>[0-9a-f]{16}))?\Z")
 ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
     ("GET", r"/v1/health", "health", None),
     ("GET", r"/\.well-known/yobiru", "well_known", None),
@@ -4139,6 +4218,8 @@ ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
     ("GET", r"/v1/owner/bots/(?P<bid>%s)" % BOT_ID, "bot_get", ("owner",)),
     ("PATCH", r"/v1/owner/bots/(?P<bid>%s)" % BOT_ID, "bot_edit", ("owner",)),
     ("POST", r"/v1/owner/bots/(?P<bid>%s)/publish" % BOT_ID, "bot_publish", ("owner",)),
+    ("PUT", r"/v1/owner/bots/(?P<bid>%s)/avatar" % BOT_ID, "avatar_set", ("owner",)),
+    ("DELETE", r"/v1/owner/bots/(?P<bid>%s)/avatar" % BOT_ID, "avatar_remove", ("owner",)),
     ("POST", r"/v1/owner/bots/(?P<bid>%s)/unpublish" % BOT_ID, "bot_unpublish", ("owner",)),
     ("GET", r"/v1/owner/bots/(?P<bid>%s)/contacts" % BOT_ID, "contact_list", ("owner",)),
     ("POST", r"/v1/owner/bots/(?P<bid>%s)/contacts/(?P<aid>%s)" % (BOT_ID, PRINCIPAL), "contact_action", ("owner",)),
@@ -4536,7 +4617,7 @@ def make_handler(api):
                 raise Fail(411, "length_required", "chunked bodies are not accepted")
             raw_len = self.headers.get("Content-Length")
             if raw_len is None:
-                if self.command in ("POST", "PATCH"):
+                if self.command in ("POST", "PATCH", "PUT"):
                     raise Fail(411, "length_required")
                 return {}
             try:
@@ -4568,6 +4649,9 @@ def make_handler(api):
             try:
                 url = urllib.parse.urlsplit(self.path)
                 path, self._html = url.path, None
+                avatar = AVATAR_RE.match(path) if self.command == "GET" else None
+                if avatar is not None and not url.query:
+                    return self.serve_avatar(avatar)
                 share = SHARE_RE.match(path) if self.command == "GET" else None
                 if share is not None:
                     path, self._html = self.share_mode(share, url)
@@ -4607,7 +4691,7 @@ def make_handler(api):
                     raise Fail(401, "unauthorized")
                 else:
                     limit = None
-                body_needed = self.command in ("POST", "PATCH", "DELETE")
+                body_needed = self.command in ("POST", "PATCH", "PUT", "DELETE")
                 req.body = self.read_body(limit) if body_needed else {}
                 self._timer.cancel()
                 with api.store.tx() as db:
@@ -4673,6 +4757,28 @@ def make_handler(api):
             if fmt == "html" or P.prefers_html(self.headers.get("Accept")):
                 return path, P.pick_lang(q.get("lang", [None])[0], self.headers.get("Accept-Language"))
             return path, None
+
+        def serve_avatar(self, m):
+            self._route = "avatar"
+            self._timer.cancel()
+            with api.store.tx() as db:
+                found = api.avatar_image(db, m.group("ref"))
+            if found is None or (m.group("v") and not found[2].startswith(m.group("v"))):
+                raise Fail(404, "not_found")
+            kind, data, sha = found
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable" if m.group("v") else
+                             "public, max-age=300")
+            self.send_header("ETag", '"%s"' % sha[:32])
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+            self.send_header("Cross-Origin-Resource-Policy", "cross-origin")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(data)
+            self.close_connection = True
 
         def reply_page(self, status, render, json_url=None):
             nonce = P.new_nonce()
@@ -4878,6 +4984,7 @@ def cmd_init(home, a):
     db = open_db(db_path)
     try:
         db.executescript(SCHEMA)
+        db.execute(PROFILE_TABLE)
         db.execute("BEGIN IMMEDIATE")
         db.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,))
         db.execute("INSERT INTO meta(key, value) VALUES('created_at', ?)", (C.iso(now),))

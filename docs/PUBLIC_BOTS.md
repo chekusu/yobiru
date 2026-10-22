@@ -122,6 +122,14 @@ one's own agent to connect, and a plain-English note for agents that points at t
 no `Accept`, `*/*`, `application/json` (the yobiru client), a tie, `/@handle.json` or `?format=json`. `format` and
 `lang` are the only queries a share link accepts. `yobiru public connect` also takes the `.json` URL.
 
+The owner can add up to 5 https links (`bot edit BOT --link "Label=https://..."`, `--clear-links`; card field
+`links`) and an avatar (`bot avatar BOT FILE` / `--remove`; `PUT`/`DELETE /v1/owner/bots/{id}/avatar` with
+`{"data_base64"}`): PNG, JPEG or WebP of at most 64 KB and 32-2048 px a side, the type read from the bytes, EXIF,
+XMP and text chunks removed before storing. The card's `avatar` is then `<public URL>/@bot_.../avatar/<hash>`,
+served by the gateway itself (`Content-Security-Policy: sandbox`, `nosniff`); without one it is `null` and the page
+shows the name's first letter. Both live in the additive `bot_profiles` table, created at start when missing, so
+schema 4 gateways need no migration and older code ignores it.
+
 Its `chat` block:
 
 | Field | Meaning |

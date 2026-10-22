@@ -10,11 +10,137 @@ Pure functions only (stdlib): the gateway decides which answer a request gets an
 import html
 import json
 import secrets
+import struct
+import unicodedata
+import urllib.parse
 
 LANGS = ("zh", "en", "ja")
 HTML_LANG = {"zh": "zh-CN", "en": "en", "ja": "ja"}
 SITE = "https://yobiru.com"
+AVATAR_MAX_BYTES = 65536                    # decoded; its base64 JSON body fits the attachment body limit
+AVATAR_MIN_PX, AVATAR_MAX_PX = 32, 2048
+MAX_LINKS, LINK_LABEL_MAX, LINK_URL_MAX = 5, 40, 300
 REPO = "https://github.com/chekusu/yobiru"
+
+
+def image_info(data):
+    """(content type, width, height) of a PNG, JPEG or WebP read from its own bytes, never from a declared type.
+    Anything else (SVG, GIF, HTML, truncated or oversized files) raises ValueError."""
+    if not isinstance(data, (bytes, bytearray)) or not data:
+        raise ValueError("empty image")
+    if len(data) > AVATAR_MAX_BYTES:
+        raise ValueError("larger than %d bytes" % AVATAR_MAX_BYTES)
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR" and len(data) >= 24:
+        kind, (w, h) = "image/png", struct.unpack(">II", data[16:24])
+    elif data[:3] == b"\xff\xd8\xff":
+        kind, (w, h) = "image/jpeg", _jpeg_size(data)
+    elif data[:4] == b"RIFF" and data[8:12] == b"WEBP" and len(data) >= 30:
+        kind, (w, h) = "image/webp", _webp_size(data)
+    else:
+        raise ValueError("not a PNG, JPEG or WebP image")
+    if not (AVATAR_MIN_PX <= w <= AVATAR_MAX_PX and AVATAR_MIN_PX <= h <= AVATAR_MAX_PX):
+        raise ValueError("%dx%d: each side must be %d-%d pixels" % (w, h, AVATAR_MIN_PX, AVATAR_MAX_PX))
+    return kind, w, h
+
+
+def _jpeg_size(data):
+    i = 2
+    while i + 9 < len(data):
+        if data[i] != 0xFF:
+            raise ValueError("malformed JPEG")
+        marker = data[i + 1]
+        if marker == 0xFF:
+            i += 1
+            continue
+        if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+            i += 2
+            continue
+        length = struct.unpack(">H", data[i + 2:i + 4])[0]
+        if length < 2:
+            raise ValueError("malformed JPEG")
+        if marker in (0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF):
+            h, w = struct.unpack(">HH", data[i + 5:i + 9])
+            return w, h
+        i += 2 + length
+    raise ValueError("malformed JPEG")
+
+
+def _webp_size(data):
+    chunk = data[12:16]
+    if chunk == b"VP8 " and data[23:26] == b"\x9d\x01\x2a":
+        w, h = struct.unpack("<HH", data[26:30])
+        return w & 0x3FFF, h & 0x3FFF
+    if chunk == b"VP8L" and data[20:21] == b"\x2f":
+        b = data[21:25]
+        return 1 + (((b[1] & 0x3F) << 8) | b[0]), 1 + (((b[3] & 0x0F) << 10) | (b[2] << 2) | ((b[1] & 0xC0) >> 6))
+    if chunk == b"VP8X":
+        return 1 + int.from_bytes(data[24:27], "little"), 1 + int.from_bytes(data[27:30], "little")
+    raise ValueError("malformed WebP")
+
+
+def strip_metadata(data, kind):
+    """The image without EXIF, XMP, text or comment blocks (which can carry GPS positions, device names or
+    editing history); pixel data is kept byte for byte. `kind` comes from image_info."""
+    data = bytes(data)
+    if kind == "image/jpeg":
+        out, i = [data[:2]], 2
+        while i + 4 <= len(data):
+            marker = data[i + 1]
+            if marker == 0xDA:                        # start of scan: the rest is image data
+                out.append(data[i:])
+                break
+            length = struct.unpack(">H", data[i + 2:i + 4])[0]
+            seg = data[i:i + 2 + length]
+            if not (0xE1 <= marker <= 0xEF or marker == 0xFE):   # keep JFIF (APP0); drop APP1-15 and comments
+                out.append(seg)
+            i += 2 + length
+        return b"".join(out)
+    if kind == "image/png":
+        out, i = [data[:8]], 8
+        while i + 12 <= len(data):
+            n = struct.unpack(">I", data[i:i + 4])[0]
+            ctype = data[i + 4:i + 8]
+            if ctype not in (b"eXIf", b"tEXt", b"iTXt", b"zTXt", b"tIME"):
+                out.append(data[i:i + 12 + n])
+            i += 12 + n
+        return b"".join(out)
+    if kind == "image/webp":
+        out, i = [], 12
+        while i + 8 <= len(data):
+            n = struct.unpack("<I", data[i + 4:i + 8])[0]
+            ctype, chunk = data[i:i + 4], data[i:i + 8 + n + (n & 1)]
+            if ctype == b"VP8X":
+                chunk = chunk[:8] + bytes([chunk[8] & ~0x0C & 0xFF]) + chunk[9:]   # clear the EXIF and XMP flags
+            if ctype not in (b"EXIF", b"XMP "):
+                out.append(chunk)
+            i += 8 + n + (n & 1)
+        body = b"WEBP" + b"".join(out)
+        return b"RIFF" + struct.pack("<I", len(body)) + body
+    raise ValueError("unsupported image type")
+
+
+def clean_links(value):
+    """An owner's link list: up to MAX_LINKS {"label", "url"} with plain https URLs. Returns the canonical list or
+    raises ValueError with a short reason."""
+    if not isinstance(value, list) or len(value) > MAX_LINKS:
+        raise ValueError("links: a list of at most %d {label, url}" % MAX_LINKS)
+    out = []
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"label", "url"}:
+            raise ValueError("links: each item is exactly {label, url}")
+        label, url = item["label"], item["url"]
+        if not isinstance(label, str) or not label.strip() or len(label) > LINK_LABEL_MAX or \
+                any(unicodedata.category(c) in ("Cc", "Cs", "Cf", "Zl", "Zp") for c in label):
+            raise ValueError("links: label is 1-%d characters of plain text" % LINK_LABEL_MAX)
+        if not isinstance(url, str) or len(url) > LINK_URL_MAX or any(c.isspace() or ord(c) < 33 or ord(c) > 126
+                                                                      for c in url):
+            raise ValueError("links: url is an https URL of at most %d ASCII characters" % LINK_URL_MAX)
+        u = urllib.parse.urlsplit(url)
+        if u.scheme != "https" or not u.hostname or "." not in u.hostname or u.username or u.password or \
+                "@" in u.netloc:
+            raise ValueError("links: url must be https://host/... with no credentials")
+        out.append({"label": " ".join(unicodedata.normalize("NFC", label).split()), "url": url})
+    return out
 
 
 def _media_ranges(header):
@@ -213,6 +339,7 @@ overflow-wrap:anywhere;color:var(--ink-2)}
 .agent a{color:var(--accent-ink)}
 footer{text-align:center;font-size:12.5px;color:var(--ink-3);margin-top:22px}
 footer a{color:var(--ink-3)}
+img.avatar{display:block;object-fit:cover;background:var(--bg-2);box-shadow:0 0 0 1px var(--line)}
 @media (prefers-reduced-motion:reduce){.btn{transition:none}}
 """
 
@@ -278,6 +405,10 @@ def render_profile(card, lang, path, nonce):
     name, handle, address = card["display_name"] or card["handle"], card["handle"], card["address"]
     json_url = address + ".json"
     initial = (name.strip()[:1] or "@").upper()
+    avatar = ('<img class="avatar" src="%s" width="84" height="84" alt="">' % _e(card["avatar"]) if card.get("avatar")
+              else '<div class="avatar" aria-hidden="true">%s</div>' % _e(initial))
+    own_links = "".join('<a class="btn" href="%s" rel="noopener nofollow ugc me">%s</a>' % (_e(l["url"]), _e(l["label"]))
+                        for l in card.get("links") or [])
     chat = card.get("chat") or {}
     chips = ['<span class="chip%s">%s</span>' % (" on" if chat.get("agent_connected") else "",
                                                  _e(t["agent_on"] if chat.get("agent_connected") else t["agent_off"]))]
@@ -292,10 +423,10 @@ def render_profile(card, lang, path, nonce):
                                                              _e(" · ".join(caps) if caps else t["none"])))
     prompt = t["how_prompt"] % (handle, address)
     body = (
-        '<main><section class="card hero"><div class="avatar" aria-hidden="true">%(initial)s</div>'
+        '<main><section class="card hero">%(avatar)s'
         '<h1>%(name)s</h1><div class="handle">%(handle)s</div>%(desc)s'
         '<div class="chips">%(chips)s</div></section>'
-        '<nav class="links" aria-label="%(links)s">'
+        '<nav class="links" aria-label="%(links)s">%(own_links)s'
         '<button class="btn primary" type="button" data-copy="%(address)s" data-done="%(copied)s">%(copy_link)s</button>'
         '<a class="btn" href="%(json_url)s" type="application/json">%(json_card)s</a>'
         '<a class="btn" href="%(site)s">%(what_is)s</a>'
@@ -307,7 +438,7 @@ def render_profile(card, lang, path, nonce):
         '<section class="card"><h2>%(can_title)s</h2><ul class="levels">%(levels)s</ul></section>'
         '<section class="card agent" id="for-agents"><h2>%(agent_title)s</h2><p>%(agent_lead)s</p>'
         '<pre>%(note)s</pre></section></main>'
-    ) % {"initial": _e(initial), "name": _e(name), "handle": _e(handle),
+    ) % {"avatar": avatar, "own_links": own_links, "name": _e(name), "handle": _e(handle),
          "desc": '<p class="desc">%s</p>' % _e(card["description"]) if card.get("description") else "",
          "chips": "".join(chips), "links": _e(t["links"]), "address": _e(address), "copied": _e(t["copied"]),
          "copy_link": _e(t["copy_link"]), "json_url": _e(json_url), "json_card": _e(t["json_card"]), "site": SITE,
@@ -321,10 +452,11 @@ def render_profile(card, lang, path, nonce):
             '<link rel="canonical" href="%(a)s">'
             '<meta property="og:type" content="profile"><meta property="og:title" content="%(n)s (%(h)s)">'
             '<meta property="og:description" content="%(d)s"><meta property="og:url" content="%(a)s">'
-            '<meta name="yobiru:card" content="%(j)s">'
+            '<meta name="yobiru:card" content="%(j)s">%(img)s'
             '<script type="application/json" id="yobiru-card">%(card)s</script>') % {
         "j": _e(json_url), "a": _e(address), "n": _e(name), "h": _e(handle), "d": _e(description),
-        "card": _json_in_script(card)}
+        "card": _json_in_script(card),
+        "img": '<meta property="og:image" content="%s">' % _e(card["avatar"]) if card.get("avatar") else ""}
     return _page(lang, t["title"] % name, description, head, body, nonce, _lang_links(path)).encode("utf-8")
 
 

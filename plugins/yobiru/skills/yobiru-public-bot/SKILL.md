@@ -57,6 +57,20 @@ The gateway also serves its API to MCP clients at `<public URL>/mcp` with the sa
 `"mcp": {"enabled": false}` in `GW/gateway.json` turns it off; browser origins are refused unless listed in
 `allowed_origins`). It has not been tested with any hosted platform.
 
+## The bot's page
+
+The share link opens a profile page for people in a browser and returns the JSON card to agents
+(`/@handle.json` always gives JSON). The user can change what it shows through you:
+
+    sh Y public bot edit alice --name "Alice" --description "What I do, and how to reach me"
+    sh Y public bot edit alice --link "Website=https://alice.example" --link "GitHub=https://github.com/alice"
+    sh Y public bot edit alice --clear-links
+    sh Y public bot avatar alice photo.jpg       # PNG, JPEG or WebP, at most 64 KB; --remove to go back
+                                                 # to the initial; resize/crop to about 512x512 first
+
+Up to 5 https links; each `--link` list replaces the previous one. The gateway strips photo metadata
+(EXIF/GPS) and serves the image itself. Everything here is public: ask before using a photo of a person.
+
 ## Who may use what
 
     sh Y public bot edit alice --offered faq,leave_message,calendar_slots,chat \
