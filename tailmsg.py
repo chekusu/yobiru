@@ -779,13 +779,27 @@ class RequestConnection(sqlite3.Connection):
             self.close()
 
 
+def enable_wal(db, timeout=15.0):
+    """Switch to WAL. Changing the journal mode does not wait on SQLite's busy handler, so a second process opening
+    a ledger that is still in rollback mode at the same moment gets "database is locked" at once: retry instead."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            db.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
+
+
 def request_db(ctx):
     directory = ctx.home / "requests"
     directory.mkdir(mode=0o700, exist_ok=True)
     db = sqlite3.connect(str(directory / "ledger.sqlite3"), timeout=15, factory=RequestConnection)
     try:
         db.row_factory = sqlite3.Row
-        db.execute("PRAGMA journal_mode=WAL")
+        enable_wal(db)
         db.execute("PRAGMA synchronous=FULL")
         db.executescript("""
             CREATE TABLE IF NOT EXISTS requests (
