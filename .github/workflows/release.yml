@@ -1,0 +1,147 @@
+name: Release
+
+# Push a tag v<version> (the version in packaging/product.json) on the commit to release. This workflow checks and
+# tests that commit, builds the archives, publishes the GitHub release with the CHANGELOG.md entry as its notes, and
+# for a stable version deploys it to the official gateway https://bots.yobiru.com after approval on the
+# `bots.yobiru.com` environment. See docs/RELEASING.md.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)publish, e.g. v0.7.3"
+        required: true
+      deploy:
+        description: "Also deploy it to bots.yobiru.com"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ env.TAG }}
+
+      - name: Version and notes
+        id: meta
+        run: |
+          set -euo pipefail
+          version="$(python3 -c 'import json; print(json.load(open("packaging/product.json"))["version"])')"
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match packaging/product.json version $version"
+            exit 1
+          fi
+          case "$version" in *-*) prerelease=true ;; *) prerelease=false ;; esac
+          # The "## <version> (date)" section of CHANGELOG.md, without its heading.
+          awk -v v="$version" '
+            index($0, "## " v " ") == 1 { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' CHANGELOG.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "::error::CHANGELOG.md has no \"## $version (...)\" entry"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+      - name: Plugin check
+        run: python3 tools/build_plugin.py check
+
+      - name: Tests
+        run: |
+          python3 -m unittest discover -s tests
+          python3 -m unittest test_codex_bridge test_codex_queue_client test_codex_resident test_install_codex_bridge test_install_codex_bridge_linux
+
+      - name: Build archives
+        run: |
+          python3 tools/build_plugin.py release --out dist
+          cat dist/SHA256SUMS
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release
+          path: |
+            dist/*
+            release-notes.md
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release
+
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Published by hand already: keep its notes and flags, replace the assets with these builds.
+            gh release upload "$TAG" dist/* --clobber
+          elif [ "$PRERELEASE" = true ]; then
+            gh release create "$TAG" dist/* --verify-tag --title "Yobiru $VERSION" \
+              --notes-file release-notes.md --prerelease --latest=false
+          else
+            gh release create "$TAG" dist/* --verify-tag --title "Yobiru $VERSION" \
+              --notes-file release-notes.md --latest
+          fi
+          gh release view "$TAG" --json url,assets --jq '.url, (.assets[].name)'
+
+  deploy-gateway:
+    needs: [build, publish]
+    if: needs.build.outputs.prerelease == 'false' && (github.event_name == 'push' || inputs.deploy)
+    # The repository's own runner on the gateway's server (label yobiru-gateway; the org's tyo-node runners span more
+    # than one host). The job checks out nothing: the root-owned deploy script installed there
+    # (deploy/yobiru-gateway-deploy.sh) takes only the tag and fetches it from GitHub itself.
+    runs-on: [self-hosted, yobiru-gateway]
+    environment:
+      name: bots.yobiru.com
+      url: https://bots.yobiru.com
+    timeout-minutes: 20
+    concurrency:
+      group: yobiru-gateway-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Deploy
+        run: sudo -n /usr/local/sbin/yobiru-gateway-deploy "$TAG"
+
+      - name: Public check
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5 6; do
+            if curl -fsS https://bots.yobiru.com/v1/health; then
+              echo
+              curl -fsS https://bots.yobiru.com/.well-known/yobiru
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::https://bots.yobiru.com/v1/health is not answering"
+          exit 1

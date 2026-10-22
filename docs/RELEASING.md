@@ -103,6 +103,65 @@ the regenerated files. Codex reinstalls a local plugin when its version changes.
 plugin README (a test reads it) and add a `CHANGELOG.md` entry. `check` accepts only a SemVer 2.0 version: dot-separated
 prerelease identifiers, none empty, numeric ones without leading zeros.
 
+### Publishing a release
+
+Releases are published by GitHub Actions (`.github/workflows/release.yml`), not from a maintainer's machine. Once the
+version bump with its `CHANGELOG.md` entry is merged, push an annotated tag `v<version>` on that commit:
+
+```sh
+git tag -a v0.7.3 -m "Yobiru 0.7.3" <commit> && git push origin v0.7.3
+```
+
+The workflow then
+
+1. refuses the tag unless it equals `v` + the version in `packaging/product.json` and `CHANGELOG.md` has a
+   `## <version> (...)` entry;
+2. runs `check`, both test suites and `release` on a GitHub-hosted runner;
+3. creates the GitHub release `Yobiru <version>` with the entry as its notes and the three `dist/` files attached:
+   a stable version is marked latest, a prerelease is marked prerelease and not latest. If the release already exists
+   (published by hand), it keeps its notes and flags and only replaces the assets;
+4. for a stable version, deploys the tag to the official gateway `https://bots.yobiru.com` (job `deploy-gateway`,
+   below). Prereleases are never deployed there.
+
+`Actions → Release → Run workflow` with an existing tag republishes it; untick *deploy* to skip the gateway, or use it
+to redeploy (or roll back to) an older stable tag. `.github/workflows/ci.yml` runs `check` and the tests on every pull
+request and push to `main`, on GitHub-hosted runners only.
+
+### Deploying the official gateway
+
+`deploy-gateway` runs on a self-hosted runner registered to this repository only, on the gateway's server, with the
+label `yobiru-gateway` and its own system account that may do nothing but the deploy below, and waits for approval
+on the `bots.yobiru.com` environment (*Review deployments* in the run). It checks out nothing and holds no SSH key or other
+secret: it calls `sudo -n /usr/local/sbin/yobiru-gateway-deploy <tag>`, a root-owned copy of
+[`deploy/yobiru-gateway-deploy.sh`](../deploy/yobiru-gateway-deploy.sh). That script accepts only a stable tag,
+fetches it from GitHub into the gateway's checkout, stops the gateway and its mail relay, copies the database and
+`gateway.json` to `backups/pre-<tag>-<time>.*`, checks out the tag, runs `migrate` (a no-op when the schema is
+current), starts both services and waits for `/v1/health`. On any failure it restores the copy, checks out the
+previous commit and starts the old version again, and the job fails. The job then checks the public `/v1/health`.
+
+A release that needs more than code and `migrate` (a new config key, an nginx limit, a new service) still needs that
+change made on the server first; say so in the `CHANGELOG.md` entry.
+
+One-time setup on the server, as root (repeat the `install` whenever `deploy/yobiru-gateway-deploy.sh` changes, since
+the runner never installs it):
+
+```sh
+install -o root -g root -m 0755 deploy/yobiru-gateway-deploy.sh /usr/local/sbin/yobiru-gateway-deploy
+useradd --system --create-home --shell /usr/sbin/nologin gha-yobiru
+sed "s/RUNNER_USER/gha-yobiru/" deploy/yobiru-gateway-deploy.sudoers > /etc/sudoers.d/yobiru-gateway-deploy
+chmod 0440 /etc/sudoers.d/yobiru-gateway-deploy && visudo -cf /etc/sudoers.d/yobiru-gateway-deploy
+```
+
+Then, as `gha-yobiru`, unpack the GitHub Actions runner in its home and register it to this repository with
+`./config.sh --unattended --url https://github.com/chekusu/yobiru --token <registration token> --name <host>-yobiru
+--labels yobiru-gateway` (the token comes from `gh api -X POST repos/chekusu/yobiru/actions/runners/registration-token`),
+and install it as a service with `./svc.sh install gha-yobiru && ./svc.sh start` (as root, from that directory).
+
+Paths, the service user and the health URL can be overridden in a root-owned `/etc/default/yobiru-gateway-deploy`.
+In GitHub, the repository needs the `bots.yobiru.com` environment with its maintainer as required reviewer and
+deployments limited to `v*` tags, and *Settings → Actions → Fork pull request workflows* must require approval for
+all outside collaborators, so that no fork's pull request can point a job at the self-hosted runner.
+
 ### Prereleases
 
 A prerelease such as `0.6.0-beta.1` is published so that no stable installation picks it up by itself:

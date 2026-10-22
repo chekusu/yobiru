@@ -1,0 +1,3 @@
+# /etc/sudoers.d/yobiru-gateway-deploy (mode 0440, check with `visudo -cf`). Replace RUNNER_USER with the account the
+# yobiru-gateway GitHub Actions runner service runs as. It may run the deploy script, with one argument, and nothing else.
+RUNNER_USER ALL=(root) NOPASSWD: /usr/local/sbin/yobiru-gateway-deploy v*
