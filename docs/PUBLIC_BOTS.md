@@ -115,7 +115,12 @@ reads `GW/mail.json` (`smtp_host`, `smtp_port`, `security`: `ssl` or `starttls`,
 coarse chat delivery (below), protocol endpoints (`api.mcp` when the MCP endpoint is on), and the
 `yobiru public connect LINK` command. It never contains machines, sessions, the binding's label, host or session
 note, worker ids, webhooks, routine details, resource names, the owner's other bots, owner settings or credentials.
-There is no web page.
+
+A caller whose `Accept` ranks `text/html` above JSON (a browser) gets a human profile page built from that same card
+instead (zh/en/ja by `Accept-Language` or `?lang=`): name, description, what each relationship may do, how to ask
+one's own agent to connect, and a plain-English note for agents that points at the JSON. Everything else gets JSON:
+no `Accept`, `*/*`, `application/json` (the yobiru client), a tie, `/@handle.json` or `?format=json`. `format` and
+`lang` are the only queries a share link accepts. `yobiru public connect` also takes the `.json` URL.
 
 Its `chat` block:
 
