@@ -47,6 +47,7 @@ if _HERE not in sys.path:
 import bot_common as C  # noqa: E402
 import bot_e2e as E  # noqa: E402
 import bot_mcp as M  # noqa: E402
+import bot_profile as P  # noqa: E402
 
 HOME_ENV = "YOBIRU_GATEWAY_HOME"
 DEFAULT_HOME = "~/.yobiru-gateway"
@@ -4103,6 +4104,7 @@ class Api(object):
 BOT_ID = r"bot_[a-z2-7]{16}"
 PRINCIPAL = r"(?:act|bot)_[a-z2-7]{16}"
 CALLER = ("actor", "source")
+SHARE_RE = re.compile(r"/@(?P<ref>[^/]{1,64}?)(?P<json>\.json)?\Z")
 ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
     ("GET", r"/v1/health", "health", None),
     ("GET", r"/\.well-known/yobiru", "well_known", None),
@@ -4565,9 +4567,12 @@ def make_handler(api):
             self._route = "-"
             try:
                 url = urllib.parse.urlsplit(self.path)
-                if url.query or url.fragment:
+                path, self._html = url.path, None
+                share = SHARE_RE.match(path) if self.command == "GET" else None
+                if share is not None:
+                    path, self._html = self.share_mode(share, url)
+                elif url.query or url.fragment:
                     raise Fail(400, "query_not_supported")
-                path = url.path
                 if path == "/mcp":
                     return self.dispatch_mcp()
                 match, allowed = None, False
@@ -4614,8 +4619,17 @@ def make_handler(api):
                         if req.subject is None:
                             raise Fail(401, "unauthorized")
                     status, obj = getattr(api, name)(db, req)
-                self.reply(status, obj)
+                if name == "share_card" and self._html:
+                    card = {k: v for k, v in obj.items() if k != "ok"}
+                    return self.reply_page(status, lambda nonce: P.render_profile(card, self._html, url.path, nonce),
+                                           card["address"] + ".json")
+                self.reply(status, obj, {"Vary": "Accept"} if share is not None else None)
             except Fail as f:
+                if f.status == 404 and getattr(self, "_html", None):
+                    try:
+                        return self.reply_page(404, lambda nonce: P.render_not_found(self._html, url.path, nonce))
+                    except OSError:
+                        return
                 obj = dict({"ok": False, "error": f.code}, **f.extra)
                 if f.detail:
                     obj["detail"] = f.detail
@@ -4638,6 +4652,48 @@ def make_handler(api):
                     self.reply(500, {"ok": False, "error": "server_error"})
                 except OSError:
                     pass
+
+        def share_mode(self, share, url):
+            """A share link answers JSON (the card) unless the caller prefers HTML: `/@ref.json` and `?format=json`
+            always mean JSON, `?format=html` always means the page. Only `format` and `lang` are accepted here.
+            Returns (route path, page language or None for JSON)."""
+            if url.fragment:
+                raise Fail(400, "query_not_supported")
+            try:
+                q = urllib.parse.parse_qs(url.query, keep_blank_values=True, strict_parsing=True) if url.query else {}
+            except ValueError:
+                raise Fail(400, "query_not_supported")
+            if set(q) - {"format", "lang"} or any(len(v) != 1 for v in q.values()) or \
+                    q.get("format", ["json"])[0] not in ("json", "html"):
+                raise Fail(400, "query_not_supported")
+            path = "/@" + share.group("ref")
+            fmt = q.get("format", [None])[0]
+            if share.group("json") or fmt == "json":
+                return path, None
+            if fmt == "html" or P.prefers_html(self.headers.get("Accept")):
+                return path, P.pick_lang(q.get("lang", [None])[0], self.headers.get("Accept-Language"))
+            return path, None
+
+        def reply_page(self, status, render, json_url=None):
+            nonce = P.new_nonce()
+            body = render(nonce)
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Vary", "Accept, Accept-Language")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
+            self.send_header("Content-Security-Policy",
+                             "default-src 'none'; style-src 'nonce-%s'; script-src 'nonce-%s'; img-src 'self' data:; "
+                             "base-uri 'none'; form-action 'none'; frame-ancestors 'none'" % (nonce, nonce))
+            if json_url:
+                self.send_header("Link", '<%s>; rel="alternate"; type="application/json"' % json_url)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+            self.close_connection = True
 
         def reply_empty(self, status):
             self.send_response(status)

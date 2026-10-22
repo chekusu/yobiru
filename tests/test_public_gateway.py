@@ -199,6 +199,84 @@ class AdministrationTests(GatewayCase):
         self.assertEqual({"ok", "service", "api"}, set(health))
 
 
+def page(gw, path, headers=None):
+    """(status, headers, body bytes) of a GET, for answers that may be HTML."""
+    conn = http.client.HTTPConnection("127.0.0.1", gw.port, timeout=10)
+    try:
+        conn.request("GET", path, headers=headers or {})
+        resp = conn.getresponse()
+        return resp.status, {k.lower(): v for k, v in resp.getheaders()}, resp.read()
+    finally:
+        conn.close()
+
+
+BROWSER = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+           "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"}
+
+
+class ProfilePageTests(GatewayCase):
+    def test_agents_keep_the_json_card_and_browsers_get_a_page(self):
+        bot_id = self.published()
+        h = self.handle()
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id,
+                   {"description": "Hi <script>alert(1)</script> & welcome"}, self.gw.owner_token)
+        card = self.gw.ok("GET", "/@" + h)
+        for headers in ({}, {"Accept": "*/*"}, {"Accept": "application/json"},
+                        {"Accept": "application/json, text/html"}, {"Accept": "text/html;q=0.5, application/json"},
+                        dict(BROWSER, Accept="text/html;q=0")):
+            status, hdrs, body = page(self.gw, "/@" + h, headers)
+            self.assertEqual(200, status, headers)
+            self.assertTrue(hdrs["content-type"].startswith("application/json"), headers)
+            self.assertEqual(card, json.loads(body), headers)
+            self.assertEqual("Accept", hdrs.get("vary"))
+        for path in ("/@%s.json" % h, "/@%s?format=json" % h, "/@%s.json" % bot_id):
+            status, hdrs, body = page(self.gw, path, BROWSER)
+            self.assertEqual((200, card), (status, json.loads(body)), path)
+
+        status, hdrs, body = page(self.gw, "/@" + h, BROWSER)
+        self.assertEqual(200, status)
+        self.assertTrue(hdrs["content-type"].startswith("text/html"))
+        text = body.decode("utf-8")
+        self.assertIn('<html lang="zh-CN">', text)
+        self.assertIn("Synthetic " + h, text)
+        self.assertIn('rel="alternate" type="application/json" href="%s.json"' % card["address"], text)
+        self.assertIn("%s.json" % card["address"], hdrs["link"])
+        self.assertIn("yobiru public connect " + card["address"], text)
+        self.assertNotIn("<script>alert", text, "the description is escaped")
+        self.assertIn("Hi &lt;script&gt;alert(1)&lt;/script&gt; &amp; welcome", text)
+        embedded = text.split('<script type="application/json" id="yobiru-card">', 1)[1].split("</script>", 1)[0]
+        self.assertEqual({k: v for k, v in card.items() if k != "ok"}, json.loads(embedded))
+        nonce = hdrs["content-security-policy"].split("'nonce-", 1)[1].split("'", 1)[0]
+        self.assertEqual(2, text.count('nonce="%s"' % nonce), "only the page's own style and script run")
+        self.assertIn("frame-ancestors 'none'", hdrs["content-security-policy"])
+
+        self.assertIn('<html lang="ja">', page(self.gw, "/@%s?lang=ja" % h, BROWSER)[2].decode("utf-8"))
+        self.assertIn('<html lang="en">', page(self.gw, "/@" + h, {"Accept": "text/html"})[2].decode("utf-8"))
+        self.assertIn('<html lang="en">', page(self.gw, "/@%s?format=html&lang=en" % h)[2].decode("utf-8"))
+        self.assertTrue(page(self.gw, "/@" + bot_id, BROWSER)[1]["content-type"].startswith("text/html"))
+
+    def test_missing_bots_and_odd_queries(self):
+        status, hdrs, body = page(self.gw, "/@nobody-here", BROWSER)
+        self.assertEqual(404, status)
+        self.assertTrue(hdrs["content-type"].startswith("text/html"))
+        self.assertIn("noindex", body.decode("utf-8"))
+        status, hdrs, body = page(self.gw, "/@nobody-here")
+        self.assertEqual((404, "not_found"), (status, json.loads(body)["error"]))
+        h = self.handle()
+        self.published()
+        for q in ("?x=1", "?format=xml", "?lang=zh&lang=en", "?format"):
+            status, _, body = page(self.gw, "/@" + h + q, BROWSER)
+            self.assertEqual((400, "query_not_supported"), (status, json.loads(body)["error"]), q)
+        self.assertEqual(400, page(self.gw, "/v1/health?format=json")[0], "other routes still refuse queries")
+
+    def test_share_links_from_the_page_still_parse(self):
+        for link in ("https://gw.example/@guoyu.json", "https://gw.example/@guoyu?lang=zh",
+                     "https://gw.example/@guoyu#for-agents"):
+            self.assertEqual(("https://gw.example", "@guoyu"), C.parse_address(link), link)
+        self.assertEqual(("https://gw.example", "bot_aaaaaaaaaaaaaaaa"),
+                         C.parse_address("https://gw.example/@bot_aaaaaaaaaaaaaaaa.json"))
+
+
 class IsolationTests(GatewayCase):
     def test_contacts_cannot_reach_each_others_conversations(self):
         bot_id = self.published()
