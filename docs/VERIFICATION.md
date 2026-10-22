@@ -3,6 +3,49 @@
 Yobiru release verification. This page separates what has actually been run from what has not. It is not a
 security guarantee: the tests show the behaviors listed below, nothing more.
 
+## Native Grok Bot acceptance run (after 0.6.0-beta.1)
+
+On 2026-10-22, `tools/friends_acceptance.py --host remote` ran the Beta guide's acceptance checklist with a real
+agent. The admin device was the owner's Mac (macOS), on commit `fbcbd33` of this branch, whose plugin is identical
+to `v0.6.0-beta.1`. Its gateway and resource service were temporary and reached over two Tailscale Serve HTTPS routes
+(tailnet only). The native binding of the test bot was held by one owner-controlled Grok Bot cloud computer (Linux)
+with the 0.6.0-beta.1 plugin from the release. That agent followed `RUNBOOK.md` through the CLI after its owner
+approved in the Grok main chat. The token files reached it as Yobiru attachments, never in message text. The callers
+were CLI homes on the Mac, not other people's agents.
+
+- First run, 11:04 to 11:18 UTC: **13 of 14 checks** passed. Item 4 failed because every resource read returned
+  `503 not_configured`: the run's folder was under macOS `/var/folders`, and `/var` is a link to `/private/var`. The
+  resource service now resolves its folder at start (`fix: serve resources from a folder whose path passes through
+  a link`, with two unit tests); the whole suite passed **463 tests** (1 skipped) on Linux. Cleanup passed.
+- Second run, 12:40 to 13:00 UTC, same commit, with `TMPDIR` set to its real path so the folder had no link:
+  **35 of 35 checks** passed, all twelve items, exit 0. The owner credential made 6 inbound admissions and 4 reply
+  approvals. The binding was revoked, the bot unpublished and both routes removed afterwards.
+
+Not shown by these runs: the resource fix on macOS (the second run avoided the link instead), a Grok Bot reached by
+someone else's agent or through a public URL, waking the agent through a route (it was told when to act), a
+restart during a run, the Yobiru skill instead of the CLI, host isolation, Muse, Dots and Windows.
+
+## Acceptance checklist driver (after 0.6.0-beta.1)
+
+On 2026-10-21, on a branch based on the `v0.6.0-beta.1` tag (a new maintainer tool and its tests; no runtime,
+plugin or gateway change; nothing released), on Python 3.13 on Linux, with synthetic homes and data and loopback HTTP:
+
+- `python3 tools/friends_acceptance.py` (its scripted host) passed **43 checks** covering all twelve items of the
+  Beta guide's acceptance checklist, through the plugin's own `scripts/yobiru` launcher. A run whose scripted host
+  put the friend's export into the follower's reply failed item 4 and still cleaned up completely.
+- `python3 -m unittest test_friends_acceptance` passed **2 tests**: the whole checklist with the scripted host, and
+  a remote host that never acts, which ends as a timeout (exit 3) after a complete cleanup that leaves only
+  `RUNBOOK.md` in the handoff folder. The whole suite, `python3 -m unittest discover` in `tests/`, passed **461
+  tests** (1 skipped).
+- A rehearsal of `--host remote` on the same machine (`http://127.0.0.1` routes instead of HTTPS, and a scratch
+  script, not an agent, that ran `RUNBOOK.md` literally in its own home) passed **35 checks**. Its first attempt
+  showed that the runbook must `chmod 600` the copied token files, because the CLI refuses any other mode; the
+  runbook now does.
+
+Not tested here: a native Grok Bot or any other real agent following the runbook, a restart of the agent's device
+during a run (the runbook's resume section), Tailscale Serve or any HTTPS route, macOS (the intended admin device),
+Windows and Python 3.8 execution (syntax only).
+
 ## 0.6.0-beta.1 release preparation
 
 On 2026-10-21, on the release branch for 0.6.0-beta.1 (the Friends schema-3 work below plus the version and

@@ -3,6 +3,13 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## Unreleased
+
+- **Friends resource service**: a service folder whose path passes through a symbolic link (on macOS, anything
+  under `/var` or `/tmp`, including the default temporary folder) no longer refuses every read with
+  `503 not_configured`. The folder is resolved once at start; an `exports` folder replaced by a link later is
+  still refused. Found by the first acceptance run with a native Grok Bot.
+
 ## 0.6.0-beta.1 (2026-10-21): Beta
 
 The Beta of the next major revision, published as a GitHub prerelease. **The stable release stays 0.5.3**: the

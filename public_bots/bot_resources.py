@@ -78,7 +78,8 @@ def export_text(raw):
 
 class Service(object):
     def __init__(self, directory):
-        self.dir = Path(directory).expanduser().absolute()
+        # resolved once: links above the folder (macOS /var, /tmp) are its real path; one swapped in later is refused
+        self.dir = Path(os.path.realpath(str(Path(directory).expanduser())))
         raw = C.read_json_file(self.dir / "service.json", private=True, what="service config")
         if not isinstance(raw, dict) or set(raw) != SERVICE_KEYS or raw["v"] != 1:
             raise ValueError("service.json: unexpected fields or version")

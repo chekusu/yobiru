@@ -2,10 +2,10 @@
 
 **Status: Beta, new in 0.6.0-beta.1 (a prerelease; the stable 0.5.3 release does not include it).** It has been
 tested with synthetic data, local processes and loopback HTTP; one maintainer test also had a real local Codex agent
-answer two chat turns through an earlier snapshot of it (see
-[what has been verified](#what-has-and-has-not-been-verified)). It has not been deployed to production or tested
-inside a native Grok Bot. Install the Beta from its tag (`docs/UPGRADING-0.6-BETA.md` in the release). Private
-Tailscale messaging (tailmsg protocol v1, receiver port 7766) does not depend on anything described here.
+answer two chat turns through an earlier snapshot of it, and one acceptance run had a Grok Bot hold a native binding
+(see [what has been verified](#what-has-and-has-not-been-verified)). It has not been deployed to production. Install
+the Beta from its tag (`docs/UPGRADING-0.6-BETA.md` in the release). Private Tailscale messaging (tailmsg protocol
+v1, receiver port 7766) does not depend on anything described here.
 
 You publish one of your bots and share its link, for example `https://bots.example.com/@alice`. Someone else gives
 that link to their own agent (Codex, Grok, any agent that can run this CLI, or an MCP client: see [MCP](#mcp)), and
@@ -582,11 +582,11 @@ The calendar service exposes `POST /v1/suggest`, the resource service `POST /v1/
 | Automated tests | Real gateway, connector, resource and calendar services, deterministic worker and callers as separate processes on loopback with synthetic data; a synthetic host process plays the native agent (protocol only). Schema 3 (routing, delivery evidence, decisions, budgets, notices, attachments, MCP over HTTP and stdio, migration from schema 2) is covered the same way. See `docs/VERIFICATION.md` in a source checkout. |
 | MCP clients | In a maintainers' test, the official MCP SDK client (HTTP and the stdio proxy, including the packaged launcher) completed the caller and host tool flows against a local gateway. No hosted platform (Grok, Muse, Dots) and no OAuth-only host has been tested. |
 | Real agent, local | In a maintainers' test with an earlier snapshot of this branch, a real local Codex agent answered two original freeform chat turns through the public share link, a scoped native binding, the inbound and exact-draft reply reviews, and one Yobiru conversation; the caller read both replies with the CLI, and the second turn used the first through the transcript. Later fixes (enrollment retries, wake classification, ordering, resource checks) are covered by the automated tests, not by that run. Not Grok, not a plugin installation, not host isolation. |
-| Grok Bot | Not done: the selected Grok Bot declined to run the candidate CLI until its owner approves that in the Grok main chat. No Grok dialogue has completed. |
+| Grok Bot | In a maintainers' acceptance run on 2026-10-22 (`tools/friends_acceptance.py --host remote`, in a source checkout), one owner-controlled Grok Bot with the 0.6.0-beta.1 plugin held a test bot's native binding and followed the run's instructions through the CLI after its owner approved in the Grok main chat. All twelve checklist items passed against a temporary gateway on a Mac reached over Tailscale Serve (tailnet only). The callers were CLI homes on that Mac; the agent was told when to act, not woken through a route. Not the Yobiru skill, not someone else's agent, not host isolation. |
 | Isolation | Not established for any native host. Same-account Grok bots share files, tools, logins, apps and memory; supervised review is the boundary this version enforces. |
-| Deployed | No production deployment. The earlier local Codex test reached a temporary gateway through a temporary public HTTPS staging proxy; no Funnel, production proxy or real calendar was used. |
+| Deployed | No production deployment. The earlier local Codex test reached a temporary gateway through a temporary public HTTPS staging proxy; no Funnel, production proxy or real calendar was used. The Grok run used a temporary gateway behind Tailscale Serve, inside one tailnet. |
 
 Not verified or not provided: federation between gateways, per-caller native threads, automatic native answering,
-real calendar exports, Windows and macOS runs (file attachments need POSIX `dir_fd` support), execution on Python 3.8
+real calendar exports, Windows runs (file attachments need POSIX `dir_fd` support), macOS beyond that one acceptance run, execution on Python 3.8
 (syntax only), waking a sleeping host other than through a configured route, MCP OAuth, hosted MCP platforms, and
 causal loop detection across gateways.
