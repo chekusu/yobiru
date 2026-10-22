@@ -134,6 +134,7 @@ class Acceptance(object):
                 self.env[name] = os.environ[name]
         self.services = {}
         self.checks, self.outputs, self.reviews = [], [], Counter()
+        self.direct = set()             # b-bot is a friend: its messages reach the agent without review
         self.ids = {}
         self.url = None
 
@@ -197,16 +198,26 @@ class Acceptance(object):
         return self.y("owner", "review", "list", BOT)
 
     def admit(self, job):
+        if job in self.direct:
+            return
         self.y("owner", "review", "approve-inbound", BOT, job)
         self.reviews["approve_inbound"] += 1
 
     def draft(self, job):
-        """The host's draft for a job, as the owner sees it (waits for the host)."""
+        """The host's draft for a job, as the owner sees it (waits for the host). A friend's job has no draft: its
+        answer is released at once, so this returns the released result instead."""
+        if job in self.direct:
+            done = self.wait("the released answer to %s" % job,
+                             lambda: self.status("b", job, "--no-ack").get("result"))
+            return {"draft": done, "draft_hash": None}
+
         def probe():
             return [x for x in self.review_list()["replies"] if x["job_id"] == job]
         return self.wait("a draft reply to %s" % job, probe)[0]
 
     def approve(self, job, draft):
+        if job in self.direct:
+            return
         self.y("owner", "review", "approve-reply", BOT, job, "--draft-hash", draft["draft_hash"])
         self.reviews["approve_reply"] += 1
 
@@ -217,7 +228,10 @@ class Acceptance(object):
         return self.y(role, "status", mid, *extra)
 
     def chat(self, role, text, *extra):
-        return self.y(role, "chat", BOT, text, *extra)
+        sent = self.y(role, "chat", BOT, text, *extra)
+        if role == "b":
+            self.direct.add(sent["message_id"])
+        return sent
 
     # ---------------------------------------------------------------- the scripted host
     def host_claim(self, job):
@@ -342,15 +356,15 @@ class Acceptance(object):
         self.ids.update(b1=b1, a1=a1)
         listed = self.review_list()
         inbound = {x["job_id"]: x for x in listed["inbound"]}
-        self.check(5, "`review list` shows both senders and their relationships, never the text",
-                   (inbound.get(b1, {}).get("from", {}).get("handle"), inbound.get(b1, {}).get("relationship"),
-                    inbound.get(a1, {}).get("from", {}).get("handle"), inbound.get(a1, {}).get("relationship"))
-                   == ("@" + B_BOT, "friend", "@" + A_BOT, "follower") and "SMOKE-B1" not in json.dumps(listed)
-                   and "SMOKE-A1" not in json.dumps(listed), listed)
+        self.check(5, "`review list` shows the follower and its relationship, never the text; the friend's message "
+                   "is not there (friends talk directly)",
+                   (inbound.get(a1, {}).get("from", {}).get("handle"), inbound.get(a1, {}).get("relationship"))
+                   == ("@" + A_BOT, "follower") and b1 not in inbound and "SMOKE-A1" not in json.dumps(listed), listed)
         if not self.remote:
-            job = [j for j in self.y("host", "job", "list", self.ids["bot_id"])["jobs"] if j["job_id"] == b1]
-            self.check(5, "before admission the host sees metadata only",
-                       job and "SMOKE-B1" not in json.dumps(job) and job[0]["review"]["inbound"] == "pending", job)
+            jobs = {j["job_id"]: j for j in self.y("host", "job", "list", self.ids["bot_id"])["jobs"]}
+            self.check(5, "before admission the host sees the follower's job as metadata only; the friend's is ready",
+                       a1 in jobs and "SMOKE-A1" not in json.dumps(jobs) and jobs[a1]["review"]["inbound"] == "pending"
+                       and b1 in jobs and jobs[b1]["review"]["inbound"] == "approved", jobs)
         self.admit(b1)
         self.admit(a1)
         if not self.remote:
@@ -374,8 +388,8 @@ class Acceptance(object):
         self.check(4, "the drafts carry the offered export to the friend only, and the never-offered one to nobody",
                    "SMOKE-MENU" in b_text and "SMOKE-MENU" not in a_text and "SMOKE-SECRET" not in b_text + a_text,
                    {"b-bot draft": b_draft["draft"], "a-bot draft": a_draft["draft"]})
-        before = self.status("b", b1, "--no-ack")
-        self.check(5, "the caller sees `review` while the draft waits", before["state"] == "review", before["state"])
+        before = self.status("a", a1, "--no-ack")
+        self.check(5, "the follower sees `review` while the draft waits", before["state"] == "review", before["state"])
         self.approve(b1, b_draft)
         self.approve(a1, a_draft)
         for role, mid in (("b", b1), ("a", a1)):
@@ -483,9 +497,9 @@ class Acceptance(object):
                    verified)
         mine = self.y("b", "decisions", self.ids["b1"])["decisions"]
         self.check(10, "b-bot sees the decisions about its own message",
-                   sorted(d["action"] for d in mine) == ["approve_inbound", "approve_reply"], mine)
+                   sorted(d["action"] for d in mine) == ["friend_direct_inbound", "friend_direct_reply"], mine)
         listed = self.y("owner", "owner", "decisions", BOT)["decisions"]
-        counted = Counter(d["action"] for d in listed)
+        counted = Counter(d["action"] for d in listed if not d["action"].startswith("friend_direct_"))
         self.check(10, "`owner decisions`: one receipt per review action (%s)" % dict(self.reviews),
                    counted == self.reviews, dict(counted))
 

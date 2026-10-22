@@ -107,6 +107,7 @@ LIMIT_DEFAULTS = {
     "transcript_chars": 24000,
     "max_reply_chars": 4000,                    # a native agent's reply
     "wake_retry_seconds": 60,                   # a refused wake may be retried after this (doubling)
+    "reply_wake_window_seconds": 7 * 86400,     # replies to a bot's own messages its connector may wake it for
     "wake_attempts": 5,
     "check_ttl_seconds": 3600,                  # binding wake tests
     "retention_days": 30,
@@ -148,10 +149,10 @@ DEFAULT_POLICY = {"offered": ["faq", "leave_message", "calendar_slots", "chat"],
                   "visitor": ["faq", "leave_message", "chat"],
                   "follower": ["faq", "leave_message", "chat"],
                   "friend": ["faq", "leave_message", "chat"],
-                  "accept_followers": True, "contact_requests": True, "friend_direct": False,
-                  "require_e2e": False}
-POLICY_KEYS = ("offered",) + LEVELS + ("accept_followers", "contact_requests", "friend_direct", "require_e2e")
-POLICY_BOOLS = ("accept_followers", "contact_requests", "friend_direct", "require_e2e")
+                  "accept_followers": True, "contact_requests": True, "require_e2e": False}
+POLICY_KEYS = ("offered",) + LEVELS + ("accept_followers", "contact_requests", "require_e2e")
+POLICY_BOOLS = ("accept_followers", "contact_requests", "require_e2e")
+LEGACY_POLICY_KEYS = ("friend_direct",)       # 0.6.0 switch, now always on for friends: accepted and ignored
 PENDING = ("queued", "claimed", "started", "review", "uncertain")
 FINAL = ("completed", "declined", "failed", "expired", "cancelled", "delivered", "stored")
 WORKER_CODES = ("no_answer", "budget_exhausted", "policy_denied", "invalid_query", "capability_unavailable",
@@ -1068,7 +1069,10 @@ def mask_email(address):
 
 # ---------------------------------------------------------------- authorization model
 def policy_of(bot):
-    return json.loads(bot["policy"])
+    pol = json.loads(bot["policy"])
+    for key in LEGACY_POLICY_KEYS:
+        pol.pop(key, None)
+    return pol
 
 
 def order_caps(caps):
@@ -1091,6 +1095,10 @@ def validate_policy(raw, base=None):
     """Owner-supplied bot policy -> normalized policy. Fields given replace the current ones. `offered` is the
     bot's ceiling: narrowing it also trims presets not given in the same change. Unknown fields fail closed."""
     pol = json.loads(json.dumps(base or DEFAULT_POLICY))
+    for key in LEGACY_POLICY_KEYS:
+        pol.pop(key, None)
+    if isinstance(raw, dict):
+        raw = {k: v for k, v in raw.items() if k not in LEGACY_POLICY_KEYS}
     if not isinstance(raw, dict) or set(raw) - set(POLICY_KEYS):
         raise Fail(400, "invalid_policy", "policy fields: %s (each level is a list of capabilities)" %
                    ", ".join(POLICY_KEYS))
@@ -1138,12 +1146,11 @@ def relation_of(db, bot_id, pid):
 
 
 def friend_direct(db, bot, pid, contact=None):
-    """Whether the owner's friends-direct setting covers `pid` right now: the setting is on, `pid` is a friend (both
-    exact follow edges active) and its contact is active. Then chat and notices from `pid` reach the bot's agent
-    without a per-message review, and the agent's replies to `pid` are released without one. Loop budgets, rate
-    limits, capabilities and the transcript boundary still apply; strangers and one-way followers stay reviewed."""
-    if not policy_of(bot).get("friend_direct"):
-        return False
+    """Whether `pid` talks to the bot directly right now: `pid` is a friend (both exact follow edges active) and its
+    contact is active. Then chat and notices from `pid` reach the bot's agent without a per-message review, and the
+    agent's replies to `pid` are released without one, like a direct message. Loop budgets, rate limits,
+    capabilities and the transcript boundary still apply; strangers and one-way followers stay reviewed. The owner
+    ends it by unfollowing, restricting or blocking that contact."""
     contact = contact if contact is not None else contact_row(db, bot["id"], pid)
     return contact is not None and contact["status"] == "active" and relation_of(db, bot["id"], pid) == "friend"
 
@@ -3925,7 +3932,25 @@ class Api(object):
         checks = db.execute("SELECT * FROM checks WHERE worker_id=? AND answered_ts IS NULL AND expires_ts>? AND "
                             "wake_state='none'", (worker["id"], int(now))).fetchall()
         return 200, {"ok": True, "bot_id": bot["id"], "handle": "@" + bot["handle"], "jobs": jobs,
-                     "checks": [{"check_id": c["id"]} for c in checks]}
+                     "checks": [{"check_id": c["id"]} for c in checks], "replies": self.pending_replies(db, bot, now)}
+
+    def pending_replies(self, db, bot, now):
+        """Final responses to messages this bot sent as a caller that it has not acknowledged yet, so that its
+        connector can wake its agent when a friend (or any bot it wrote to) answers, as in a chat app. Ids only: the
+        agent reads the reply with its own caller credential (`public inbox --as`), which also acknowledges it."""
+        since = int(now) - self.limits.get("reply_wake_window_seconds", 7 * 86400)
+        rows = db.execute("SELECT * FROM messages WHERE actor_id=? AND author='caller' AND caller_ack_ts IS NULL AND "
+                          "state IN ('completed','declined','failed') AND finished_ts>=? ORDER BY finished_ts, rowid "
+                          "LIMIT 50", (bot["id"], since)).fetchall()
+        replies = []
+        for m in rows:
+            target = db.execute("SELECT * FROM bots WHERE id=?", (m["bot_id"],)).fetchone()
+            if target is None:
+                continue
+            contact = contact_row(db, target["id"], bot["id"])
+            if released_to_caller(m, result_block(db, target, contact, m)):
+                replies.append({"message_id": m["id"], "from_bot_id": target["id"], "state": m["state"]})
+        return replies
 
     def wake_fields(self, body):
         fields(body, ("step", "wake_id", "phase", "outcome", "detail", "route"), ("step", "wake_id"))

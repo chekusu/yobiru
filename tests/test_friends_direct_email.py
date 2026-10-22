@@ -1,9 +1,10 @@
 """Friends direct and email-verified enrollment.
 
-Friends direct: an owner setting (off by default) under which chat and notices from a friend (two exact follow edges)
-reach the bot's agent without a per-message review and the agent's replies to that friend are released without one.
-Each admission and release still records a decision receipt (authority owner_policy). Strangers, visitors and
-one-way followers stay reviewed; turning the setting off sends the next draft back to review.
+Friends talk directly: chat and notices from a friend (two exact follow edges) reach the bot's agent without a
+per-message review and the agent's replies to that friend are released without one; there is no switch. Each
+admission and release still records a decision receipt (authority owner_policy). Strangers, visitors and one-way
+followers stay reviewed; unfollowing sends the next draft back to review. A bot's connector also wakes its agent when
+a bot it wrote to answers, until that answer is acknowledged.
 
 Email verification: with enrollment.email_verification on, a new self-enrolled owner first proves control of an
 email address with a 6-digit code; one address (lowercase, without +tag, Gmail without dots) names one owner. The
@@ -41,29 +42,20 @@ class FriendDirectTests(unittest.TestCase):
         cls.gw.stop()
         cls._tmp.cleanup()
 
-    def pair(self, direct=True):
-        """A (native agent) and B, mutual followers. -> (a, wtoken, b_source, conversation of B with A)."""
+    def pair(self):
+        """A (native agent) and B, mutual followers. -> (a, wtoken, b_source, a_source, conversation of B with A)."""
         FriendDirectTests.n += 1
         a, a_source = self.gw.owned_bot("fd-a%d" % self.n)
         b, b_source = self.gw.owned_bot("fd-b%d" % self.n)
         self.assertEqual(201, self.gw.follow(b_source, a)[0])
         self.assertEqual(201, self.gw.follow(a_source, b)[0])
-        if direct:
-            self.assertTrue(self.gw.policy(a, friend_direct=True)["policy"]["friend_direct"])
         wtoken, _ = self.gw.native(a)
-        return a, wtoken, b_source, self.gw.conversation(a, b_source)
-
-    def test_off_by_default_a_friend_is_still_reviewed(self):
-        a, wtoken, b_source, cid = self.pair(direct=False)
-        self.assertFalse(self.gw.ok("GET", "/v1/owner/bots/%s" % a, None, self.gw.owner_token)["policy"]
-                         ["friend_direct"])
-        mid = self.gw.chat(cid, b_source, "hello friend")
-        self.assertIn(mid, [x["job_id"] for x in self.gw.reviews(a)["inbound"]])
-        status, obj = self.gw.claim_job(wtoken, mid)
-        self.assertEqual((409, "review_required"), (status, obj["error"]))
+        return a, wtoken, b_source, a_source, b, self.gw.conversation(a, b_source)
 
     def test_a_friend_reaches_the_agent_and_gets_its_reply_without_review(self):
-        a, wtoken, b_source, cid = self.pair()
+        a, wtoken, b_source, _, _, cid = self.pair()
+        self.assertNotIn("friend_direct", self.gw.ok("GET", "/v1/owner/bots/%s" % a, None,
+                                                     self.gw.owner_token)["policy"], "there is no switch")
         mid = self.gw.chat(cid, b_source, "are you free on friday?")
         self.assertNotIn(mid, [x["job_id"] for x in self.gw.reviews(a)["inbound"]])
         status, job = self.gw.claim_job(wtoken, mid)
@@ -89,7 +81,7 @@ class FriendDirectTests(unittest.TestCase):
                                                                                                "friday works")))
 
     def test_strangers_and_one_way_followers_stay_reviewed(self):
-        a, wtoken, _, _ = self.pair()
+        a, wtoken, _, _, _, _ = self.pair()
         c, c_source = self.gw.owned_bot("fd-c%d" % self.n)
         self.assertEqual(201, self.gw.follow(c_source, a)[0])            # c follows a; a does not follow c
         self.assertEqual("follower", self.gw.relation(c_source, a)["relationship"])
@@ -100,32 +92,64 @@ class FriendDirectTests(unittest.TestCase):
         self.assertIn(follower_mid, waiting)
         self.assertIn(visitor_mid, waiting)
 
-    def test_turning_it_off_sends_the_next_reply_back_to_review(self):
-        a, wtoken, b_source, cid = self.pair()
+    def test_unfollowing_sends_the_next_reply_back_to_review(self):
+        a, wtoken, b_source, a_source, b, cid = self.pair()
         mid = self.gw.chat(cid, b_source, "one more thing")
         status, job = self.gw.claim_job(wtoken, mid)
         self.assertEqual(200, status, job)
-        self.gw.policy(a, friend_direct=False)
+        self.gw.unfollow(a_source, b)                                     # no longer friends: b is a follower
         status, done = self.gw.reply_job(wtoken, job, "draft only")
         self.assertEqual((200, "review"), (status, done["state"]))
         self.assertIn(mid, [x["job_id"] for x in self.gw.reviews(a)["replies"]])
 
-    def test_policy_value_must_be_a_boolean(self):
-        a, _, _, _ = self.pair(direct=False)
-        status, obj = self.gw.call("PATCH", "/v1/owner/bots/%s" % a, {"policy": {"friend_direct": "yes"}},
+    def test_the_old_switch_is_accepted_and_ignored(self):
+        a, wtoken, b_source, _, _, cid = self.pair()
+        status, obj = self.gw.call("PATCH", "/v1/owner/bots/%s" % a, {"policy": {"friend_direct": False}},
                                    self.gw.owner_token)
-        self.assertEqual((400, "invalid_policy"), (status, obj["error"]))
+        self.assertEqual(200, status, obj)
+        self.assertNotIn("friend_direct", obj["policy"])
+        mid = self.gw.chat(cid, b_source, "still direct?")
+        self.assertNotIn(mid, [x["job_id"] for x in self.gw.reviews(a)["inbound"]])
 
-    def test_the_client_switches_it(self):
-        a, _, _, _ = self.pair(direct=False)
-        home = Path(self._tmp.name) / ("client-%d" % self.n)
-        code, out, err = cli(home, "owner", "login", self.gw.url, "--token-file",
-                             str(self.gw.home / "owner.token"))
-        self.assertEqual(0, code, err)
-        code, out, err = cli(home, "bot", "edit", a, "--friend-direct", "on")
-        self.assertEqual(0, code, err)
-        self.assertTrue(out["policy"]["friend_direct"])
 
+    def test_the_answer_wakes_the_friend_that_asked(self):
+        a, wtoken, b_source, a_source, b, cid = self.pair()
+        _, b_wid = self.gw.native(b)
+        conn = self.gw.ok("POST", "/v1/owner/bots/%s/workers/%s/connector" % (b, b_wid), {},
+                          self.gw.owner_token)["token"]
+        mid = self.gw.chat(cid, b_source, "what's for lunch?")
+        self.assertEqual([], self.gw.ok("GET", "/v1/connector/jobs", None, conn)["replies"], "nothing answered yet")
+        status, job = self.gw.claim_job(wtoken, mid)
+        self.assertEqual(200, self.gw.reply_job(wtoken, job, "noodles")[0])
+        replies = self.gw.ok("GET", "/v1/connector/jobs", None, conn)["replies"]
+        self.assertEqual([{"message_id": mid, "from_bot_id": a, "state": "completed"}], replies)
+        self.assertNotIn("noodles", json.dumps(replies), "ids only")
+        inbox = self.gw.ok("GET", "/v1/inbox", None, b_source)
+        self.assertIn(mid, [x["message_id"] for x in inbox["items"]])
+        self.assertEqual(200, self.gw.call("POST", "/v1/messages/%s/ack" % mid, {}, b_source)[0])
+        self.assertEqual([], self.gw.ok("GET", "/v1/connector/jobs", None, conn)["replies"], "acknowledged: done")
+
+    def test_the_connector_wakes_once_for_an_answer(self):
+        a, wtoken, b_source, a_source, b, cid = self.pair()
+        _, b_wid = self.gw.native(b)
+        home = Path(self._tmp.name) / ("wake-%d" % self.n)
+        log = Path(self._tmp.name) / ("wakes-%d.log" % self.n)
+        token_file = Path(self._tmp.name) / ("conn-%d.token" % self.n)
+        for args in (("owner", "login", self.gw.url, "--token-file", str(self.gw.home / "owner.token")),
+                     ("connector", "bind", b, b_wid, "--token-file", str(token_file)),
+                     ("connector", "login", self.gw.url, "--token-file", str(token_file)),
+                     ("connector", "config", b, "--exec", sys.executable, "-c",
+                      "import sys; open(sys.argv[1], 'a').write(' '.join(sys.argv[2:]) + '\\n')", str(log),
+                      "{kind}", "{message_id}")):
+            code, out, err = cli(home, *args)
+            self.assertEqual(0, code, err)
+        mid = self.gw.chat(cid, b_source, "dinner?")
+        _, job = self.gw.claim_job(wtoken, mid)
+        self.gw.reply_job(wtoken, job, "hotpot")
+        for _ in range(2):
+            code, out, err = cli(home, "connector", "run", b, "--once")
+            self.assertEqual(0, code, err)
+        self.assertEqual(["yobiru.reply %s" % mid], log.read_text().splitlines(), "woken once, ids only")
 
 class EmailEnrollmentTests(unittest.TestCase):
     @classmethod
