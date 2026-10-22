@@ -58,7 +58,7 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("run: migrate", refused.stderr)
         migrated = self.run_new(old.home, "migrate")
         self.assertEqual(0, migrated.returncode, migrated.stderr)
-        self.assertEqual((True, "6", "2", 2), tuple(json.loads(migrated.stdout)[k] for k in
+        self.assertEqual((True, "7", "2", 2), tuple(json.loads(migrated.stdout)[k] for k in
                                                      ("migrated", "schema", "from_schema", "bots")))
         self.assertFalse(json.loads(self.run_new(old.home, "migrate").stdout)["migrated"], "idempotent")
         new = old
