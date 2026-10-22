@@ -51,7 +51,7 @@ import bot_mcp as M  # noqa: E402
 HOME_ENV = "YOBIRU_GATEWAY_HOME"
 DEFAULT_HOME = "~/.yobiru-gateway"
 DEFAULT_PORT = 7780
-SCHEMA_VERSION = "5"
+SCHEMA_VERSION = "6"
 CONFIG_KEYS = {"v", "bind", "port", "public_base_url", "allow_non_loopback_bind", "trust_forwarded_for", "limits",
                "enrollment", "mcp"}
 # The MCP endpoint: the same API for MCP clients, under the same credentials. Browsers never need it, so a request
@@ -118,16 +118,20 @@ LIMIT_DEFAULTS = {
     "max_causal_hops": 4,                       # when a message names the message that caused it
     "continuation_max_turns": 20,
     "continuation_max_seconds": 86400,
-    # small text attachments (opt-in capability `files`)
-    "attachment_max_files": 4,
-    "attachment_max_bytes": 16384,
-    "attachment_total_bytes": 32768,            # per message
-    "attachment_bytes_per_day_per_caller": 262144,
-    "attachment_bytes_per_day_per_bot": 2097152,
-    "attachment_retained_bytes_per_caller": 1048576,    # stored right now, summed over the caller's messages
-    "attachment_retained_bytes_per_bot": 8388608,
-    "attachment_retained_bytes_total": 67108864,
-    "max_attachment_body_bytes": 98304,         # request bodies of routes that may carry attachments
+    # attachments (opt-in capability `files`): text files, and images, PDFs, audio and video as base64; all byte
+    # counts are raw bytes (base64 is 4/3 larger on the wire)
+    "attachment_max_files": 8,
+    "attachment_max_bytes": 16384,              # one text file
+    "attachment_media_max_bytes": 4194304,      # one image, PDF, audio or video file
+    "attachment_total_bytes": 8388608,          # per message
+    "attachment_bytes_per_day_per_caller": 67108864,
+    "attachment_bytes_per_day_per_bot": 268435456,
+    "attachment_retained_bytes_per_caller": 134217728,  # stored right now, summed over the caller's messages
+    "attachment_retained_bytes_per_bot": 536870912,
+    "attachment_retained_bytes_total": 4294967296,
+    "max_attachment_body_bytes": 16777216,      # request bodies of routes that may carry attachments (sealed media
+                                                # is base64 inside base64: about 1.8x its raw bytes)
+    "attachment_body_bytes_per_second": 65536,  # a large body gets read_timeout_seconds plus this rate's time
     # delivery evidence of a native binding
     "delivery_evidence_ttl_seconds": 604800,    # older evidence is stale
     "quiet_wake_seconds": 300,                  # unused credential before a wake, for quiet-wake correlation
@@ -145,10 +149,11 @@ LEVELS = ("visitor", "follower", "friend")
 KIND_CAPABILITY = {"faq": "faq", "message": "leave_message", "slots": "calendar_slots", "chat": "chat",
                    "notice": "leave_message"}
 AGENT_KINDS = ("chat",)                       # answered by the owner's agent binding, never by the responder
-DEFAULT_POLICY = {"offered": ["faq", "leave_message", "calendar_slots", "chat"],
+# Friends (mutual follows) exchange files by default: pictures, documents and voice notes are part of chatting.
+DEFAULT_POLICY = {"offered": ["faq", "leave_message", "calendar_slots", "chat", "files"],
                   "visitor": ["faq", "leave_message", "chat"],
                   "follower": ["faq", "leave_message", "chat"],
-                  "friend": ["faq", "leave_message", "chat"],
+                  "friend": ["faq", "leave_message", "chat", "files"],
                   "accept_followers": True, "contact_requests": True, "require_e2e": False}
 POLICY_KEYS = ("offered",) + LEVELS + ("accept_followers", "contact_requests", "require_e2e")
 POLICY_BOOLS = ("accept_followers", "contact_requests", "require_e2e")
@@ -439,7 +444,7 @@ def load_config(home):
     if not isinstance(extra, dict) or set(extra) - set(LIMIT_DEFAULTS):
         raise ValueError("gateway.json: unknown limits %s" % sorted(set(extra) - set(LIMIT_DEFAULTS)))
     for key, value in extra.items():
-        if not C.int_in(value, 1, 10 ** 9):
+        if not C.int_in(value, 1, 10 ** 12):
             raise ValueError("gateway.json: limits.%s must be a positive integer" % key)
         limits[key] = value
     if not limits["min_deadline_seconds"] <= limits["default_deadline_seconds"] <= limits["max_deadline_seconds"]:
@@ -616,6 +621,15 @@ def sealed_of(obj):
     return {k: obj[k] for k in ("sealed", "sealed_files", "files") if k in obj}
 
 
+def transcript_sealed(obj):
+    """A sealed body as an earlier transcript turn: its sealed text only. Sealed attachments (megabytes for media)
+    stay with their own message; the turn keeps their count."""
+    out = {k: obj[k] for k in ("sealed",) if k in obj}
+    if obj.get("sealed_files"):
+        out["attachments_omitted"] = {"count": obj["files"]["count"], "reason": "earlier_turn"}
+    return out
+
+
 def sealed_size(obj):
     """Plaintext-sized estimate of a sealed body for transcript budgets."""
     return sum(E.ciphertext_bytes(obj[k]) for k in ("sealed", "sealed_files") if k in obj)
@@ -688,6 +702,12 @@ def sealed_parts(body, limits, must_reach, files_ok):
 
 def attachment_views(items, content=True):
     return [C.attachment_view(a, content=content) for a in items]
+
+
+def transcript_views(items):
+    """Earlier turns' attachments: text files with their content, media files as name, type, size and hash only (a
+    transcript stays small; the message itself still carries the data)."""
+    return [C.attachment_view(a, content="data" not in a) for a in items]
 
 
 def lifecycle_of(row):
@@ -1292,11 +1312,15 @@ def pair_caps(db, bot_id, pid):
 
 def change_graph(db, now, pairs, mutate, code):
     """Run a follow-graph mutation; every (bot, principal) pair whose capabilities shrank is narrowed in the
-    same transaction. Presets may differ per level, so any edge change can narrow either direction."""
+    same transaction. Presets may differ per level, so any edge change can narrow either direction. Losing only
+    `files` (a friend who is no longer one, under the default presets) is not narrowed: every read and every step
+    of a job already requires `files` wherever attachments appear, so files are withheld without voiding the
+    conversation's other turns."""
     before = [(pair, pair_caps(db, *pair)) for pair in pairs]
     mutate()
     for (bot_id, pid), caps in before:
-        if not pair_caps(db, bot_id, pid) >= caps:
+        lost = caps - pair_caps(db, bot_id, pid)
+        if lost and lost != {"files"}:
             narrow_contact(db, bot_id, pid, now, code)
 
 
@@ -1644,7 +1668,7 @@ def transcript(db, limits, msg, bot, contact):
                 reset = True
             else:
                 turns.append([dict({"role": "owner", "text": content.get("text"), "at": ts_iso(m["created_ts"])},
-                                   **sealed_of(content))])
+                                   **transcript_sealed(content))])
             continue
         if m["route"] == "notice" or m["state"] != "completed" or not m["result"]:
             continue                      # notices are read through the agent's notice inbox, never as turns
@@ -1659,17 +1683,17 @@ def transcript(db, limits, msg, bot, contact):
             continue
         said = content.get("text") or (None if "sealed" in content else "(structured %s request)" % m["kind"])
         caller_turn = dict({"role": "caller", "message_id": m["id"], "kind": m["kind"], "text": said,
-                            "at": ts_iso(m["created_ts"])}, **sealed_of(content))
+                            "at": ts_iso(m["created_ts"])}, **transcript_sealed(content))
         bot_turn = dict({"role": "bot", "in_reply_to": m["id"], "text": result.get("text"),
-                         "at": ts_iso(m["finished_ts"])}, **sealed_of(result))
+                         "at": ts_iso(m["finished_ts"])}, **transcript_sealed(result))
         if content.get("attachments"):
-            caller_turn["attachments"] = attachment_views(content["attachments"])
+            caller_turn["attachments"] = transcript_views(content["attachments"])
         if result.get("attachments"):
-            bot_turn["attachments"] = attachment_views(result["attachments"])
+            bot_turn["attachments"] = transcript_views(result["attachments"])
         turns.append([caller_turn, bot_turn])
     kept, used = [], 0
     for turn in reversed(turns[-limits["transcript_turns"]:]):
-        size = sum(len(e.get("text") or "") + sum(len(a["content"]) for a in e.get("attachments", [])) +
+        size = sum(len(e.get("text") or "") + sum(len(a.get("content", "")) for a in e.get("attachments", [])) +
                    sealed_size(e) for e in turn)
         if used + size > limits["transcript_chars"]:
             reset = True
@@ -1834,22 +1858,30 @@ class Api(object):
         self.store, self.cfg, self.limits = store, store.cfg, store.limits
         self.enrollment = store.cfg["enrollment"]
 
-    def body_limit(self, db, name, params):
-        """Routes that may carry attachments accept the larger body only for a bot that offers `files`: elsewhere the
-        general limit stays, as before attachments existed."""
+    def body_limit(self, db, name, params, subject=None):
+        """Routes that may carry attachments accept the larger body only where files may flow: a send only from a
+        caller that currently has `files` with that bot (its own conversation), a native reply only for a bot that
+        offers `files`. Elsewhere the general limit stays, as before attachments existed. A bot with an E2E key adds
+        room for its sealed text."""
         L = self.limits
         if name in ("message_send", "owner_reply"):
-            row = db.execute("SELECT b.policy, b.e2e_key FROM conversations c JOIN bots b ON b.id=c.bot_id WHERE "
-                             "c.id=?", (params["cid"],)).fetchone()
+            row = db.execute("SELECT b.*, c.actor_id AS conv_actor FROM conversations c JOIN bots b ON "
+                             "b.id=c.bot_id WHERE c.id=? AND c.deleted_ts IS NULL", (params["cid"],)).fetchone()
         elif name in ("worker_finish", "review_action"):
-            row = db.execute("SELECT b.policy, b.e2e_key FROM messages m JOIN bots b ON b.id=m.bot_id WHERE m.id=?",
+            row = db.execute("SELECT b.* FROM messages m JOIN bots b ON b.id=m.bot_id WHERE m.id=?",
                              (params["mid"],)).fetchone()
         else:
             return L["max_body_bytes"]
+        if row is None:
+            return L["max_body_bytes"]
         # Sealed text arrives base64url-encoded in an envelope: a bot with an E2E key gets that much more room.
-        sealed = sealed_text_bytes(L) * 4 // 3 + 1024 if row is not None and row["e2e_key"] else 0
-        if name in ("message_send", "worker_finish") and row is not None and \
-                "files" in json.loads(row["policy"])["offered"]:
+        sealed = sealed_text_bytes(L) * 4 // 3 + 1024 if row["e2e_key"] else 0
+        if name == "message_send":
+            files_ok = subject is not None and row["conv_actor"] == subject["id"] and \
+                "files" in current_caps(db, row, subject["id"])
+        else:
+            files_ok = name == "worker_finish" and "files" in json.loads(row["policy"])["offered"]
+        if files_ok:
             return max(L["max_body_bytes"], L["max_attachment_body_bytes"]) + sealed
         return L["max_body_bytes"] + sealed
 
@@ -2377,7 +2409,8 @@ class Api(object):
             if kind != "chat":
                 raise Fail(400, "attachments_not_supported", "attachments go with chat messages only")
             items, nbytes, err = C.attachments_error(body["attachments"], L["attachment_max_files"],
-                                                     L["attachment_max_bytes"], L["attachment_total_bytes"])
+                                                     L["attachment_max_bytes"], L["attachment_total_bytes"],
+                                                     L["attachment_media_max_bytes"])
             if err:
                 raise Fail(400, "invalid_attachments", err)
             content["attachments"] = items
@@ -3656,7 +3689,8 @@ class Api(object):
                 if outcome != "completed":
                     raise Fail(400, "invalid_reply", "attachments go with a completed reply only")
                 items, _, err = C.attachments_error(reply["attachments"], L["attachment_max_files"],
-                                                    L["attachment_max_bytes"], L["attachment_total_bytes"])
+                                                    L["attachment_max_bytes"], L["attachment_total_bytes"],
+                                                    L["attachment_media_max_bytes"])
                 if err:
                     raise Fail(400, "invalid_attachments", err)
                 out["attachments"] = items
@@ -4462,6 +4496,17 @@ def make_handler(api):
         def do_PUT(self):
             self.dispatch()
 
+        def allow_body(self, n):
+            """A body larger than the general limit (attachments) gets more than the fixed request budget: the timer
+            restarts at read_timeout_seconds plus the time `n` bytes take at attachment_body_bytes_per_second."""
+            if n <= limits["max_body_bytes"]:
+                return
+            self._timer.cancel()
+            self._timer = threading.Timer(limits["read_timeout_seconds"] +
+                                          n / limits["attachment_body_bytes_per_second"], self._expire)
+            self._timer.daemon = True
+            self._timer.start()
+
         def read_raw(self, limit):
             """The request body as bytes: Content-Length required and within `limit`, never chunked."""
             if self.headers.get("Transfer-Encoding"):
@@ -4477,6 +4522,7 @@ def make_handler(api):
                 raise Fail(400, "bad_length")
             if n > limit:
                 raise Fail(413, "too_large", "request bodies are limited to %d bytes" % limit)
+            self.allow_body(n)
             raw = self.rfile.read(n)
             if len(raw) != n:
                 raise Fail(400, "incomplete_body")
@@ -4503,6 +4549,7 @@ def make_handler(api):
                 return {}
             if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
                 raise Fail(415, "unsupported_media_type", "use application/json")
+            self.allow_body(n)
             raw = self.rfile.read(n)
             if len(raw) != n:
                 raise Fail(400, "incomplete_body")
@@ -4550,7 +4597,7 @@ def make_handler(api):
                         req.subject = api.authenticate(db, kinds, req.token, req.now)
                         if req.subject is None:
                             raise Fail(401, "unauthorized")
-                        limit = api.body_limit(db, name, req.params)
+                        limit = api.body_limit(db, name, req.params, req.subject)
                 elif req.token is not None and C.token_kind(req.token) is None:
                     raise Fail(401, "unauthorized")
                 else:
@@ -4803,22 +4850,36 @@ def migrate_policy(old):
             "accept_followers": True, "contact_requests": bool(old.get("contact_requests", True))}
 
 
+FRIEND_PRESET_BEFORE_FILES = ["faq", "leave_message", "chat"]
+
+
+def friend_files_policy(pol):
+    """Schema 6: friends exchange files by default. A bot whose friend preset is still the old default gets `files`
+    in that preset and in its offered ceiling; a preset the owner changed keeps its exact meaning. -> changed?"""
+    if sorted(pol["friend"]) != sorted(FRIEND_PRESET_BEFORE_FILES):
+        return False
+    pol["friend"] = order_caps(set(pol["friend"]) | {"files"})
+    pol["offered"] = order_caps(set(pol["offered"]) | {"files"})
+    return True
+
+
 def migrate_db(path):
-    """Schema 1, 2, 3 or 4 -> 5 in one IMMEDIATE transaction: on any error everything rolls back and the old schema stays.
+    """Schema 1, 2, 3, 4 or 5 -> 6 in one IMMEDIATE transaction: on any error everything rolls back and the old schema stays.
     From 1: explicit friend grants keep their exact meaning (they also become that contact's ceiling); no follow
     edge, source credential or source bot is invented. From 2: only additive columns and the decisions table; no
     decision, admission time, budget or attachment is invented for existing rows, and every grant, follow,
     generation, queue and piece of evidence keeps its meaning. From 3: the owners' email column, the email challenges
     and the mail outbox; existing owners keep working without an email. From 4: the public E2E key columns; existing
-    bots and visitors have no key (their messages stay plaintext until a key is set) and no stored message changes."""
+    bots and visitors have no key (their messages stay plaintext until a key is set) and no stored message changes.
+    From 5: friends get `files` where the friend preset is still the old default (friend_files_policy)."""
     db = open_db(path)
     try:
         db.execute("BEGIN IMMEDIATE")
         try:
             row = db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
             start = row["value"] if row else None
-            if start not in ("1", "2", "3", "4"):
-                raise ValueError("expected schema 1, 2, 3 or 4, found %s" % (start or "none"))
+            if start not in ("1", "2", "3", "4", "5"):
+                raise ValueError("expected schema 1, 2, 3, 4 or 5, found %s" % (start or "none"))
             summary = {"from_schema": start}
             if start == "1":
                 for statement in MIGRATION_1_2:
@@ -4838,8 +4899,16 @@ def migrate_db(path):
             if start in ("1", "2", "3"):
                 for statement in MIGRATION_3_4:
                     db.execute(statement)
-            for statement in MIGRATION_4_5:
-                db.execute(statement)
+            if start != "5":
+                for statement in MIGRATION_4_5:
+                    db.execute(statement)
+            changed = 0
+            for bot in db.execute("SELECT id, policy FROM bots").fetchall():
+                pol = json.loads(bot["policy"])
+                if friend_files_policy(pol):
+                    db.execute("UPDATE bots SET policy=? WHERE id=?", (canonical(pol), bot["id"]))
+                    changed += 1
+            summary["friend_files_bots"] = changed
             summary["bots"] = db.execute("SELECT COUNT(*) FROM bots").fetchone()[0]
             db.execute("UPDATE meta SET value=? WHERE key='schema_version'", (SCHEMA_VERSION,))
             db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('migrated_at', ?)", (C.iso(C.now_ts()),))
@@ -4865,7 +4934,7 @@ def cmd_migrate(home, a):
     if version == SCHEMA_VERSION:
         print(json.dumps({"ok": True, "schema": version, "migrated": False, "note": "already current"}, indent=2))
         return 0
-    if version not in ("1", "2", "3", "4"):
+    if version not in ("1", "2", "3", "4", "5"):
         die("unsupported gateway database schema %r" % version)
     try:
         lock = C.FileLock(home / ".migrate.lock", blocking=False)

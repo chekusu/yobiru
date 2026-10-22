@@ -817,7 +817,7 @@ class MigrationTests(unittest.TestCase):
         migrated = self.run_new(old.home, "migrate")
         self.assertEqual(0, migrated.returncode, migrated.stderr)
         summary = json.loads(migrated.stdout)
-        self.assertEqual((True, "5", "1", 2), (summary["migrated"], summary["schema"], summary["from_schema"],
+        self.assertEqual((True, "6", "1", 2), (summary["migrated"], summary["schema"], summary["from_schema"],
                                                 summary["bots"]))
         self.assertFalse(json.loads(self.run_new(old.home, "migrate").stdout)["migrated"], "idempotent")
         new = old                                     # the same home and port, now served by the new gateway

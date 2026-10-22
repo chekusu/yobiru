@@ -294,7 +294,7 @@ class SchemaThreeMigrationTests(unittest.TestCase):
             self.assertIn("schema 3", refused.stderr)
             migrated = run("migrate")
             self.assertEqual(0, migrated.returncode, migrated.stderr)
-            self.assertEqual(("5", "3"), tuple(json.loads(migrated.stdout)[k] for k in ("schema", "from_schema")))
+            self.assertEqual(("6", "3"), tuple(json.loads(migrated.stdout)[k] for k in ("schema", "from_schema")))
             gw.start()
             try:
                 bot_id = gw.bot("after-migration")

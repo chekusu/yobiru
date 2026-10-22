@@ -23,7 +23,7 @@ LIMITS = {"min_deadline_seconds": 1, "read_timeout_seconds": 5, "messages_per_mi
           "messages_per_hour_per_actor": 5000, "pending_per_contact": 100, "new_conversations_per_hour_per_bot": 1000,
           "new_contacts_per_hour_per_bot": 1000, "enroll_per_hour_per_ip": 1000, "enroll_per_hour": 1000,
           "bot_enroll_per_hour": 1000, "bot_enroll_per_hour_per_ip": 1000, "agent_messages_per_hour_per_bot": 1000,
-          "conversations_per_contact": 50}
+          "conversations_per_contact": 50, "max_attachment_body_bytes": 98304}
 ALLOWED_ORIGIN = "https://agent-app.example"
 INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}}

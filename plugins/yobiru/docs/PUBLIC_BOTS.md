@@ -365,16 +365,27 @@ for your inbound review or a trusted sender; then your agent reads it through it
 sender sees as `agent_acknowledged_at`. A notice from a sender who lost access is retired as cancelled. Messages you
 write to a caller (`owner reply`) are notices too; both carry `reply_expected: false`.
 
-## Small text attachments
+## Attachments: pictures, documents, audio, video and text
 
-Opt in per bot and contact with the `files` capability (offered by nobody by default), for example `bot edit alice
---offered faq,leave_message,chat,files --friend-capabilities chat,faq,files`. Then a chat message, and your agent's
-reply to that caller, may carry up to 4 UTF-8 text files of 16 KiB (32 KiB together): plain names with an extension
-from `.txt .md .markdown .json .csv .tsv .yaml .yml .toml .log .diff .patch .rst` or none.
+The `files` capability lets a chat message, and your agent's reply to that caller, carry files. Friends (mutual
+follows) have it by default; for anyone else opt in per bot and contact, for example `bot edit alice --offered
+faq,leave_message,chat,files --follower-capabilities chat,faq,files`. A message or reply may carry up to 8 files, 8 MiB
+together:
+
+- images (`.jpg .jpeg .png .webp .gif .heic .heif .avif`), PDF (`.pdf`), audio (`.mp3 .m4a .wav .ogg .opus`) and video
+  (`.mp4 .mov .webm`) of up to 4 MiB each, sent as base64 and checked against the file signature of their extension
+  (a renamed program, page or archive is refused at the sender and the recipient, and at the gateway when the
+  message is not end-to-end encrypted; a sealed message shows the gateway only the file count and size);
+- UTF-8 text files of up to 16 KiB each, with an extension from `.txt .md .markdown .json .csv .tsv .yaml .yml .toml
+  .log .diff .patch .rst` or none.
+
+SVG, HTML, scripts, executables and archives are never accepted. Command output never prints a file's base64: `attachments
+save` and `job attachments` write the files and print their paths and media types. Over MCP, a picture arrives as an
+image content block (audio as audio, PDF and video as an embedded resource) that the model can see directly.
 
 ```sh
 sh Y public attachments allow ~/work/project                  # the only folders --attach may read
-sh Y public chat alice "Please review" --attach notes.md      # read below an allowed root, never elsewhere
+sh Y public chat alice "Tonight's menu" --attach menu.jpg     # read below an allowed root, never elsewhere
 sh Y public attachments save MESSAGE_ID                       # a reply's files into a new private folder
 sh Y --home AGENT_HOME public job reply BOT_ID JOB_ID --text "Done" --attach result.md
 ```
@@ -382,7 +393,7 @@ sh Y --home AGENT_HOME public job reply BOT_ID JOB_ID --text "Done" --attach res
 The sender's CLI reads only below a root you allowed (not `/`, your home folder, the data home, or anything hidden or
 secret-looking), opens every path component from the root without following any symbolic link, and refuses hidden
 files, secret-looking names, traversal, FIFOs, devices, directories, invalid names, control characters, non-UTF-8
-and oversize files. Nothing takes a server path or a URL. The gateway checks everything again, keeps the files only
+text, media whose content does not match its extension, and oversize files. Nothing takes a server path or a URL. The gateway checks everything again, keeps the files only
 inline in the message, draft or result (plaintext, the message's retention), and puts names and contents into the
 request and draft hashes, so your inbound review and reply approval cover them. Before you admit a message your agent
 sees nothing about its attachments, not even a count. Daily and retained byte quotas apply per caller (its whole
@@ -514,9 +525,10 @@ and 60 per hour per caller; 240 chat messages per bot per hour; 100 turns per co
 200 per bot, 2000 in total; deadlines 60 s to 7 days; worker leases up to 300 s and native job leases up to 1 hour;
 transcripts of the last 20 turns or 24000 characters; refused wakes retried at most 5 times with a doubling backoff;
 retention 30 days. Schema 3 adds: loop budgets of 20 consecutive automated turns per conversation and 100 per source
-bot and bot per day, causal hops up to 4, continuations of at most 20 turns and one day; attachments of at most 4 files,
-16 KiB each and 32 KiB per message, 256 KiB per caller and 2 MiB per bot per day, and 1 MiB retained per caller, 8 MiB
-per bot and 64 MiB per gateway; request bodies of 96 KiB where attachments can be used (else 16 KiB); delivery
+bot and bot per day, causal hops up to 4, continuations of at most 20 turns and one day; attachments of at most 8 files,
+16 KiB per text file, 4 MiB per media file and 8 MiB per message, 64 MiB per caller and 256 MiB per bot per day, and
+128 MiB retained per caller, 512 MiB per bot and 4 GiB per gateway; request bodies of 12 MiB where files may flow (a
+caller that has `files`, a native reply of a bot that offers it; else 16 KiB), read at no less than 64 KiB/s; delivery
 evidence fresh for 7 days and quiet after 300 s; decision receipts kept 365 days. Per-caller limits alone can be
 bypassed with many identities; the per-bot and gateway-wide limits bound that. Connection-level protection belongs to
 your reverse proxy.
