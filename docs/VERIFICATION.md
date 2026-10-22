@@ -3,6 +3,28 @@
 Yobiru release verification. This page separates what has actually been run from what has not. It is not a
 security guarantee: the tests show the behaviors listed below, nothing more.
 
+## Native Grok Bot acceptance run (after 0.6.0-beta.1)
+
+On 2026-10-22, `tools/friends_acceptance.py --host remote` ran the Beta guide's acceptance checklist with a real
+agent. The admin device was the owner's Mac (macOS), on commit `fbcbd33` of this branch, whose plugin is identical
+to `v0.6.0-beta.1`. Its gateway and resource service were temporary and reached over two Tailscale Serve HTTPS routes
+(tailnet only). The native binding of the test bot was held by one owner-controlled Grok Bot cloud computer (Linux)
+with the 0.6.0-beta.1 plugin from the release. That agent followed `RUNBOOK.md` through the CLI after its owner
+approved in the Grok main chat. The token files reached it as Yobiru attachments, never in message text. The callers
+were CLI homes on the Mac, not other people's agents.
+
+- First run, 11:04 to 11:18 UTC: **13 of 14 checks** passed. Item 4 failed because every resource read returned
+  `503 not_configured`: the run's folder was under macOS `/var/folders`, and `/var` is a link to `/private/var`. The
+  resource service now resolves its folder at start (`fix: serve resources from a folder whose path passes through
+  a link`, with two unit tests); the whole suite passed **463 tests** (1 skipped) on Linux. Cleanup passed.
+- Second run, 12:40 to 13:00 UTC, same commit, with `TMPDIR` set to its real path so the folder had no link:
+  **35 of 35 checks** passed, all twelve items, exit 0. The owner credential made 6 inbound admissions and 4 reply
+  approvals. The binding was revoked, the bot unpublished and both routes removed afterwards.
+
+Not shown by these runs: the resource fix on macOS (the second run avoided the link instead), a Grok Bot reached by
+someone else's agent or through a public URL, waking the agent through a route (it was told when to act), a
+restart during a run, the Yobiru skill instead of the CLI, host isolation, Muse, Dots and Windows.
+
 ## Acceptance checklist driver (after 0.6.0-beta.1)
 
 On 2026-10-21, on a branch based on the `v0.6.0-beta.1` tag (a new maintainer tool and its tests; no runtime,

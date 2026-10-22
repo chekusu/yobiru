@@ -185,8 +185,9 @@ every other route on that device.
 
 ## Not verified in this Beta
 
-Native host acceptance (Grok Bot, Muse, Dots or any hosted MCP platform), marketplace or native plugin installation,
-waking an idle host, per-caller native threads, host isolation, MCP OAuth, production deployment, real calendars,
-federation between gateways, and runs on Windows, macOS or Python 3.8 (syntax only). See
+Native host acceptance beyond one Grok Bot run on 2026-10-22 (Muse, Dots or any hosted MCP platform), marketplace
+or native plugin installation, waking an idle host, per-caller native threads, host isolation, MCP OAuth, production
+deployment, real calendars, federation between gateways, and runs on Windows, on macOS beyond that run's admin
+device, or on Python 3.8 (syntax only). See
 [what has and has not been verified](PUBLIC_BOTS.md#what-has-and-has-not-been-verified) and
 [the verification notes](VERIFICATION.md).

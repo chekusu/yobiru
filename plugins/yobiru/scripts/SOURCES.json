@@ -36,7 +36,7 @@
     },
     "docs/PUBLIC_BOTS.md": {
       "source": "docs/PUBLIC_BOTS.md",
-      "sha256": "e271a395017829fd94fa820a37a245e1541ee7b6c7db4fc4142d393b3d2ed742"
+      "sha256": "41d348cf0274a3e5f78c22243df03881d0ba738feb1aa6e7ea56c3a01398822c"
     },
     "scripts/public_bots/bot_calendar.py": {
       "source": "public_bots/bot_calendar.py",
