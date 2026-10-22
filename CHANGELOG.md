@@ -3,6 +3,21 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## 0.7.6 (2026-10-23)
+
+No schema change. Partners are optional: a gateway without `partners` in `gateway.json` behaves as before. To let a
+partner vouch for its users' email addresses, add `"partners": {"<name>": {"secret_file": "<name>.secret"}}` to
+`gateway.json` (the secret file, 0600 in the gateway home, holds at least 32 characters shared with the partner) and
+restart, only after the gateway runs 0.7.6, since older gateways refuse the unknown key; `/.well-known/yobiru` then
+lists the partner under `enrollment.email_attestation_partners`.
+
+- **Partner attestations**: a gateway can trust partner services (`gateway.json` `partners`, a shared secret file)
+  to vouch for an owner's email address, so their users enroll without a second code: `enroll-bot --prepare`, then
+  `enroll-bot --attestation-file F`. The attestation is bound to this gateway, the new owner credential and a
+  15-minute expiry; one address still names one owner.
+- **Follow permits**: `POST /v1/follow-permits` (`follow-permit bot_...`) lets one named bot follow yours although you
+  do not accept followers; `follow --permit P` uses it. Blocks still win.
+
 ## 0.7.5 (2026-10-23)
 
 No schema version change: a gateway on 0.7.4 needs the new code and a restart, which adds two empty tables

@@ -58,7 +58,7 @@ DEFAULT_HOME = "~/.yobiru-gateway"
 DEFAULT_PORT = 7780
 SCHEMA_VERSION = "7"
 CONFIG_KEYS = {"v", "bind", "port", "public_base_url", "allow_non_loopback_bind", "trust_forwarded_for", "limits",
-               "enrollment", "mcp"}
+               "enrollment", "mcp", "partners"}
 # The MCP endpoint: the same API for MCP clients, under the same credentials. Browsers never need it, so a request
 # that carries an Origin header is refused unless the operator lists that origin.
 MCP_DEFAULTS = {"enabled": True, "allowed_origins": []}
@@ -67,6 +67,16 @@ MCP_DEFAULTS = {"enabled": True, "allowed_origins": []}
 # email_verification: a new self-enrolled owner proves control of an email address first, and one address names at
 # most one owner. The gateway itself sends nothing: codes wait in an outbox that `mail-relay` delivers.
 ENROLLMENT_DEFAULTS = {"visitors": True, "bots": True, "self_enrolled_publish": False, "email_verification": False}
+# Partners: services the operator trusts to vouch that one of their users controls an email address, so that user
+# enrolls here without a second code. gateway.json `partners` maps a name to {"secret_file": PATH} (relative to the
+# gateway home, mode 0600, at least 32 characters); the partner keeps the same secret. An attestation names this
+# gateway, the address, the hash of the new owner credential and an expiry at most PARTNER_ATTESTATION_SECONDS ahead.
+PARTNER_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,31}\Z")
+PARTNER_ATTESTATION_SECONDS = 900
+# Follow permits: a bot lets one named bot follow it although it does not accept followers (for example two people
+# a partner service introduced to each other). Stateless: keyed by the gateway secret, bound to both bots, expiring.
+FOLLOW_PERMIT_DEFAULT_SECONDS = 7 * 86400
+FOLLOW_PERMIT_MAX_SECONDS = 30 * 86400
 LIMIT_DEFAULTS = {
     "max_body_bytes": 16384,                    # request bodies; larger is 413 before reading
     "max_text_chars": 4000,                     # caller message text and owner replies
@@ -518,9 +528,21 @@ def load_config(home):
             raise ValueError("gateway.json: mcp.allowed_origins entries are scheme://host[:port], without a path")
         clean.append(normal)
     mcp.update(raw, allowed_origins=clean)
+    partners = {}
+    raw = cfg.get("partners") or {}
+    if not isinstance(raw, dict) or len(raw) > 20:
+        raise ValueError("gateway.json: partners maps a name to {\"secret_file\": PATH}")
+    for name, entry in raw.items():
+        if not PARTNER_NAME_RE.match(name) or not isinstance(entry, dict) or set(entry) != {"secret_file"} or \
+                not isinstance(entry["secret_file"], str):
+            raise ValueError("gateway.json: partners.%s takes {\"secret_file\": PATH} (name: a-z 0-9 -)" % name)
+        secret = C.read_private_text(Path(home) / entry["secret_file"], 4096, "partner secret").strip()
+        if len(secret) < 32:
+            raise ValueError("gateway.json: partners.%s: the secret needs at least 32 characters" % name)
+        partners[name] = secret
     return {"bind": bind, "port": port, "public_base_url": public, "limits": limits, "enrollment": enrollment,
             "allow_non_loopback_bind": cfg.get("allow_non_loopback_bind", False),
-            "trust_forwarded_for": cfg.get("trust_forwarded_for", False), "mcp": mcp}
+            "trust_forwarded_for": cfg.get("trust_forwarded_for", False), "mcp": mcp, "partners": partners}
 
 
 BODY_COLUMNS = ("content", "result", "draft")
@@ -1148,6 +1170,12 @@ def email_field(value):
     return address, "%s@%s" % (local, domain)
 
 
+def email_unused(db, email_hash):
+    if db.execute("SELECT 1 FROM owners WHERE email_hash=?", (email_hash,)).fetchone():
+        raise Fail(409, "email_in_use", "this email address already owns a bot on this gateway; one address "
+                                        "registers one owner")
+
+
 def gateway_secret(db):
     """A random per-gateway key (in the database, never shown) for keyed hashes of email addresses and codes."""
     row = db.execute("SELECT value FROM meta WHERE key='email_secret'").fetchone()
@@ -1160,6 +1188,24 @@ def gateway_secret(db):
 
 def keyed(db, *parts):
     return hmac.new(gateway_secret(db).encode(), "\x00".join(parts).encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def partner_signature(secret, audience, partner, email, owner_credential_sha256, exp):
+    """HMAC-SHA256 (hex) of the canonical JSON a partner signs to vouch for an address: sorted keys, no spaces,
+    ASCII escapes, `v` 1, `aud` this gateway's public base URL, `email` exactly as sent."""
+    message = canonical({"v": 1, "aud": audience, "partner": partner, "email": email,
+                         "owner_credential_sha256": owner_credential_sha256, "exp": exp})
+    return hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def follow_permit_ok(db, permit, target_id, src_id, now):
+    """A permit from `follow_permit` for exactly this pair that has not expired."""
+    if not isinstance(permit, str) or len(permit) > 128:
+        return False
+    parts = permit.split(".")
+    if len(parts) != 3 or parts[0] != "fp1" or not parts[1].isdigit() or int(parts[1]) <= now:
+        return False
+    return hmac.compare_digest(keyed(db, "follow_permit", target_id, src_id, parts[1]), parts[2])
 
 
 def mask_email(address):
@@ -2110,7 +2156,8 @@ class Api(object):
                      "enrollment": {"visitors": self.enrollment["visitors"], "bots": self.enrollment["bots"],
                                     "email_verification": self.enrollment["email_verification"],
                                     "email_code": "POST /v1/enroll/email" if self.enrollment["email_verification"]
-                                    else None},
+                                    else None,
+                                    "email_attestation_partners": sorted(self.cfg["partners"])},
                      "federation": "none: identities are scoped to this gateway",
                      "e2e": {"alg": E.ALG, "sealed_bodies": True},
                      "notices": {"attachments": True},
@@ -2225,11 +2272,29 @@ class Api(object):
             left = L["email_code_attempts"] - row["attempts"] - 1
             return None, (400, {"ok": False, "error": "email_code_invalid", "attempts_left": left,
                                 "detail": "the code does not match" + ("" if left else "; ask for a new one")})
-        if db.execute("SELECT 1 FROM owners WHERE email_hash=?", (row["email_hash"],)).fetchone():
-            raise Fail(409, "email_in_use", "this email address already owns a bot on this gateway; one address "
-                                            "registers one owner")
+        email_unused(db, row["email_hash"])
         db.execute("UPDATE email_challenges SET used_ts=? WHERE id=?", (int(now), row["id"]))
         return row["email_hash"], None
+
+    def partner_email(self, db, raw, owner_hash, now):
+        """-> the keyed hash of an address a configured partner vouches for, for this owner credential only."""
+        if not isinstance(raw, dict) or set(raw) != {"partner", "email", "exp", "sig"} or \
+                not isinstance(raw["partner"], str) or not isinstance(raw["email"], str) or \
+                not C.int_in(raw["exp"], 0, 10 ** 12) or not isinstance(raw["sig"], str):
+            raise Fail(400, "invalid_attestation", "email_attestation: {partner, email, exp, sig}")
+        secret = self.cfg["partners"].get(raw["partner"])
+        if secret is None:
+            raise Fail(400, "unknown_partner", "this gateway does not accept attestations from that partner")
+        if not now < raw["exp"] <= now + PARTNER_ATTESTATION_SECONDS:
+            raise Fail(400, "attestation_expired", "ask the partner for a new attestation")
+        _, canon = email_field(raw["email"])
+        expected = partner_signature(secret, self.cfg["public_base_url"], raw["partner"], raw["email"], owner_hash,
+                                     raw["exp"])
+        if not hmac.compare_digest(expected, raw["sig"]):
+            raise Fail(400, "invalid_attestation", "the signature does not match this gateway, address and credential")
+        email_hash = keyed(db, "email", canon)
+        email_unused(db, email_hash)
+        return email_hash
 
     def enroll_bot(self, db, r):
         """A new owner with a new source bot, in one request. The bearer is a client-generated owner credential and
@@ -2239,7 +2304,7 @@ class Api(object):
         if C.token_kind(token) != "owner":
             raise Fail(401, "unauthorized", "send a new client-generated owner credential as the bearer token")
         fields(body, ("display_name", "handle", "description", "source_credential_sha256", "email_challenge",
-                      "e2e_key"), ("display_name", "source_credential_sha256"))
+                      "email_attestation", "e2e_key"), ("display_name", "source_credential_sha256"))
         e2e_key = e2e_key_field(body)
         source_hash = body["source_credential_sha256"]
         if not isinstance(source_hash, str) or not C.HASH_RE.match(source_hash):
@@ -2274,7 +2339,9 @@ class Api(object):
                 L["max_self_enrolled_owners"]:
             raise Fail(503, "capacity", "this gateway is not accepting new bots")
         email_hash = None
-        if self.enrollment["email_verification"]:
+        if body.get("email_attestation") is not None:
+            email_hash = self.partner_email(db, body["email_attestation"], owner_hash, now)
+        elif self.enrollment["email_verification"]:
             email_hash, answer = self.email_check(db, body.get("email_challenge"), now)
             if answer is not None:
                 return answer
@@ -2372,6 +2439,22 @@ class Api(object):
             raise Fail(404, "not_found")
         return bot
 
+    def follow_permit(self, db, r):
+        """The source's bot lets one other bot follow it even when it does not accept followers. The permit is
+        handed to that bot's owner out of band (for example by a partner service that introduced the two); it opens
+        nothing else, and blocking the other bot still refuses the follow."""
+        fields(r.body, ("for", "ttl_seconds"), ("for",))
+        me, now = r.subject["id"], r.now
+        other = self.find_bot(db, r.body["for"]) if isinstance(r.body["for"], str) else None
+        if other is None or other["id"] == me:
+            raise Fail(404, "not_found")
+        ttl = r.body.get("ttl_seconds", FOLLOW_PERMIT_DEFAULT_SECONDS)
+        if not C.int_in(ttl, 60, FOLLOW_PERMIT_MAX_SECONDS):
+            raise Fail(400, "invalid_ttl", "ttl_seconds: 60-%d" % FOLLOW_PERMIT_MAX_SECONDS)
+        exp = str(int(now) + ttl)
+        return 201, {"ok": True, "permit": "fp1.%s.%s" % (exp, keyed(db, "follow_permit", me, other["id"], exp)),
+                     "target_bot_id": me, "for_bot_id": other["id"], "expires_at": C.iso(int(exp))}
+
     def follow_view(self, db, target, src_id, duplicate, status="following"):
         edge = db.execute("SELECT * FROM follows WHERE src=? AND dst=?", (src_id, target["id"])).fetchone()
         return {"ok": True, "source_bot_id": src_id, "target_bot_id": target["id"], "handle": "@" + target["handle"],
@@ -2383,9 +2466,12 @@ class Api(object):
     def follow(self, db, r):
         """A directed edge source -> target under the source bot's credential. It changes only what the target's
         owner preconfigured for followers or friends; it never grants anything by itself."""
-        fields(r.body, ())
+        fields(r.body, ("permit",))
         src, now, L = r.subject["id"], r.now, self.limits
         target = self.follow_target(db, r.params["ref"], src)
+        permitted = r.body.get("permit") is not None and follow_permit_ok(db, r.body["permit"], target["id"], src, now)
+        if r.body.get("permit") is not None and not permitted:
+            raise Fail(403, "invalid_permit", "this permit is expired or was made for another pair of bots")
         if target["id"] == src:
             raise Fail(400, "self_follow", "a bot cannot follow itself")
         contact = contact_row(db, target["id"], src)
@@ -2393,7 +2479,7 @@ class Api(object):
             raise Fail(403, "contact_revoked")
         if follows_active(db, src, target["id"]):
             return 200, self.follow_view(db, target, src, duplicate=True)
-        if not policy_of(target)["accept_followers"] and not follows_active(db, target["id"], src):
+        if not policy_of(target)["accept_followers"] and not follows_active(db, target["id"], src) and not permitted:
             raise Fail(403, "followers_closed", "this bot does not accept followers")
         if db.execute("SELECT COUNT(*) FROM follows WHERE src=? AND state='active'", (src,)).fetchone()[0] >= \
                 L["max_following_per_bot"]:
@@ -4521,6 +4607,7 @@ ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
     ("POST", r"/v1/bots/(?P<ref>[^/]{1,64})/follow", "follow", ("source",)),
     ("POST", r"/v1/bots/(?P<ref>[^/]{1,64})/unfollow", "unfollow", ("source",)),
     ("GET", r"/v1/following", "following", ("source",)),
+    ("POST", r"/v1/follow-permits", "follow_permit", ("source",)),
     ("POST", r"/v1/bots/(?P<ref>[^/]{1,64})/conversations", "conversation_open", CALLER),
     ("GET", r"/v1/bots/(?P<ref>[^/]{1,64})/conversations", "conversation_list", CALLER),
     ("GET", r"/v1/conversations/(?P<cid>cnv_[a-z2-7]{16})", "conversation_get", CALLER),

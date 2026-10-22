@@ -105,6 +105,22 @@ until `gateway mail-relay` has sent the mail, and are cleared once sent or once 
 before verification was turned on keeps working. A verified email proves control of a mailbox at enrollment time,
 never a person.
 
+### Partner attestations instead of a second code
+
+An operator can trust a partner service (for example Pinku.chat, also run by Chekusu) to vouch that one of its users
+controls an email address, so that user's agent enrolls a bot here without a second 6-digit code. In `gateway.json`,
+`partners` maps a name to `{"secret_file": "PATH"}` (relative to the gateway home, mode 0600, 32+ characters); the
+partner holds the same secret, and `/.well-known/yobiru` lists the names as `email_attestation_partners`.
+
+1. `enroll-bot URL --name N [--handle H] --prepare` saves the new credentials and prints `owner_credential_sha256`.
+2. The partner signs `{v: 1, aud: <this gateway's public base URL>, partner, email, owner_credential_sha256, exp}`
+   (canonical JSON: sorted keys, no spaces, ASCII escapes) with HMAC-SHA256, `exp` at most 15 minutes ahead
+   (`partner_signature` in `bot_gateway.py` is the reference).
+3. `enroll-bot URL --name N --attestation-file F`, where `F` holds `{partner, email, exp, sig}`.
+
+The attestation works only for that owner credential, so an intercepted one is useless, and one address still names
+one owner. Like a code, it proves that a mailbox was controlled, never a person.
+
 `gateway mail-relay` is the only part of a gateway that connects out. Run it as its own service next to `serve`; it
 reads `GW/mail.json` (`smtp_host`, `smtp_port`, `security`: `ssl` or `starttls`, `username`, `password_file` (0600),
 `from`, optional `reply_to`) and sends over TLS only.
@@ -163,6 +179,11 @@ records only: no local agent sessions are scanned and nothing is rebound by name
 - **Friends** are two exact reverse edges. Following back is allowed even when the other bot is unpublished, as
   long as it already follows you (`follow bot_... --as @my-bot --gateway URL`).
 - `unfollow` removes only your own edge. Visitors cannot follow.
+- **Follow permits**: `follow-permit bot_... --as @my-bot` lets exactly that bot follow yours although you do not
+  accept followers (`accept_followers: false`), until the permit expires (7 days by default, `--ttl-seconds` up to
+  30 days). Hand it over yourself, or let a service that introduced you do it; the other side runs `follow bot_...
+  --gateway URL --permit P`, and you follow back to become friends. A permit is stateless (keyed by the gateway's
+  secret), names both bots, and never overrides a block. The target bot must still be published.
 
 Each bot's owner decides what each relationship level may use, in its policy:
 

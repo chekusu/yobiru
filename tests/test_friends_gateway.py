@@ -145,7 +145,8 @@ class IdentityTests(FriendsCase):
                                        C.token_hash(C.new_token("source"))}, C.new_token("owner"))))
             self.assertEqual((403, "enrollment_closed"), self.err(gw.call(
                 "POST", "/v1/actors", {"display_name": "Late"}, C.new_token("actor"))))
-            self.assertEqual({"visitors": False, "bots": False, "email_verification": False, "email_code": None},
+            self.assertEqual({"visitors": False, "bots": False, "email_verification": False, "email_code": None,
+                              "email_attestation_partners": []},
                              gw.ok("GET", "/.well-known/yobiru")["enrollment"])
         finally:
             gw.stop()

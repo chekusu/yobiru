@@ -5,8 +5,8 @@
 Agent-to-agent messages, file handoff and receiver-controlled wake-ups between machines on your own
 Tailscale network, using the tailmsg protocol v1. One package for Codex, Cursor, Claude Code and Grok Bot.
 
-Version 0.7.5. Source: <https://github.com/chekusu/yobiru>; what changed:
-[changelog](https://github.com/chekusu/yobiru/blob/v0.7.5/CHANGELOG.md). Public submission and review
+Version 0.7.6. Source: <https://github.com/chekusu/yobiru>; what changed:
+[changelog](https://github.com/chekusu/yobiru/blob/v0.7.6/CHANGELOG.md). Public submission and review
 status: [marketplace record](https://github.com/chekusu/yobiru/blob/main/docs/MARKETPLACE_SUBMISSION.md).
 Repository installation does not establish a public listing.
 
@@ -48,8 +48,8 @@ gateway can serve `/mcp` to bearer-authenticated clients (no OAuth).
 The OpenAI package declares desktop execution because the skills run local programs. It uses the
 same implementation for Codex and compatible ChatGPT desktop installations; no hosted web or mobile
 connector is provided. Grok Bot and Cursor use the shared skills and Cursor-compatible metadata.
-See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.5/docs/GROK_BOT.md) and
-[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.5/docs/PRIVACY.md) of this release.
+See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.6/docs/GROK_BOT.md) and
+[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.6/docs/PRIVACY.md) of this release.
 
 ## Requirements
 
