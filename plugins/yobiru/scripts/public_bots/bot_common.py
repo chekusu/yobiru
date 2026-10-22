@@ -734,6 +734,34 @@ def post_raw(base_url, path, data, headers, timeout=60.0):
     return resp.status, (resp.getheader("Content-Type") or "").split(";")[0].strip().lower(), raw
 
 
+def get_raw(base_url, path, max_bytes, timeout=15.0):
+    """GET `base_url + path` without a credential and return (status, content type, body bytes) for a small public
+    file such as a bot's avatar. Same rules as api_call: redirects refused, TLS verified, a total deadline; a body
+    larger than `max_bytes` is refused instead of returned."""
+    base = normalize_base_url(base_url)
+    u = urllib.parse.urlsplit(base)
+    if u.scheme == "https":
+        conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout,
+                                           context=ssl.create_default_context())
+    else:
+        conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
+    with _Deadline(conn, timeout) as d:
+        try:
+            d.connect()
+            conn.request("GET", u.path + path, headers={"User-Agent": "yobiru-public/%d" % API_VERSION,
+                                                        "Accept": "image/png, image/jpeg, image/webp"})
+            resp = conn.getresponse()
+            raw = resp.read(max_bytes + 1)
+            d.check()
+        except (OSError, http.client.HTTPException) as e:
+            raise ApiError(None, "unreachable", "%s%s" % (type(e).__name__, " (deadline)" if d.expired else ""))
+    if 300 <= resp.status < 400:
+        raise ApiError(resp.status, "redirect_refused")
+    if len(raw) > max_bytes:
+        raise ApiError(resp.status, "response_too_large")
+    return resp.status, (resp.getheader("Content-Type") or "").split(";")[0].strip().lower(), raw
+
+
 def api_ok(base_url, method, path, body=None, token=None, timeout=15.0, accept=(200, 201, 202)):
     status, obj = api_call(base_url, method, path, body, token, timeout)
     if status not in accept or obj.get("ok") is not True:
