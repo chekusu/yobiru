@@ -4718,22 +4718,75 @@ def cmd_serve(home, a):
 
 
 MAIL_KEYS = {"smtp_host", "smtp_port", "security", "username", "password_file", "from", "reply_to"}
+# Verification email: plain text plus an HTML part in the yobiru.com style (calm neutrals, one orange signal dot,
+# the code in a monospace tile). Inline styles and tables only, so mail clients render it as designed.
 MAIL_TEXT = {
-    "en": ("Your Yobiru verification code: {code}",
-           "Your verification code for the Yobiru Friends gateway {issuer} is:\n\n    {code}\n\n"
-           "Give it to your agent (for example your Grok Bot) to finish registering your bot. It expires in "
-           "{minutes} minutes and works once.\n\nOne email address registers one owner on this gateway. If you did "
-           "not ask for this, ignore this email: nothing is registered without the code.\n"),
-    "zh": ("你的 Yobiru 验证码：{code}",
-           "你在 Yobiru Friends 网关 {issuer} 的验证码是：\n\n    {code}\n\n"
-           "把它告诉你的 Agent（比如你的 Grok Bot），它会用来完成注册。验证码 {minutes} 分钟内有效，只能用一次。\n\n"
-           "一个邮箱在这个网关上只能注册一个主人。如果不是你本人申请的，请忽略这封邮件：没有验证码，什么都不会被注册。\n"),
-    "ja": ("Yobiru 確認コード：{code}",
-           "Yobiru Friends ゲートウェイ {issuer} の確認コードは次のとおりです：\n\n    {code}\n\n"
-           "あなたのエージェント（たとえば Grok Bot）に伝えると、登録が完了します。有効期限は {minutes} 分で、"
-           "一度だけ使えます。\n\nこのゲートウェイでは、1 つのメールアドレスで登録できるオーナーは 1 人です。"
-           "心当たりがない場合はこのメールを無視してください。コードがなければ何も登録されません。\n"),
+    "en": {"subject": "Your Yobiru verification code: {code}",
+           "title": "Your verification code",
+           "lead": "Give this code to your agent (for example your Grok Bot) to finish registering your bot on the "
+                   "Yobiru Friends gateway {issuer}.",
+           "expiry": "It expires in {minutes} minutes and works once.",
+           "rule": "One email address registers one owner on this gateway.",
+           "ignore": "Didn't ask for this? Ignore this email. Nothing is registered without the code.",
+           "footer": "Yobiru Friends: let your agent talk with your friends' agents."},
+    "zh": {"subject": "你的 Yobiru 验证码：{code}",
+           "title": "你的验证码",
+           "lead": "把这个验证码告诉你的 Agent（比如你的 Grok Bot），它会用来完成在 Yobiru Friends 网关 {issuer} 上的注册。",
+           "expiry": "{minutes} 分钟内有效，只能使用一次。",
+           "rule": "一个邮箱在这个网关上只能注册一个主人。",
+           "ignore": "不是你本人申请的？忽略这封邮件即可。没有验证码，什么都不会被注册。",
+           "footer": "Yobiru Friends：让你的 Agent 和朋友的 Agent 直接聊。"},
+    "ja": {"subject": "Yobiru 確認コード：{code}",
+           "title": "確認コード",
+           "lead": "このコードをあなたのエージェント（たとえば Grok Bot）に伝えると、Yobiru Friends ゲートウェイ {issuer} "
+                   "での登録が完了します。",
+           "expiry": "有効期限は {minutes} 分で、一度だけ使えます。",
+           "rule": "このゲートウェイでは、1 つのメールアドレスで登録できるオーナーは 1 人です。",
+           "ignore": "心当たりがない場合は、このメールを無視してください。コードがなければ何も登録されません。",
+           "footer": "Yobiru Friends：あなたのエージェントが、友だちのエージェントと話せるように。"},
 }
+MAIL_FONTS = {
+    "en": "'Instrument Sans','Helvetica Neue',Helvetica,Arial,sans-serif",
+    "zh": "'Instrument Sans','Helvetica Neue','PingFang SC','Hiragino Sans GB','Noto Sans SC','Microsoft YaHei',"
+          "sans-serif",
+    "ja": "'Instrument Sans','Helvetica Neue','Hiragino Sans','Hiragino Kaku Gothic ProN','Noto Sans JP',Meiryo,"
+          "sans-serif",
+}
+MAIL_HTML = """<!doctype html>
+<html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light"><title>{title}</title></head>
+<body style="margin:0;padding:0;background:#fbfbfa;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;">{code} · {expiry}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fbfbfa;">
+<tr><td align="center" style="padding:40px 16px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;">
+<tr><td style="padding:0 8px 24px 8px;font-family:{font};font-size:22px;font-weight:700;letter-spacing:-0.04em;color:#121214;line-height:1;">yobiru<span style="display:inline-block;width:5px;height:5px;margin-left:2px;border-radius:50%;background:#ff5b1f;"></span></td></tr>
+<tr><td style="background:#ffffff;border:1px solid rgba(18,18,20,0.10);border-radius:24px;padding:36px 32px;">
+<p style="margin:0 0 12px 0;font-family:{font};font-size:24px;font-weight:600;letter-spacing:-0.02em;color:#121214;line-height:1.25;">{title}</p>
+<p style="margin:0 0 28px 0;font-family:{font};font-size:15px;color:#48484f;line-height:1.6;">{lead}</p>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+<td align="center" style="background:#f2f2f0;border-radius:16px;padding:22px 12px;font-family:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:36px;font-weight:600;letter-spacing:0.32em;color:#121214;">{code}</td>
+</tr></table>
+<p style="margin:16px 0 0 0;font-family:{font};font-size:13px;color:#c2410c;line-height:1.5;">{expiry}</p>
+<p style="margin:28px 0 0 0;padding-top:20px;border-top:1px solid rgba(18,18,20,0.10);font-family:{font};font-size:13px;color:#6a6a72;line-height:1.6;">{rule}<br>{ignore}</p>
+</td></tr>
+<tr><td style="padding:20px 8px 0 8px;font-family:{font};font-size:12px;color:#6a6a72;line-height:1.6;">{footer}<br><a href="https://yobiru.com" style="color:#6a6a72;text-decoration:underline;">yobiru.com</a></td></tr>
+</table></td></tr></table></body></html>
+"""
+
+
+def mail_parts(lang, code, issuer, minutes):
+    """-> (subject, plain text, html) of one verification email."""
+    import html as _html
+    t = MAIL_TEXT.get(lang or "en", MAIL_TEXT["en"])
+    lang = lang if lang in MAIL_TEXT else "en"
+    host = urllib.parse.urlsplit(issuer).netloc or issuer
+    fill = {k: v.format(code=code, issuer=host, minutes=minutes) for k, v in t.items()}
+    text = "%s\n\n    %s\n\n%s\n%s\n\n%s\n%s\n\n%s\nhttps://yobiru.com\n" % (
+        fill["title"], code, fill["lead"], fill["expiry"], fill["rule"], fill["ignore"], fill["footer"])
+    page = MAIL_HTML.format(lang={"zh": "zh-CN"}.get(lang, lang), font=MAIL_FONTS[lang], code=_html.escape(code),
+                            **{k: _html.escape(v) for k, v in fill.items() if k != "subject"})
+    return fill["subject"], text, page
 
 
 def load_mail_config(path):
@@ -4765,16 +4818,17 @@ def load_mail_config(path):
 def mail_message(mail, issuer, row, minutes):
     import email.message
     import email.utils
-    subject, text = MAIL_TEXT.get(row["lang"] or "en", MAIL_TEXT["en"])
+    subject, text, page = mail_parts(row["lang"], row["code"], issuer, minutes)
     msg = email.message.EmailMessage()
     msg["From"], msg["To"] = mail["from"], row["address"]
-    msg["Subject"] = subject.format(code=row["code"])
+    msg["Subject"] = subject
     msg["Date"] = email.utils.formatdate(localtime=False)
     msg["Message-ID"] = email.utils.make_msgid(domain=email.utils.parseaddr(mail["from"])[1].rsplit("@", 1)[-1])
     msg["Auto-Submitted"] = "auto-generated"
     if mail["reply_to"]:
         msg["Reply-To"] = mail["reply_to"]
-    msg.set_content(text.format(code=row["code"], issuer=issuer, minutes=minutes))
+    msg.set_content(text)
+    msg.add_alternative(page, subtype="html")
     return msg
 
 

@@ -211,7 +211,8 @@ class EmailEnrollmentTests(unittest.TestCase):
         mine = [m for m in sent if m["To"] == "carol@example.com"]
         self.assertEqual(1, len(mine))
         self.assertIn(code, mine[0]["Subject"])
-        self.assertIn(code, mine[0].get_content())
+        self.assertIn(code, mine[0].get_body(("plain",)).get_content())
+        self.assertIn(code, mine[0].get_body(("html",)).get_content())
         self.assertIn("验证码", mine[0]["Subject"])
         row = self.gw.sql("SELECT * FROM mail_outbox WHERE challenge_id=?", (cid,))[0]
         self.assertEqual((None, None), (row["address"], row["code"]))
