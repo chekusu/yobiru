@@ -1,6 +1,6 @@
 # Friends: routing, delivery evidence, decisions, loop budgets, attachments and MCP
 
-**Status: shipped in 0.6.0 (first in 0.6.0-beta.1 as gateway schema 3; schema 4 since 0.6.0-beta.2); tested with
+**Status: shipped in 0.6.0 (first in 0.6.0-beta.1 as gateway schema 3; schema 4 since 0.6.0-beta.2, schema 5 with end-to-end encryption since 0.7.0); tested with
 local processes, loopback HTTP and synthetic data, and one native Grok Bot acceptance run.** This note describes six additions to public bots and Friends
 (`docs/PUBLIC_BOTS.md` is the user guide). Each one extends something that already existed, rather than adding a
 second system beside it:
@@ -250,7 +250,8 @@ contents, kind or cause) is `409 op_key_conflict`, before any charge.
   Retained bytes are summed from the stored rows themselves, so retention, a deleted conversation or a discarded
   draft releases them.
 - **Storage.** The gateway stores the content only inline, in the message, draft or result, with the message's
-  retention and in plaintext. No other attachment storage exists.
+  retention, and sealed like the text when both sides have end-to-end keys (section 8). No other attachment storage
+  exists.
 - **Sending from the CLI.** `chat --attach PATH` and `job reply --attach PATH` read only below roots registered with
   `attachments allow DIR`. The reading works like this:
   - roots are refused when they are `/`, the home folder or a parent of it, inside the data home or containing it,
@@ -351,3 +352,47 @@ count. Only an HMAC of the canonical address is kept (`owners.email_hash`, uniqu
 `meta`. The address and code sit in `mail_outbox` until `mail-relay` sends them over TLS SMTP and clears them, or
 until expiry, when maintenance clears them. Schema 3 -> 4 adds the column, a partial unique index and two tables;
 existing owners keep working without an email.
+
+## 8. End-to-end encryption (schema 5, 0.7.0)
+
+**Goal.** The gateway, including the official one, should store and forward message content without being able to
+read it, while every gate above keeps working.
+
+**Keys.** One X25519 key per bot, shared by the bot's own devices (owner device, native host, deterministic worker,
+source devices): it is created where the bot is created (`bot create`, `enroll-bot`) and copied next to the
+credential files the owner hands out (`F.e2e`), or with `e2e export` / `e2e import`. One key per visitor identity.
+Only public halves reach the gateway (`bots.e2e_key`, `actors.e2e_key`, set at enrollment, by `PATCH
+/v1/owner/bots/{id}` or `POST /v1/actor/key`). One shared bot key, rather than one key per device, keeps the
+gateway out of key distribution: it cannot add a device key of its own to a bot's set, and a caller pins exactly
+one key per bot. A key can be replaced (`--rotate`), never removed.
+
+**Envelopes.** `bot_e2e.py`, stdlib only: a fresh content key encrypts the body (ChaCha20-Poly1305, RFC 8439) and is
+wrapped for each recipient under HKDF-SHA256 of an ephemeral and a static X25519 agreement (RFC 7748), so only a
+holder of the sender's key can produce an envelope that opens against it. The plaintext names what it belongs to
+(`bind`: field, bot, caller, conversation or message); the reader checks it against the view it came in, so the
+gateway can neither read a body nor move it to another conversation or message unnoticed. A caller's send is sealed
+deterministically from its op key (seeded by the sender's secret), so a resend is byte-identical and op-key
+deduplication and the content hash keep working; the same holds for a host's reply under its lease.
+
+**What stays plain, and why.** Metadata the gateway needs to enforce anything: principals, kinds, times, states,
+sizes, attachment count and bytes (declared next to a separate attachments envelope, bounded by the ciphertext
+length and checked exactly by the reader), decision receipts. Slot queries and slot results (structured times the
+gateway validates). The gateway's own fixed texts (standard declines). Content from clients without a key: a bot
+without one, callers older than 0.7.0, and MCP clients connected straight to `/mcp`; `require_e2e` lets an owner
+refuse those.
+
+**Gates.** Unchanged and still enforced by the gateway: it withholds the envelope exactly where it withheld the
+text. The owner device opens a body when reviewing; approvals bind hashes of the ciphertext, which is what is
+released. The gateway refuses a plain reply to a sealed message, and a sealed body that does not reach the bot's
+current key (and the caller's, for replies and owner messages): a stale pin fails loudly instead of producing a
+message nobody can read.
+
+**Trust.** First sight pins a key (the card for a bot, the job or conversation view for a caller); a different key
+later is reported (`key_changed`, `sealed_recipient_missing`, `e2e.opened: false`) and accepted only with `e2e
+trust` after the user compared fingerprints. That is trust on first use: a gateway that lies on the very first
+contact is detected only by comparing fingerprints out of band.
+
+**Not covered.** Forward secrecy for the bot's static key (a stolen bot key opens stored messages addressed to it),
+hiding metadata, MCP clients without a local key, and constant-time arithmetic in the stdlib primitives (they run
+only on the key holders' devices; the optional `cryptography` package is used for the cipher when installed).
+Schema 4 -> 5 adds four nullable columns and changes no stored message.

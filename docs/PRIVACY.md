@@ -1,7 +1,11 @@
 # Yobiru plugin privacy policy
 
-Effective date: October 22, 2026, with Yobiru 0.6.0. This
-version adds the optional public bot gateway, the official gateway that Chekusu
+Effective date: October 22, 2026, with Yobiru 0.7.0. This
+version adds end-to-end encryption of public bot messages: from 0.7.0 a gateway,
+including the official one, stores message text, attachments and replies only as
+ciphertext it cannot read whenever both sides use the Yobiru client (see
+[End-to-end encryption](#end-to-end-encryption-070-and-later)). The 0.6.0 version
+added the optional public bot gateway, the official gateway that Chekusu
 operates at `bots.yobiru.com`, and the local maintenance heartbeats. Yobiru 0.5.3 and earlier have neither; the
 [earlier version of this file](https://github.com/chekusu/yobiru/blob/v0.5.3/docs/PRIVACY.md) (effective
 October 15, 2026) covers them.
@@ -20,7 +24,8 @@ message contents to Chekusu. The public bots and Friends feature of
 0.6.0 adds an optional gateway, a central message store for public
 bots, described in its own section below. You can host that gateway yourself, or
 use the [official gateway](#the-official-gateway-botsyobirucom) that Chekusu
-operates; only then does Chekusu receive and store your Friends data.
+operates; only then does Chekusu receive and store your Friends data (from
+0.7.0 the message content end-to-end encrypted, so that Chekusu cannot read it).
 
 Data is processed on the participating computers to deliver messages, transfer
 files, discover peers, wake configured agents, track requests, and diagnose errors:
@@ -67,13 +72,15 @@ private Tailscale messaging.
 
 | Data | Where and why it is processed |
 | --- | --- |
-| Public message bodies, stored meeting-slot queries, bot results and owner replies | Stored in plaintext in the gateway's SQLite database so that callers and your worker can exchange them while either side is offline. There is no end-to-end encryption: whoever operates the gateway host can read them. |
+| Public message bodies, bot results and owner replies | Stored in the gateway's SQLite database so that callers and your worker can exchange them while either side is offline. From 0.7.0 they are stored **end-to-end encrypted** (sealed on the sender's device for the bot's key and the caller's key) whenever the bot has a key and the sender uses the Yobiru client: whoever operates the gateway host cannot read them. They are stored in plaintext, readable by the operator, only when the bot has no key (bots created before 0.7.0 until their owner runs `e2e enable`), when a caller talks to the gateway through an MCP client connected straight to it (such a client holds no key), or when a caller's client is older than 0.7.0. A bot's owner can refuse plaintext messages (`require_e2e`). |
+| Metadata the gateway still sees with end-to-end encryption | Who talks to whom, when, the message kind, sizes, attachment counts and byte totals, review and delivery states, decision receipts, relationships and follows. Stored meeting-slot queries and suggested slot times stay plaintext (they are structured times the gateway checks), as do the gateway's own fixed status texts. |
+| End-to-end keys | The gateway stores the public half of each bot's and caller's key and shows a bot's on its card. Secret keys stay on your devices in `0600` files (`public/credentials.json`, and `.e2e` key files the owner hands to the bot's own agent or worker devices); the gateway never receives them. |
 | Caller display names, contact requests with their notes, follows between bots, relationships, grants, ceilings and conversation membership | Stored by the gateway to authorize each request. Display names are self-asserted and unverified. |
 | Email address of a new bot owner (only on gateways that turn on email verification) | Used once to send a verification code. The gateway keeps the address and the code in its outbox only until the mail is sent (or the code expires after 15 minutes), and then only a keyed hash of the address (a hash with a secret random key of that gateway), so that one address registers one owner. The address passes through the mail provider the operator configures. |
 | Friends (mutual follows) | Messages from friends are admitted for your agent and its replies released without your per-message review; the gateway still records a decision receipt for each. |
 | Drafts written by your own agent, review decisions, wake records and binding test results | Stored by the gateway; drafts are released to the caller only after you approve them. Wake records hold opaque job ids, outcomes and the route type the connector reported, never message text. |
 | Decision receipts | One record per review, trust and continuation decision: ids, the action, content hashes (never content), grant generation, epochs and times. The owner sees them in full; a caller sees only a masked projection about its own messages, with no hash of a draft it never received. Kept for 365 days by default, and deleted with their conversation. |
-| Attachments (opt-in `files` capability) | Small text files stored inline with their message, draft or result, in plaintext, with the same retention and deletion as message bodies; the gateway keeps no other copy. |
+| Attachments (opt-in `files` capability) | Small text files stored inline with their message, draft or result, with the same retention, deletion and encryption as message bodies (end-to-end encrypted under the same conditions; only their count and total size stay visible); the gateway keeps no other copy. |
 | Binding descriptions and delivery evidence | Your private host kind, session note and delivery declaration, and the times of recorded checks, wakes, claims and approvals; never on the public card, which shows only whether a binding is configured, your declared tier and how fresh the wake evidence is. |
 | Lifecycle times | When each message was stored, admitted, started and finished, when a response was served, and when the caller's client or your agent acknowledged it. |
 | Bot profiles and policies | Stored by the gateway; the public card shows only the handle, name, description, fixed capabilities per relationship level and coarse chat delivery (binding configured, declared tier, wake evidence freshness). Resource names are not shown. |
@@ -120,13 +127,21 @@ Chekusu as "whoever operates the gateway host":
 
 - **Where.** The gateway and its database run on a server in Tokyo, Japan.
   Cloudflare sits in front of it as a reverse proxy: it terminates HTTPS, so
-  requests and responses pass through Cloudflare's network in readable form, and
-  Cloudflare's own privacy terms apply to that processing.
-- **Who can read it.** Message bodies, drafts, results and attachments are stored
-  in plaintext. Chekusu personnel with server access can read them. Chekusu
-  accesses stored content only to operate and secure the service, to investigate
-  abuse reported to it, or when required by law. Chekusu does not sell it, use it
-  for advertising, or use it to train models.
+  requests and responses pass through Cloudflare's network in readable form
+  (end-to-end encrypted bodies stay ciphertext there too), and Cloudflare's own
+  privacy terms apply to that processing.
+- **Who can read it.** With end-to-end encryption (the Yobiru client 0.7.0 or
+  later on both sides, talking to a bot with a key), message bodies, drafts,
+  results, owner messages and attachments reach the gateway and Cloudflare only
+  as ciphertext: neither Chekusu nor Cloudflare can read them, and Chekusu cannot
+  hand their content to anyone. Chekusu sees the metadata listed above. Content
+  that is not end-to-end encrypted (see the conditions above) is stored in
+  plaintext, and Chekusu personnel with server access can read it. Chekusu
+  accesses stored content and metadata only to operate and secure the service, to
+  investigate abuse reported to it, or when required by law. Chekusu does not sell
+  them, use them for advertising, or use them to train models. Because Chekusu
+  cannot read encrypted content, a report of abuse has to include the content the
+  reporter received.
 - **How long.** Finished message bodies, results and drafts are deleted after 30
   days; decision receipts after 365 days. Identities, follows, contacts and bot
   profiles stay until deletion is requested. The database is backed up daily on
@@ -151,6 +166,22 @@ Chekusu as "whoever operates the gateway host":
   migrate it (for example to Cloudflare's own infrastructure, keeping the same
   address) or stop it; a material change to this section is announced in this
   file with a new effective date.
+
+## End-to-end encryption (0.7.0 and later)
+
+The Yobiru client makes an X25519 key for every new bot (on the owner's device)
+and every new visitor identity, registers only its public half with the gateway,
+and seals each body with ChaCha20-Poly1305 for the bot's key and the caller's key.
+The bot's owner device, its own agent and its deterministic worker hold the bot's
+key; the caller's device holds the caller's. Text is decrypted only on those
+devices: the owner reads a message during review there, the agent after the owner
+admits it, and the caller reads the reply. A caller pins a bot's key the first
+time it sees it, so a key the gateway swapped would be reported, not used; you
+can compare key fingerprints (`yobiru public e2e status`) over another channel.
+Decrypted text is then handled by your agent and its host and model provider as
+before. Losing every device that holds a bot's key makes its stored encrypted
+messages unreadable; the owner can make a new key (`e2e enable --rotate`), and
+callers confirm it before they use it.
 
 ## Retention and deletion
 

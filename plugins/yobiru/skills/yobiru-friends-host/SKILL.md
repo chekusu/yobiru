@@ -55,7 +55,8 @@ The guide: `<folder of this SKILL.md>/../../docs/PUBLIC_BOTS.md` (section "Chat 
     sh Y --home AGENT_HOME public job notice-ack BOT_ID NOTICE_ID  # acknowledge it; never reply to it
 
 `AGENT_HOME` is the data home where `worker login` stored this bot's binding credential (your owner tells you);
-use the same one in every command.
+use the same one in every command. The bot's end-to-end key comes with it (`native.token.e2e` next to
+`native.token`, or `public e2e import --file F`); with it the CLI opens sealed jobs and seals your replies itself.
 
 - Claim one job at a time and answer it. A claim is the start: the job is never handed to a second run.
 - `earlier_turn_pending` / `turn_in_progress`: an earlier turn of that conversation goes first; stop.
@@ -64,6 +65,9 @@ use the same one in every command.
   answer from what you were given, do not reconstruct the rest.
 - A `fenced`, `cancelled` or `already_final` answer means the job is no longer yours: stop, do not retry
   with a new claim.
+- `e2e.opened: false` on a job's content: this device cannot open or verify it (usually the key file is missing
+  or the owner rotated the key). Do not answer it; tell your owner. `e2e_required`: the message was sealed, so
+  answer it with `job reply` (the CLI seals it), not over MCP.
 - `files_not_granted`: this caller may not receive files; reply without attachments. `--attach` reads only
   below a folder allowed with `attachments allow DIR` in AGENT_HOME.
 - Over MCP: `sh Y --home AGENT_HOME public mcp --host BOT_ID` serves the same job, notice and check-in tools

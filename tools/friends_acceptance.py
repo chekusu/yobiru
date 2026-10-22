@@ -11,8 +11,8 @@ so nothing reads ~/.tailmsg, $TAILMSG_HOME or a real inbox, calendar or contact.
   host       the native binding of @smoke-bot.
                --host scripted (default): this script plays the agent through the real CLI in its own home.
                A protocol fixture, never evidence of any real host.
-               --host remote: a real agent on another device. Only native.token and the resource access token
-               are written to --handoff, with RUNBOOK.md, the owner's instructions for that agent. The script waits
+               --host remote: a real agent on another device. Only native.token (with its .e2e key) and the resource
+               access token are written to --handoff, with RUNBOOK.md, the owner's instructions for that agent. The script waits
                for the agent wherever it has to act, and reports a timeout separately from a failed check.
   a-bot      a self-enrolled source bot that follows @smoke-bot (follower)
   b-bot      a self-enrolled source bot that follows and is followed back (friend)
@@ -318,7 +318,7 @@ class Acceptance(object):
         check_id = self.y("owner", "binding", "check", BOT, self.ids["worker_id"])["check_id"]
         if self.remote:
             self.write_runbook(check_id)
-            print("      handoff ready in %s: give RUNBOOK.md to the agent and copy native.token and "
+            print("      handoff ready in %s: give RUNBOOK.md to the agent and copy native.token, native.token.e2e and "
                   "resource-access.token to it (never through a chat). Waiting for its check-in." % self.handoff,
                   flush=True)
         else:
@@ -537,11 +537,11 @@ class Acceptance(object):
         running = [n for n, s in self.services.items() if not s.exited()]
         leaked = sorted(set(m.group(0)[:4] for text in self.outputs for m in TOKEN_PATTERN.finditer(text)))
         if self.remote:
-            print("      the agent's copies of native.token and resource-access.token are now revoked or dead; "
+            print("      the agent's copies of native.token(.e2e) and resource-access.token are now revoked or dead; "
                   "delete them on that device, and remove only this run's HTTPS routes (for example "
                   "`tailscale serve --https=8443 off`; `tailscale serve reset` removes every route)",
                   flush=True)
-            for name in ("native.token", "resource-access.token"):
+            for name in ("native.token", "native.token.e2e", "resource-access.token"):
                 attempt("delete handoff/%s" % name, lambda n=name: (self.handoff / n).unlink() if (
                     self.handoff / n).exists() else None)
         if not self.a.keep:
@@ -570,11 +570,11 @@ your device separately.
 
 ## Once
 
-Copy `native.token` and `resource-access.token` from the owner's handoff folder into `{home}-handoff` on your
-device (for example with `scp` or `tailscale file cp`), then:
+Copy `native.token`, `native.token.e2e` (the bot's end-to-end key, from 0.7.0) and `resource-access.token` from the
+owner's handoff folder into `{home}-handoff` on your device (for example with `scp` or `tailscale file cp`), then:
 
 ```sh
-chmod 600 {home}-handoff/native.token {home}-handoff/resource-access.token   # the CLI refuses any other mode
+chmod 600 {home}-handoff/native.token* {home}-handoff/resource-access.token   # the CLI refuses any other mode
 sh Y --home {home} public worker login {url} --token-file {home}-handoff/native.token
 sh Y --home {home} public job setup {bot} --resource-url {res} --resource-token-file {home}-handoff/resource-access.token
 mkdir -p {files}

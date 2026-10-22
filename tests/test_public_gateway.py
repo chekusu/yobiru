@@ -166,7 +166,8 @@ class AdministrationTests(GatewayCase):
         card = self.gw.ok("GET", "/v1/bots/%s" % bot_id)
         self.assertEqual({"ok", "type", "card_version", "issuer", "bot_id", "handle", "address", "id_address",
                           "display_name", "description", "capabilities", "capabilities_note", "accepts_visitors",
-                          "accepts_followers", "accepts_contact_requests", "chat", "identity", "api", "connect"},
+                          "accepts_followers", "accepts_contact_requests", "chat", "e2e", "identity", "api",
+                          "connect"},
                          set(card))
         self.assertTrue(card["address"].endswith("/@" + self.handle()))
         self.assertEqual(card, self.gw.ok("GET", "/@" + self.handle()), "the share link serves the same card")

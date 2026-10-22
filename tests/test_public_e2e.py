@@ -177,7 +177,8 @@ class PublicWorkflowTests(unittest.TestCase):
         # worker device one: dedicated per-bot worker credential, never the owner's
         self.add_worker("worker one")
         creds = json.loads((self.data_home("worker one") / "public" / "credentials.json").read_text())
-        self.assertEqual({"workers"}, set(creds["gateways"][self.gw.url]))
+        self.assertEqual({"workers", "bot_keys"}, set(creds["gateways"][self.gw.url]),
+                         "a worker device holds its worker credential and the bot's end-to-end key, never the owner's")
         self.assertEqual(oct(0o600), oct(os.stat(self.data_home("worker one") / "public" / "credentials.json").st_mode
                                           & 0o777))
         self.y("worker one", "responder", "init", bot_id, "--calendar-url", cal_service.url,

@@ -278,6 +278,8 @@ class SchemaThreeMigrationTests(unittest.TestCase):
             try:
                 for statement in ("DROP INDEX owners_email", "ALTER TABLE owners DROP COLUMN email_hash",
                                   "DROP TABLE email_challenges", "DROP TABLE mail_outbox",
+                                  "ALTER TABLE bots DROP COLUMN e2e_key", "ALTER TABLE bots DROP COLUMN e2e_key_ts",
+                                  "ALTER TABLE actors DROP COLUMN e2e_key", "ALTER TABLE actors DROP COLUMN e2e_key_ts",
                                   "UPDATE meta SET value='3' WHERE key='schema_version'"):
                     db.execute(statement)
             finally:
@@ -292,7 +294,7 @@ class SchemaThreeMigrationTests(unittest.TestCase):
             self.assertIn("schema 3", refused.stderr)
             migrated = run("migrate")
             self.assertEqual(0, migrated.returncode, migrated.stderr)
-            self.assertEqual(("4", "3"), tuple(json.loads(migrated.stdout)[k] for k in ("schema", "from_schema")))
+            self.assertEqual(("5", "3"), tuple(json.loads(migrated.stdout)[k] for k in ("schema", "from_schema")))
             gw.start()
             try:
                 bot_id = gw.bot("after-migration")

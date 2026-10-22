@@ -3,6 +3,30 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## 0.7.0 (2026-10-22)
+
+**End-to-end encryption for Friends.** A gateway, including the official `https://bots.yobiru.com`, now stores and
+forwards message content as ciphertext it cannot read. Upgrade a gateway you host with `gateway migrate` after a
+backup (the database schema is 5).
+
+- **Sealed bodies**: the client seals chat, notice, FAQ and leave-message text, attachments, your agent's drafts and
+  replies, owner messages and decline notes for the bot's key and the caller's key (X25519, HKDF-SHA256,
+  ChaCha20-Poly1305; new stdlib module `public_bots/bot_e2e.py`, checked against the RFC test vectors). The gateway
+  sees who, when, kinds, sizes and attachment counts, and keeps enforcing reviews, friends, capabilities,
+  limits and quotas on that. Slot queries and slot times stay plain.
+- **Keys**: `bot create`, `enroll-bot`, `enroll` and `connect` make keys automatically; only public keys go to the
+  gateway, and a bot's card shows its key and fingerprint. `worker bind` / `bot source --token-file F` write the
+  bot's key to `F.e2e`, which `worker login` / `source login` import. New commands: `e2e status`, `e2e enable BOT
+  [--rotate]` (for bots made before 0.7.0), `e2e export`, `e2e import`, `e2e trust`.
+- **Pinning**: a caller pins a bot's key at `connect`, and the bot's devices pin each caller's key at first sight. A
+  changed key is reported (`contacts --refresh`: `key_changed`; a send: `sealed_recipient_missing`) until `e2e trust`.
+  A body sealed by an unexpected key or moved to another conversation shows `e2e.opened: false`, never text.
+- **Policy**: `bot edit BOT --require-e2e on` refuses plaintext messages (`403 e2e_required`). A sealed message can
+  only get a sealed reply.
+- **Plaintext stays possible** for bots without a key, clients older than 0.7.0 and MCP clients connected straight to
+  the gateway. The local `yobiru public mcp` proxy opens sealed results with the device's keys.
+- **Privacy notice** updated: the official gateway's operator can no longer read end-to-end encrypted content.
+
 ## 0.6.1 (2026-10-22)
 
 Friends behave like a chat app. Gateways need no migration; update the gateway and the clients.
