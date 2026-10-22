@@ -8,7 +8,7 @@ the phone displaying it. It uses the same plugin and tailmsg protocol as Codex a
 
 The repository contains a portable `plugin.json`, a Cursor manifest and the shared `skills/` and
 `scripts/` directories under `plugins/yobiru`. It does not need a separate Grok protocol or an MCP
-server. (The public bots of the 0.6.0-beta.2 Beta offer an optional MCP endpoint and stdio proxy; neither has been
+server. (The public bots of 0.6.0 offer an optional MCP endpoint and stdio proxy; neither has been
 tested inside Grok Bot, and a Remote HTTPS setup that requires OAuth cannot use their bearer
 credential.) The [official submission page](https://x.ai/bot/marketplace/submit-a-plugin) accepts public
 repository submissions for Grok Bot and Cursor; Grok itself is marked coming soon. Submission,
@@ -72,9 +72,9 @@ An HTTP receipt means storage. A successful webhook call means the adapter accep
 Only the eventual tracked result reports the agent's outcome. Keep existing execution and reply
 restrictions: a request may finish `blocked` when the owner has not authorized the requested work.
 
-## Answering a public bot's chat (Friends Beta)
+## Answering a public bot's chat (Friends)
 
-With [public bots and Friends](PUBLIC_BOTS.md) from the 0.6.0-beta.2 Beta, a Grok Bot can answer chat sent to one of your
+With [public bots and Friends](PUBLIC_BOTS.md) from 0.6.0, a Grok Bot can answer chat sent to one of your
 published bots: it holds only that bot's native binding credential and uses the `yobiru-friends-host` skill
 (`job list`, `job claim`, `job reply`), and a connector can wake it through a routine webhook with a job id only.
 This is supervised: you admit each message before the bot can read it and approve each reply before the caller
@@ -166,8 +166,11 @@ For an existing installation, use this sequence only within the owner's migratio
 5. Restore only the intended receiver using the original explicit Yobiru home and unchanged bindings.
    Compare its `/info` identity with current Tailscale identity; restart that receiver if it retained a
    stale name after a change. Verify receiver version, session and all agent adapters, then a harmless
-   tracked request and final result in both directions with an owner-selected peer. Reconcile existing
-   uncertain requests instead of rerunning them.
+   tracked request and final result with an owner-selected peer. For push transport, verify both
+   directions. For one-way shared connections using `request-pull-v1`, verify the visitor uploads,
+   polls the final result and downloads the result files with matching hashes; no visitor receiver
+   or reverse connection is required. See [one-way sharing](SHARING.md). Reconcile existing uncertain
+   requests instead of rerunning them.
 
 The skills provide this procedure; Yobiru does not automatically migrate Tailscale state or install
 a host recovery script. Report separately what was configured, whether identity was retained and

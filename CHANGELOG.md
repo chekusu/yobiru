@@ -3,6 +3,48 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## 0.6.0 (2026-10-22)
+
+The first stable release with **public bots and Friends**: everything in 0.6.0-beta.1 and 0.6.0-beta.2 below,
+plus the changes made on the default branch after 0.5.3. The stable update channel, plugin pages and the
+repository marketplace now offer it. Upgrade a gateway you host with `gateway migrate` after a backup (the
+database schema is 4). The official gateway `https://bots.yobiru.com` already runs schema 4.
+
+- **Claude Code plugin and MCP server**: `.claude-plugin/marketplace.json` and `plugins/yobiru/.claude-plugin/plugin.json`
+  install the same skills in Claude Code (`claude plugin marketplace add chekusu/yobiru`, then
+  `claude plugin install yobiru@yobiru`). The Claude Code manifest also registers `yobiru mcp`, a local stdio MCP
+  server whose tools (`yobiru_inbox`, `yobiru_read`, `yobiru_fetch_files`, `yobiru_send`, `yobiru_reply`,
+  `yobiru_request_respond`, `yobiru_request_status`, `yobiru_ack`, `yobiru_agents`, `yobiru_status`) each run one
+  command of the bundled CLI with the same data home. It opens no port; received text is passed to the model as
+  data. When the config has an agent named `claude`, the server sends as `claude` and lists its inbox. No other
+  host reads the Claude Code manifest, and no shared `mcp.json` is shipped.
+- **`inbox --json`**: the inbox as one JSON array, oldest first, with the first 500 characters of each text.
+- **Wake delivery** (#12, for #11): an adapter that succeeded is never run again when the receiver cannot record
+  its outcome.
+- **Identity lookup outages** (#17, for #16): when the receiver's Tailscale identity lookup times out or cannot
+  reach the daemon, it answers `503` with `code: identity_unavailable` and `Retry-After` instead of `403`;
+  unknown or denied peers still get `403`. `update notify` keeps such a notice pending and later sends the
+  identical envelope.
+- **Webhook wake errors** (#15): a failed webhook wake records its HTTP status, an error code from a fixed
+  list of generic categories and a `Retry-After` from a fixed list of delays, both repeating nothing that was
+  sent, or only the exception type when the call fails. It never records response or exception text, which can echo the webhook's URL token or the
+  message.
+- **One-way shares** (#19): with `request send --transport pull`, a visitor whose machine cannot accept
+  connections uploads inputs, polls for the result and downloads result files from a receiver that advertises
+  `request-pull-v1`; `doctor --peer` checks the route. The destination's stable identity is checked again
+  before every connection, and request inputs and results are created readable only by their owner.
+  Repeating an identical final `reply` or `request respond` with the same files returns the stored result,
+  push or pull. A refused or failed attempt removes its own copy of the files, unless a response committed
+  meanwhile may have published that copy's links. A pull request that fails before it is saved leaves no
+  snapshot of its inputs.
+- **Waypost bridge** (#14): an optional text bridge between Yobiru and a Waypost service
+  (`tools/waypost_bridge.py` in a source checkout, POSIX, not part of the plugin) with a durable journal.
+  Unknown outcomes are never resent automatically, and refused messages are quarantined without stopping it,
+  even when their inbox record later changes, until the operator retries them.
+- **Documentation** (#13): a community-reported Grok Bot run and an OpenClaw wake recipe.
+- **Tests** (#18 and follow-ups): portable `false`, path and connection-refusal checks for macOS, and a
+  process-group check that no longer mistakes an unreaped zombie for a surviving process.
+
 ## 0.6.0-beta.2 (2026-10-22): Beta
 
 A second prerelease of the 0.6 Beta; the stable release stays 0.5.3. Upgrade a gateway with `gateway migrate`

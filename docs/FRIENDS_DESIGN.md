@@ -1,7 +1,7 @@
 # Friends: routing, delivery evidence, decisions, loop budgets, attachments and MCP
 
-**Status: Beta, in 0.6.0-beta.1 as gateway schema 3; tested only with local processes, loopback HTTP and synthetic
-data.** This note describes six additions to public bots and Friends
+**Status: shipped in 0.6.0 (first in 0.6.0-beta.1 as gateway schema 3; schema 4 since 0.6.0-beta.2); tested with
+local processes, loopback HTTP and synthetic data, and one native Grok Bot acceptance run.** This note describes six additions to public bots and Friends
 (`docs/PUBLIC_BOTS.md` is the user guide). Each one extends something that already existed, rather than adding a
 second system beside it:
 

@@ -4,15 +4,15 @@
   "files": {
     "scripts/tailmsg.py": {
       "source": "tailmsg.py",
-      "sha256": "9c3e309cebda7fdc6c9a825777a25b2882c520370742aec167a76d7c619bdddf"
+      "sha256": "fe7f0b8df90d6ae1a0c3680d6968ac5c3a1b223e495c4f37d08fa8b7aee2cd62"
     },
     "scripts/codex_bridge/CODEX_DISPATCHER.md": {
       "source": "CODEX_DISPATCHER.md",
-      "sha256": "0c7cb50d9e4e514af97746a10dff6f4b8d0a73a70d785424e625a27ecd7f8d18"
+      "sha256": "9df86d18cd745d991dfdaa35d6f0a68a191426623e01d1322902f7136c9dbe65"
     },
     "scripts/codex_bridge/codex_bridge.py": {
       "source": "codex_bridge.py",
-      "sha256": "71ea3e25e8af2d635905d2492be677a5d214dcfd432f2c5361a3fccdabc05e88"
+      "sha256": "e6dab615c8331d8493c4e9555ad7a87311b2a8dbeb2d23226939c58142b31bbd"
     },
     "scripts/codex_bridge/codex_queue_client.py": {
       "source": "codex_queue_client.py",
@@ -24,7 +24,7 @@
     },
     "scripts/codex_bridge/CODEX_SANDBOX.md": {
       "source": "docs/CODEX_SANDBOX.md",
-      "sha256": "a079b878bc7577cdc4913bd92fd58421eb72b9c10ce84949433e4db4855af394"
+      "sha256": "c35e7c927eaec3032b5f134d4930eed16ec0a4ebb01f8a19dac120c0fc6a9cc7"
     },
     "scripts/codex_bridge/install_codex_bridge.py": {
       "source": "install_codex_bridge.py",
@@ -36,7 +36,7 @@
     },
     "docs/PUBLIC_BOTS.md": {
       "source": "docs/PUBLIC_BOTS.md",
-      "sha256": "61d8dde1ff30af36092b3b9ab7dea41552b071e20a701a070d7888867b1bdf3d"
+      "sha256": "3133674f2a8fb3d936a70caba6ba04049523d08145c71108434833ef8a1eeab8"
     },
     "scripts/public_bots/bot_calendar.py": {
       "source": "public_bots/bot_calendar.py",

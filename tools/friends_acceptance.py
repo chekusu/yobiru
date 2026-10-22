@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Friends Beta acceptance run: the twelve checks of docs/UPGRADING-0.6-BETA.md (section 5, "Acceptance
+"""Friends Beta acceptance run: the twelve checks of docs/UPGRADING-0.6.md (section 5, "Acceptance
 checklist"), driven through the real `yobiru` CLI with fresh synthetic data in one new work directory.
 
 Each role has its own data home under the work directory. Every command runs with HOME set to the work directory,

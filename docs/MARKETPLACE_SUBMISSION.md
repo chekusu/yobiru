@@ -5,7 +5,7 @@ and compatible ChatGPT desktop execution. The portable manifest and host
 overlays are generated from `packaging/product.json`. There is no separate
 hosted MCP service, hosted messaging account, or duplicate ChatGPT codebase. The
 plugin registers no MCP server; the optional `/mcp` endpoint of the public bots
-(0.6.0-beta.2 Beta) runs only on a gateway the user hosts.
+(0.6.0) runs only on a gateway: one the user hosts, or the official bots.yobiru.com.
 
 Official submission routes checked on October 15, 2026:
 

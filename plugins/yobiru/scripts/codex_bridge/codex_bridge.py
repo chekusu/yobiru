@@ -117,6 +117,9 @@ def _core():
     return _POLICY_CORE
 
 
+_policy_core = _core         # identity/policy helpers live in the same receiver module
+
+
 def _access_decision(config, peer):
     return _core().access_decision(config, peer)
 
@@ -313,7 +316,12 @@ class Bridge:
         peer = received.get("peer")
         if not isinstance(peer, dict) or not _node(peer.get("node")):
             raise Rejected("missing_verified_peer")
-        if _node(env.get("from")) != _node(peer["node"]):
+        pull = isinstance(env.get("request"), dict) and env["request"].get("transport") == "pull"
+        if pull:
+            match_sender = getattr(_policy_core(), "sender_matches", None)
+            if not isinstance(env.get("from"), str) or not callable(match_sender) or not match_sender(env, peer):
+                raise Rejected("sender_mismatch")
+        elif _node(env.get("from")) != _node(peer["node"]):
             raise Rejected("sender_mismatch")
         local = _read_json(self.tailmsg_home / "config.json")
         allowed, policy_reason = _access_decision(local, peer)
@@ -482,6 +490,18 @@ class Bridge:
                        "rejected or blocked before ack. A handoff is not a final result: track it to completion. "
                        "Requests without execution authorization must receive a minimal blocked result, "
                        "not silent success. Keep results scoped to this request and preserve local reply consent.")
+            if isinstance(envelope["request"], dict) and envelope["request"].get("transport") == "pull":
+                directory = self.inbox / row["id"] / "files"
+                prompt += ("\nThis request uses one-way pull transport. Its input attachment manifest is "
+                           "request.uploads, not fetch. Uploaded files are already in this local directory: %s. "
+                           "Use the installed tailmsg.py with the explicit Tailmsg home and `fetch ID` to "
+                           "verify those local files against their recorded sizes and SHA-256 hashes; "
+                           "this pull-input operation makes no network connection. Do not connect back to "
+                           "the sender to obtain inputs. If verification fails, report a blocked result "
+                           "within reply consent instead of downloading replacements. `request respond` "
+                           "or `reply` stores the result for the original requester to poll; use --file "
+                           "for authorized result attachments. Stored is not proof that the requester "
+                           "has fetched the response.") % json.dumps(str(directory), ensure_ascii=False)
         elif envelope.get("kind") in ("notice", "notification", "status", "yobiru-upgrade-notice") or \
                 "response" in envelope:
             prompt += "\nThis is a notification or status receipt. Do not send an automatic reply."

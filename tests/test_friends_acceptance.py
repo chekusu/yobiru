@@ -1,4 +1,4 @@
-"""tools/friends_acceptance.py, the driver for the Beta's acceptance checklist (docs/UPGRADING-0.6-BETA.md, section 5):
+"""tools/friends_acceptance.py, the driver for the Beta's acceptance checklist (docs/UPGRADING-0.6.md, section 5):
 the whole checklist with its scripted host, and a remote host that never shows up, which must end as a timeout after
 a complete cleanup, never as a failed check.
 

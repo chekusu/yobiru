@@ -2,6 +2,7 @@
 
 Yobiru release verification. This page separates what has actually been run from what has not. It is not a
 security guarantee: the tests show the behaviors listed below, nothing more.
+Dated release results refer to the named release trees, not a later development branch or an installed host.
 
 ## Native Grok Bot acceptance run (after 0.6.0-beta.1)
 

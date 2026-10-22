@@ -2,6 +2,7 @@
 import contextlib
 import datetime
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import io
 import json
 import os
@@ -13,11 +14,13 @@ import tempfile
 import threading
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import codex_bridge
 from codex_bridge import Bridge, Rejected, load_config
 from codex_queue_client import CodexAppError
+import tailmsg as receiver_core
 
 
 class DeliveryError(Exception):
@@ -112,6 +115,87 @@ class BridgeTests(unittest.TestCase):
     def set_reply_consent(self, value):
         self.bridge.config["allow_replies"] = value
         Path(self.bridge.config_path).write_text(json.dumps({"allow_replies": value}))
+
+    def pull_request_fixture(self, named=True):
+        """A receiver-written record plus real request ledger and local uploaded file; no network."""
+        self.now = time.time()
+        path = self.message()
+        stable = receiver_core.stable_peer_id("nSharedDevice")
+        content = b"harmless uploaded input\n"
+        name = "PRIVATE-input.txt"
+        record = json.loads(path.read_text())
+        record["envelope"].update({
+            "from": stable, "to": "receiver.example.ts.net", "ts": receiver_core.iso(receiver_core.now_utc()),
+            "kind": "request", "request": {"timeout_seconds": 900, "reply_port": 7766, "transport": "pull",
+                "uploads": [{"name": name, "token": "a" * 32, "sha256": hashlib.sha256(content).hexdigest(),
+                             "size": len(content), "mime": "text/plain"}]}})
+        record["received"].update(node="receiver.example.ts.net")
+        record["received"]["peer"].update({"node": "grok-bot.tailnet.ts.net" if named else stable,
+            "dns_name": "grok-bot.tailnet.ts.net" if named else "", "stable_id": "nSharedDevice"})
+        path.write_text(json.dumps(record))
+        directory = self.inbox / record["envelope"]["id"] / "files"
+        directory.mkdir(parents=True)
+        (directory / name).write_bytes(content)
+        self.local = {"access_policy": "tailnet", "default_agent": "codex"}
+        self.write_local()
+        receiver_core.accept_request(SimpleNamespace(home=self.tailmsg), record)
+        policy_patch = patch("codex_bridge._POLICY_CORE", receiver_core)
+        policy_patch.start()
+        self.addCleanup(policy_patch.stop)
+        self.set_reply_consent(True)
+        return path, directory
+
+    def test_pull_request_with_named_peer_reaches_fixed_session_and_verifies_local_input(self):
+        path, directory = self.pull_request_fixture()
+        self.assertEqual("queued", self.bridge.ingest(path)["status"])
+        self.assertEqual(1, self.bridge.dispatch_due()["enqueued"])
+        prompt = self.client.calls[0][1]["prompt"]
+        self.assertEqual("dispatcher-fixed", self.client.calls[0][1]["threadId"])
+        self.assertIn("request.uploads, not fetch", prompt)
+        self.assertIn(json.dumps(str(directory)), prompt)
+        self.assertIn("makes no network connection", prompt)
+        self.assertIn("Do not connect back", prompt)
+        self.assertIn("original requester to poll", prompt)
+        self.assertNotIn("PRIVATE", prompt)  # neither the message text nor sender-supplied file names
+        context = receiver_core.Ctx(str(self.tailmsg))
+        with patch.object(context, "resolve", side_effect=AssertionError("no reverse resolution")), \
+                patch.object(context, "whois", side_effect=AssertionError("no network identity query")), \
+                patch.object(receiver_core.http.client, "HTTPConnection", side_effect=AssertionError("no reverse HTTP")), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            receiver_core.cmd_fetch(context, SimpleNamespace(id="message_0001"))
+        self.assertIn("sha256 verified", output.getvalue())
+
+    def test_pull_request_with_empty_display_name_is_accepted(self):
+        path, _ = self.pull_request_fixture(named=False)
+        self.assertEqual("queued", self.bridge.ingest(path)["status"])
+        self.assertEqual(1, self.bridge.dispatch_due()["enqueued"])
+
+    def test_pull_sender_stable_identity_mismatch_and_invalid_from_are_rejected(self):
+        path, _ = self.pull_request_fixture()
+        self.rewrite(path, lambda record: record["received"]["peer"].update(stable_id="nOtherDevice"))
+        with self.assertRaisesRegex(Rejected, "sender_mismatch"):
+            self.bridge.ingest(path)
+        self.rewrite(path, lambda record: record["envelope"].update({"from": {"node": "nSharedDevice"}}))
+        with self.assertRaisesRegex(Rejected, "sender_mismatch"):
+            self.bridge.ingest(path)
+        self.assertEqual([], self.client.calls)
+
+    def test_pull_access_is_rechecked_by_stable_identity_before_dispatch(self):
+        path, _ = self.pull_request_fixture()
+        self.bridge.ingest(path)
+        self.local["deny"] = [receiver_core.stable_peer_id("nSharedDevice")]
+        self.write_local()
+        self.assertEqual(1, self.bridge.dispatch_due()["skipped"])
+        self.assertEqual([], self.client.calls)
+
+    def test_pull_request_without_reply_consent_records_blocked_without_reverse_outbox(self):
+        path, _ = self.pull_request_fixture()
+        self.set_reply_consent(False)
+        self.assertEqual("request_replies_disabled", self.bridge.ingest(path)["reason"])
+        self.assertEqual("blocked", receiver_core.request_snapshot(self.tailmsg, "message_0001")["state"])
+        with receiver_core.request_db(SimpleNamespace(home=self.tailmsg)) as database:
+            self.assertEqual(0, database.execute("SELECT COUNT(*) FROM response_outbox").fetchone()[0])
+        self.assertEqual([], self.client.calls)
 
     def test_tracked_request_without_reply_consent_is_blocked_without_model(self):
         path, ledger = self.request_fixture()

@@ -14,7 +14,7 @@ from pathlib import Path
 
 VERSION = 1                     # wire protocol version (unchanged)
 PRODUCT = "yobiru"
-PRODUCT_VERSION = "0.6.0-beta.2"  # Yobiru release of this file; tools/build_plugin.py check keeps it in sync
+PRODUCT_VERSION = "0.6.0"  # Yobiru release of this file; tools/build_plugin.py check keeps it in sync
 DEFAULTS = {
     "port": 7766,
     "access_policy": "tailnet",    # authenticated Tailscale peers; use "allowlist" for opt-in restriction
@@ -46,10 +46,38 @@ WAKE_DEFAULT = "batch"
 TAILNET_NETS = [ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48")]
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}\Z")      # \Z, not $: "$" would also accept a trailing newline
 MSG_REF_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")  # a message id or a unique prefix of one (CLI input)
+INBOX_PREVIEW = 500                                 # characters of text per `inbox --json` row
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,64}\Z")
 ENV_KEYS = {"v", "id", "from", "to", "ts", "kind", "text", "reply_to", "fetch", "wake", "agent", "from_agent", "request", "response"}
 AGENT_MAX = 64
 FETCH_KEYS = {"name", "url", "sha256", "size", "mime", "expires"}
+STABLE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}\Z")
+
+
+def stable_peer_id(stable_id):
+    """Case-preserving device identity in a canonical, case-insensitive wire spelling."""
+    if not isinstance(stable_id, str) or not STABLE_ID_RE.fullmatch(stable_id):
+        return None
+    return "node:" + stable_id.encode("ascii").hex()
+
+
+def peer_identity(ident):
+    return stable_peer_id(ident.get("stable_id")) or ident.get("node")
+
+
+def fresh_whois(ctx, ip):
+    # Pull grants and stored ownership must come from LocalAPI now. The 60-second cache of ordinary traffic is
+    # never read here: a lookup that started before the address was reassigned can refill it at any moment.
+    return ctx.whois_uncached(ip)
+
+
+def is_pull_request(env):
+    return isinstance(env.get("request"), dict) and env["request"].get("transport") == "pull"
+
+
+def sender_matches(env, ident):
+    expected = peer_identity(ident) if is_pull_request(env) else ident.get("node")
+    return bool(expected) and env.get("from", "").lower().rstrip(".") == expected
 
 
 # ---------------------------------------------------------------- helpers
@@ -106,7 +134,7 @@ def write_private_json(path, obj):
             os.unlink(str(tmp))
         raise
     if os.name == "posix":
-        sync_directory(path.parent)
+        fsync_directory(path.parent)
 
 
 # A directory fsync that the filesystem does not support; every other error (EIO, ...) is a real failure.
@@ -117,7 +145,7 @@ LOCK_CONTENTION = {getattr(errno, name) for name in (("EACCES", "EDEADLOCK") if 
                                                      else ("EWOULDBLOCK", "EAGAIN")) if hasattr(errno, name)}
 
 
-def sync_directory(directory):
+def fsync_directory(directory):
     fd = os.open(str(directory), os.O_RDONLY)
     try:
         os.fsync(fd)
@@ -167,6 +195,56 @@ class FileLock(object):
         finally:
             os.close(self.fd)        # closing also releases flock
             self.fd = None
+
+
+def sync_directory(path):
+    """Best-effort directory sync (not supported by every platform/filesystem)."""
+    try:
+        descriptor = os.open(str(path), os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError:
+        pass
+
+
+def private_open(path, truncate=False):
+    """A new file only this user can read (0600) whatever the process umask, never following a link. Request
+    inputs and results can be private even when a custom data home is traversable by other users."""
+    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | (os.O_TRUNC if truncate else os.O_EXCL)
+    descriptor = os.open(str(path), flags, 0o600)
+    if truncate and hasattr(os, "fchmod"):
+        os.fchmod(descriptor, 0o600)                 # an earlier partial file keeps its mode otherwise
+    return os.fdopen(descriptor, "wb")
+
+
+def private_mkdir(path):
+    """Create a directory and any missing parents as 0700; existing directories keep their mode."""
+    path, missing = Path(path), []
+    while not path.exists():
+        missing.append(path)
+        path = path.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+
+
+def durable_write(path, data):
+    path = Path(path)
+    temporary = path.with_name(path.name + ".tmp-" + secrets.token_hex(8))
+    try:
+        with open(temporary, "xb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        sync_directory(path.parent)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 def is_tailnet_ip(ip):
     try:
@@ -266,7 +344,9 @@ def parse_access_policy(raw):
                 valid = not any(c.isspace() or unicodedata.category(c).startswith("C") for c in rule)
             if valid:
                 r = rule.lower()
-                if r.startswith("user:"):
+                if r.startswith("node:"):
+                    valid = re.fullmatch(r"node:(?:[0-9a-f]{2}){1,128}", r) is not None
+                elif r.startswith("user:"):
                     valid = bool(r[5:]) and not any(c in r[5:] for c in ":/*\\")
                 elif r.startswith("tag:"):
                     valid = re.fullmatch(r"tag:[a-z0-9][a-z0-9_-]*", r) is not None
@@ -285,13 +365,17 @@ def parse_access_policy(raw):
 def peer_matches(rule, ident):
     """Shared host/FQDN/tag/user rule matching for transport, dispatcher and wake caps."""
     r = str(rule).lower()
+    if r.startswith("node:"):
+        return r == peer_identity(ident)
     if r.startswith("tag:"):
         return r in [t.lower() for t in ident.get("tags", [])]
     if r.startswith("user:"):
         return bool(ident.get("user")) and r[5:] == ident["user"].lower()
     r = r.rstrip(".")
     node = ident.get("node", "").lower().rstrip(".")
-    return bool(r) and r in {node, node.split(".")[0], ident.get("host", "").lower().rstrip(".")}
+    dns = ident.get("dns_name", "").lower().rstrip(".")
+    return bool(r) and r in {node, node.split(".")[0], ident.get("host", "").lower().rstrip("."),
+                             dns, dns.split(".")[0]}
 
 
 def access_decision(raw, ident, recipient_token=False, self_discovery=False):
@@ -309,7 +393,7 @@ def access_decision(raw, ident, recipient_token=False, self_discovery=False):
     if not isinstance(ident, dict) or not isinstance(ident.get("node"), str) or not ident["node"].strip(".") or \
             any(c.isspace() or unicodedata.category(c).startswith("C") for c in ident["node"]):
         return False, "unknown_peer"
-    if any(not isinstance(ident.get(k, ""), str) for k in ("host", "user")) or \
+    if any(not isinstance(ident.get(k, ""), str) for k in ("host", "user", "dns_name")) or \
             not isinstance(ident.get("tags", []), list) or \
             any(not isinstance(t, str) for t in ident.get("tags", [])):
         return False, "unknown_peer"
@@ -358,6 +442,10 @@ def parse_config(raw):
     return cfg, out
 
 
+class TailscaleUnavailable(RuntimeError):
+    """The CLI timed out or could not connect to the local Tailscale daemon."""
+
+
 class Ctx:
     def __init__(self, home):
         self.home = Path(home).expanduser()
@@ -371,7 +459,7 @@ class Ctx:
             log("created default config", cfg_path, "(authenticated Tailscale peers may communicate)")
         self.cfg, self.agents = parse_config(json.loads(cfg_path.read_text(encoding="utf-8")))
         self._whois_cache = {}
-        self._now_hits = {}          # (sender node, agent) -> [epoch seconds of effective `now`]
+        self._now_hits = {}          # (peer identity, agent) -> [epoch seconds of effective `now`]
         self._wake_lock = threading.Lock()
         self._inbox_lock = threading.Lock()
         self._name_cache = {}        # session id -> (expires epoch, native name lookup result)
@@ -384,18 +472,20 @@ class Ctx:
         return cached_native_name(self.home, binding, self._name_cache, self._name_guard, self._name_lookup)
 
     # -------- tailscale CLI (LocalAPI) --------
-    def ts(self, *args):
+    def ts(self, *args, timeout=15):
         cmd = list(self.cfg["tailscale_cmd"]) + list(args)
         try:
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         except FileNotFoundError:
             raise RuntimeError("tailscale CLI not found: %r (set tailscale_cmd in config.json)" % cmd[0])
         except subprocess.TimeoutExpired:
-            raise RuntimeError("tailscale CLI timed out: %r" % cmd)
+            raise TailscaleUnavailable("tailscale CLI timed out: %r" % cmd)
         if p.returncode != 0:
             err = (p.stderr or p.stdout).strip()
-            if re.search(r"permission denied|access denied|operation not permitted", err, re.I):
+            if re.search(r"permission denied|access (?:is )?denied|operation not permitted", err, re.I):
                 err += ' (hint: set "tailscale_cmd": ["sudo","-n","tailscale"] in config.json)'
+            elif re.search(r"failed to connect to local (?:tailscaled|tailscale daemon)\b", err, re.I):
+                raise TailscaleUnavailable("%s: %s" % (" ".join(cmd), err))
             raise RuntimeError("%s: %s" % (" ".join(cmd), err))
         return p.stdout
 
@@ -403,28 +493,58 @@ class Ctx:
         return json.loads(self.ts("status", "--json"))
 
     def whois(self, ip):
+        """Ordinary traffic may reuse a lookup of this address for 60 seconds; pull grants use whois_uncached."""
         hit = self._whois_cache.get(ip)
         if hit and hit[0] > time.time():
             return hit[1]
+        ident = self.whois_uncached(ip)
+        if ident is not None:
+            self._whois_cache[ip] = (time.time() + 60, ident)
+        return ident
+
+    def whois_uncached(self, ip):
         try:
-            d = json.loads(self.ts("whois", "--json", ip))
+            # Keep a stalled identity lookup below the sender's five-second /info timeout.
+            d = json.loads(self.ts("whois", "--json", ip, timeout=3))
+        except TailscaleUnavailable:
+            log("whois temporarily unavailable for", ip)
+            raise
         except Exception as e:
             log("whois failed for", ip, e)
             return None
         node, up = d.get("Node") or {}, d.get("UserProfile") or {}
+        # Shared-out peers deliberately have no MagicDNS name. Trust only the LocalAPI's
+        # node identity bound to this exact source address, never ComputedName or a claim
+        # inside the HTTP envelope. StableID is case-sensitive; its wire spelling is hex.
+        stable_id = node.get("StableID")
+        address_matches = False
+        try:
+            source = ipaddress.ip_address(ip)
+            address_matches = any(source == ipaddress.ip_interface(a).ip and
+                                  ipaddress.ip_interface(a).network.num_addresses == 1
+                                  for a in node.get("Addresses", []))
+        except (ValueError, TypeError):
+            pass
+        stable_valid = (stable_peer_id(stable_id) is not None and address_matches and
+                        type(node.get("ID")) is int and node["ID"] > 0 and
+                        type(node.get("User")) is int and node["User"] > 0 and
+                        type(up.get("ID")) is int and up["ID"] == node["User"])
+        dns_name = (node.get("Name") or "").rstrip(".").lower()
         ident = {
             "ip": ip,
-            "node": (node.get("Name") or "").rstrip(".").lower(),
-            "host": ((node.get("Hostinfo") or {}).get("Hostname") or "").lower(),
+            "node": dns_name or (stable_peer_id(stable_id) if stable_valid else ""),
+            "host": (((node.get("Hostinfo") or {}).get("Hostname") or "").lower() if dns_name else ""),
             "tags": node.get("Tags") or [],
             "user": up.get("LoginName") or "",
         }
-        self._whois_cache[ip] = (time.time() + 60, ident)
+        if stable_valid:
+            ident.update(stable_id=stable_id, dns_name=dns_name)
         return ident
 
     def self_node(self):
         s = self.status()["Self"]
-        return {"node": s["DNSName"].rstrip(".").lower(), "ips": s.get("TailscaleIPs") or []}
+        return {"node": s["DNSName"].rstrip(".").lower(), "ips": s.get("TailscaleIPs") or [],
+                "stable_id": s.get("ID")}
 
     def resolve(self, peer):
         """'ubuntu' | 'ubuntu.tailXXXX.ts.net' | '100.x.y.z' -> (fqdn, ipv4)"""
@@ -520,7 +640,7 @@ class Ctx:
             t = time.time()
             limit = int(self.cfg.get("wake_rate") or 0)
             with self._wake_lock:
-                key = (ident["node"], agent)
+                key = (peer_identity(ident), agent)     # one budget per peer, whether it pushes or pulls
                 hits = [x for x in self._now_hits.get(key, []) if x > t - 3600]
                 if len(hits) >= limit:
                     eff = "batch"
@@ -586,7 +706,9 @@ def validate_env(env):
         return "bad from/to"
     req, response = env.get("request"), env.get("response")
     if "request" in env:
-        if (not isinstance(req, dict) or set(req) != {"timeout_seconds", "reply_port"} or
+        pull = is_pull_request(env)
+        allowed = {"timeout_seconds", "reply_port", "transport", "uploads"} if pull else {"timeout_seconds", "reply_port"}
+        if (not isinstance(req, dict) or set(req) - allowed or not {"timeout_seconds", "reply_port"} <= set(req) or
                 type(req.get("timeout_seconds")) is not int or not 1 <= req["timeout_seconds"] <= 604800 or
                 type(req.get("reply_port")) is not int or not 1 <= req["reply_port"] <= 65535 or
                 env.get("kind") != "request" or "response" in env or env.get("reply_to")):
@@ -595,6 +717,25 @@ def validate_env(env):
             parse_iso(env["ts"]) + dt.timedelta(seconds=req["timeout_seconds"])
         except (ValueError, OverflowError):
             return "request deadline outside supported timestamp range"
+        if pull:
+            if not re.fullmatch(r"node:(?:[0-9a-f]{2}){1,128}", env["from"]) or env.get("fetch"):
+                return "pull requests require a stable node sender and uploaded attachments"
+            uploads = req.get("uploads", [])
+            if not isinstance(uploads, list) or len(uploads) > 100:
+                return "bad request uploads"
+            names, tokens = set(), set()
+            for item in uploads:
+                if (not isinstance(item, dict) or set(item) != {"token", "name", "sha256", "size", "mime"} or
+                        not isinstance(item["token"], str) or not TOKEN_RE.fullmatch(item["token"]) or
+                        not isinstance(item["name"], str) or item["name"] != safe_name(item["name"]) or
+                        not item["name"] or item["name"] in names or item["token"] in tokens or
+                        not isinstance(item["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) or
+                        type(item["size"]) is not int or item["size"] < 0 or
+                        not isinstance(item["mime"], str) or len(item["mime"]) > 128 or
+                        any(ord(c) < 32 or ord(c) == 127 for c in item["mime"])):
+                    return "bad request upload item"
+                names.add(item["name"])
+                tokens.add(item["token"])
     if "response" in env:
         if (not isinstance(response, dict) or set(response) != {"state", "seq"} or
                 response.get("state") not in REQUEST_STATES or type(response.get("seq")) is not int or
@@ -621,6 +762,7 @@ def validate_env(env):
 
 # ---------------------------------------------------------------- durable request lifecycle (optional protocol v1 extension)
 REQUEST_CAPABILITY = "request-lifecycle-v1"
+REQUEST_PULL_CAPABILITY = "request-pull-v1"
 REQUEST_STATES = ("received", "running", "completed", "failed", "rejected", "blocked", "timed_out")
 REQUEST_FINAL = ("completed", "failed", "rejected", "blocked")
 # Local lifecycle evidence for incoming requests (NULL = not known). received_at: durable receiver acceptance;
@@ -657,6 +799,8 @@ def request_db(ctx):
                 next_attempt REAL NOT NULL DEFAULT 0, delivered_at TEXT, last_error TEXT);
             CREATE TABLE IF NOT EXISTS response_events (
                 id TEXT PRIMARY KEY, request_id TEXT NOT NULL, envelope TEXT NOT NULL, received_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS pull_staging (
+                id TEXT PRIMARY KEY, peer TEXT NOT NULL, envelope TEXT NOT NULL, expires TEXT NOT NULL);
         """)
         migrate_request_ledger(db)
     except BaseException:
@@ -802,8 +946,9 @@ def queue_response(db, row, state, text, fetch=None, max_bytes=256 * 1024):
                (state, seq, packed, env["ts"] if state == "timed_out" else None,
                 env["ts"] if running else None, env["ts"] if running else None,
                 env["ts"] if final else None, env["id"] if final else None, row["id"]))
-    db.execute("INSERT INTO response_outbox(id,request_id,peer,port,envelope) VALUES(?,?,?,?,?)",
-               (env["id"], row["id"], row["peer"], row["port"], packed))
+    if not is_pull_request(original):
+        db.execute("INSERT INTO response_outbox(id,request_id,peer,port,envelope) VALUES(?,?,?,?,?)",
+                   (env["id"], row["id"], row["peer"], row["port"], packed))
     return env
 
 
@@ -813,6 +958,14 @@ def save_outgoing_request(ctx, env, peer, port):
         db.execute("INSERT INTO requests(direction,id,peer,port,envelope,deadline,state,submission) "
                    "VALUES('outgoing',?,?,?,?,?,'pending','prepared')",
                    (env["id"], peer, port, json_canonical(env), deadline))
+        if is_pull_request(env):
+            resolved, ip = ctx.resolve(peer)
+            ident = fresh_whois(ctx, ip)
+            key = stable_peer_id(ident.get("stable_id")) if ident else None
+            if resolved != peer or not key or not ctx.access_decision(ident)[0]:
+                raise ValueError("pull destination requires an authenticated stable node identity and local authorization")
+            db.execute("UPDATE requests SET record=? WHERE direction='outgoing' AND id=?",
+                       (json_canonical({"peer_identity": key}), env["id"]))
 
 
 def accept_request(ctx, rec):
@@ -871,6 +1024,13 @@ def accept_response(ctx, env, peer):
     return True
 
 
+def same_result_files(stored, fresh):
+    """Attachment identity for an identical retry. Each attempt stages its files under a new outbox token, so
+    names, sizes and SHA-256 are compared in order, never the tokened URLs."""
+    key = lambda items: [(i.get("name"), i.get("size"), i.get("sha256")) for i in items or []]  # noqa: E731
+    return key(stored) == key(fresh)
+
+
 def respond_request(ctx, mid, state, text, fetch=None):
     if state not in ("running",) + REQUEST_FINAL:
         raise ValueError("invalid response state")
@@ -881,7 +1041,7 @@ def respond_request(ctx, mid, state, text, fetch=None):
             raise ValueError("no tracked incoming request with this ID")
         if row["state"] in REQUEST_FINAL:
             previous = json.loads(row["latest"])
-            if row["state"] == state and previous["text"] == text and previous.get("fetch", []) == (fetch or []):
+            if row["state"] == state and previous["text"] == text and same_result_files(previous.get("fetch"), fetch):
                 return previous
             raise ValueError("request already has a durable final result")
         expired = parse_iso(row["deadline"]) <= now_utc()
@@ -912,6 +1072,7 @@ def request_view(row):
     known = row["state"] in REQUEST_FINAL
     overdue = not known and parse_iso(row["deadline"]) <= now_utc()
     view = {"id": row["id"], "direction": row["direction"], "peer": row["peer"],
+            "transport": env.get("request", {}).get("transport", "push"),
             "agent": env.get("agent"), "from_agent": env.get("from_agent"), "port": row["port"],
             "state": row["state"] if known or not overdue else "timed_out", "last_state": row["state"],
             "deadline": row["deadline"], "overdue": overdue, "outcome_known": known,
@@ -1159,6 +1320,71 @@ def request_backlog(home, now=None):
             "outgoing": outgoing}
 
 
+def prepare_pull_request(ctx, env, ident):
+    """Reserve an immutable owner/request/manifest before any file is accepted or agent is woken."""
+    error = validate_env(env)
+    if error or not is_pull_request(env) or not sender_matches(env, ident):
+        raise ValueError(error or "pull request sender does not match authenticated node")
+    uploads = env["request"].get("uploads", [])
+    if sum(item["size"] for item in uploads) > ctx.cfg["max_fetch_bytes"]:
+        raise ValueError("request uploads exceed max_fetch_bytes")
+    deadline = iso(parse_iso(env["ts"]) + dt.timedelta(seconds=env["request"]["timeout_seconds"]))
+    packed, peer = json_canonical(env), peer_identity(ident)
+    with request_db(ctx) as db:
+        db.execute("BEGIN IMMEDIATE")
+        existing = request_row(db, "incoming", env["id"])
+        staged = db.execute("SELECT * FROM pull_staging WHERE id=?", (env["id"],)).fetchone()
+        for row in (existing, staged):
+            if row and (row["peer"] != peer or row["envelope"] != packed):
+                raise ValueError("request ID already belongs to a different sender or envelope")
+        if existing:
+            return False
+        if parse_iso(deadline) <= now_utc():
+            raise ValueError("request upload deadline has passed")
+        if staged:
+            return False
+        db.execute("INSERT INTO pull_staging VALUES(?,?,?,?)", (env["id"], peer, packed, deadline))
+    return True
+
+
+def pull_upload_manifest(ctx, mid, peer, token=None):
+    with request_db(ctx) as db:
+        row = db.execute("SELECT * FROM pull_staging WHERE id=? AND peer=?", (mid, peer)).fetchone()
+        if not row:
+            return None
+        env = json.loads(row["envelope"])
+        if token is None:
+            return env
+        # No mutation of request inputs is possible after the request was committed.
+        if request_row(db, "incoming", mid) or parse_iso(row["expires"]) <= now_utc():
+            return None
+        return next((item for item in env["request"].get("uploads", []) if item["token"] == token), None)
+
+
+def materialize_pull_uploads(ctx, env, ident):
+    """Verify durable uploads and stage local inbox files before acknowledging request acceptance."""
+    staged = pull_upload_manifest(ctx, env["id"], peer_identity(ident))
+    if staged != env:
+        raise ValueError("prepare the identical pull request before committing it")
+    uploads = env["request"].get("uploads", [])
+    if not uploads:
+        return
+    directory = ctx.inbox / env["id"] / "files"
+    private_mkdir(directory)                       # the hard links share the uploads' 0600 inodes
+    for item in uploads:
+        source = ctx.home / "requests" / "uploads" / env["id"] / item["token"]
+        if (not source.is_file() or source.is_symlink() or source.stat().st_size != item["size"] or
+                sha256_file(source) != item["sha256"]):
+            raise ValueError("request upload is missing or incomplete: " + item["name"])
+        destination = directory / item["name"]
+        if destination.exists():
+            if destination.is_symlink() or destination.stat().st_size != item["size"] or sha256_file(destination) != item["sha256"]:
+                raise ValueError("local request attachment conflicts with its immutable manifest")
+        else:
+            os.link(str(source), str(destination))
+    sync_directory(directory)
+
+
 def recover_request_inbox(ctx):
     """Recover inbox files lost between SQLite commit and materialization; never replay agent execution."""
     with request_db(ctx) as db:
@@ -1304,20 +1530,27 @@ def make_handler(ctx, me):
         def log_message(self, fmt, *a):
             log(self.client_address[0], fmt % a)
 
-        def reply(self, code, obj):
+        def reply(self, code, obj, headers=None):
             body = json.dumps(obj, ensure_ascii=False).encode()
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
 
-        def identify(self):
+        def identify(self, fresh=False):
             ip = self.client_address[0]
             if not is_tailnet_ip(ip):
                 self.reply(403, {"ok": False, "error": "not a tailnet address"})
                 return None
-            ident = ctx.whois(ip)
+            try:
+                ident = fresh_whois(ctx, ip) if fresh else ctx.whois(ip)
+            except TailscaleUnavailable:
+                self.reply(503, {"ok": False, "error": "identity lookup unavailable",
+                                 "code": "identity_unavailable"}, {"Retry-After": "1"})
+                return None
             if not isinstance(ident, dict) or not ident.get("node"):
                 self.reply(403, {"ok": False, "error": "unknown tailnet peer"})
                 return None
@@ -1355,11 +1588,12 @@ def make_handler(ctx, me):
                     return self.reply(500, {"ok": False, "error": "info unavailable"})
                 return self.reply(200, body)
             if path.startswith("/requests/"):
-                ident = self.identify()
+                ident = self.identify(fresh=True)
                 if not ident or not self.authorize(ident):
                     return
                 mid = path[len("/requests/"):]
-                state = incoming_request_status(ctx, mid, ident["node"]) if ID_RE.fullmatch(mid) else None
+                state = (incoming_request_status(ctx, mid, ident["node"]) or
+                         incoming_request_status(ctx, mid, peer_identity(ident))) if ID_RE.fullmatch(mid) else None
                 return self.reply(200, {"ok": True, "request": state}) if state else self.reply(404, {"ok": False, "error": "request not found"})
             m = re.match(r"^/f/([^/]+)/([^/]+)$", path)
             if not m:
@@ -1374,9 +1608,13 @@ def make_handler(ctx, me):
             if not TOKEN_RE.match(token) or not (d / "meta.json").is_file():
                 return self.reply(404, {"ok": False, "error": "not found"})
             meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
-            if parse_iso(meta["expires"]) <= now_utc():
+            if meta.get("persistent_request"):
+                ident = self.identify(fresh=True)
+                if not ident or not self.authorize(ident):
+                    return
+            if not meta.get("persistent_request") and parse_iso(meta["expires"]) <= now_utc():
                 return self.reply(404, {"ok": False, "error": "expired"})
-            if ident["node"] != meta["to"]:
+            if meta["to"] not in (ident["node"], peer_identity(ident)):
                 return self.reply(404, {"ok": False, "error": "not found"})
             if name not in meta["files"]:
                 return self.reply(404, {"ok": False, "error": "not found"})
@@ -1389,10 +1627,74 @@ def make_handler(ctx, me):
             with open(fp, "rb") as f:
                 shutil.copyfileobj(f, self.wfile, 1 << 20)
 
-        def do_POST(self):
-            if urllib.parse.urlparse(self.path).path != "/msg":
+        def do_PUT(self):
+            match = re.fullmatch(r"/requests/([A-Za-z0-9_-]{8,64})/uploads/([A-Za-z0-9_-]{32,64})",
+                                 urllib.parse.urlparse(self.path).path)
+            if not match:
                 return self.reply(404, {"ok": False, "error": "not found"})
-            ident = self.identify()
+            ident = self.identify(fresh=True)
+            if not ident or not self.authorize(ident):
+                return
+            mid, token = match.groups()
+            item = pull_upload_manifest(ctx, mid, peer_identity(ident), token)
+            if item is None:
+                return self.reply(404, {"ok": False, "error": "upload not found or request already committed"})
+            lengths = self.headers.get_all("Content-Length") or []
+            if len(lengths) != 1 or self.headers.get("Transfer-Encoding"):
+                return self.reply(411, {"ok": False, "error": "one Content-Length required"})
+            try:
+                size = int(lengths[0])
+            except ValueError:
+                size = -1
+            if size != item["size"] or size < 0 or size > cfg["max_fetch_bytes"]:
+                return self.reply(413, {"ok": False, "error": "upload length does not match manifest or limit"})
+            directory = ctx.home / "requests" / "uploads" / mid
+            private_mkdir(directory)
+            destination = directory / token
+            temporary = directory / (token + ".part-" + secrets.token_hex(8))
+            existed, digest, remaining = destination.is_file(), hashlib.sha256(), size
+            old_timeout = self.connection.gettimeout()
+            try:
+                self.connection.settimeout(30)
+                with private_open(temporary) as stream:
+                    while remaining:
+                        chunk = self.rfile.read(min(1 << 20, remaining))
+                        if not chunk:
+                            raise ValueError("incomplete upload")
+                        stream.write(chunk)
+                        digest.update(chunk)
+                        remaining -= len(chunk)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                if digest.hexdigest() != item["sha256"]:
+                    raise ValueError("upload sha256 mismatch")
+                # Recheck access and reservation after a potentially long upload.
+                try:
+                    current = fresh_whois(ctx, self.client_address[0])
+                except TailscaleUnavailable:     # PR #17: retryable; the sender resumes the same request
+                    self.close_connection = True
+                    return self.reply(503, {"ok": False, "error": "identity lookup unavailable",
+                                            "code": "identity_unavailable"}, {"Retry-After": "1"})
+                if (not current or peer_identity(current) != peer_identity(ident) or not ctx.access_decision(current)[0] or
+                        pull_upload_manifest(ctx, mid, peer_identity(current), token) != item):
+                    return self.reply(409, {"ok": False, "error": "upload authorization or request state changed"})
+                os.replace(temporary, destination)
+                sync_directory(directory)
+                return self.reply(200 if existed else 201, {"ok": True, "id": mid, "token": token,
+                                                          "sha256": item["sha256"], "size": size})
+            except (OSError, ValueError) as exc:
+                self.close_connection = True
+                return self.reply(400, {"ok": False, "error": str(exc) if isinstance(exc, ValueError) else "incomplete upload"})
+            finally:
+                self.connection.settimeout(old_timeout)
+                if temporary.exists():
+                    temporary.unlink()
+
+        def do_POST(self):
+            route = urllib.parse.urlparse(self.path).path
+            if route not in ("/msg", "/requests/prepare"):
+                return self.reply(404, {"ok": False, "error": "not found"})
+            ident = self.identify(fresh=route == "/requests/prepare")
             if not ident:
                 return
             if not self.authorize(ident):
@@ -1416,10 +1718,24 @@ def make_handler(ctx, me):
             err = validate_env(env)
             if err:
                 return self.reply(400, {"ok": False, "error": err})
-            if env["from"].lower().rstrip(".") != ident["node"]:
+            if is_pull_request(env) and route == "/msg":
+                ident = self.identify(fresh=True)
+                if not ident or not self.authorize(ident):
+                    return
+            if not sender_matches(env, ident):
                 return self.reply(403, {"ok": False, "error": "'from' does not match tailscale identity %s" % ident["node"]})
             if env["to"].lower().rstrip(".") not in (me, me.split(".")[0]):
                 return self.reply(400, {"ok": False, "error": "misdirected: I am %s" % me})
+            if route == "/requests/prepare":
+                try:
+                    fresh = prepare_pull_request(ctx, env, ident)
+                except ValueError as exc:
+                    return self.reply(409, {"ok": False, "error": str(exc)})
+                return self.reply(201 if fresh else 200, {"ok": True, "id": env["id"],
+                    "committed": request_snapshot(ctx.home, env["id"]) is not None})
+            if is_pull_request(env):
+                # Persist the authenticated canonical principal, not a name supplied by the sender.
+                ident = dict(ident, node=peer_identity(ident))
             with ctx._inbox_lock:
                 path = ctx.inbox / (env["id"] + ".json")
                 if "response" in env:
@@ -1441,6 +1757,8 @@ def make_handler(ctx, me):
                        "wake": {"requested": requested, "effective": eff, "reason": why}}}
                 if "request" in env:
                     try:
+                        if is_pull_request(env):
+                            materialize_pull_uploads(ctx, env, ident)
                         fresh = accept_request(ctx, rec)
                     except ValueError as exc:
                         return self.reply(409, {"ok": False, "error": str(exc)})
@@ -1449,7 +1767,8 @@ def make_handler(ctx, me):
                         return self.reply(200, {"ok": True, "id": env["id"], "duplicate": True})
                 atomic_write(path, json.dumps(rec, ensure_ascii=False, indent=2).encode("utf-8"))
                 log("message", env["id"], "from", ident["node"] + ("/" + env["from_agent"] if env.get("from_agent") else ""),
-                    "to @%s (%s)" % (agent, astatus), "files=%d" % len(env.get("fetch", [])),
+                    "to @%s (%s)" % (agent, astatus), "files=%d" % len(
+                        env["request"].get("uploads", []) if is_pull_request(env) else env.get("fetch", [])),
                     "wake=%s->%s (%s)" % (requested, eff, why))
                 if astatus == "unknown":
                     log("WARNING: message", env["id"], "addressed to unknown agent %r: stored, nobody woken" % agent)
@@ -1737,7 +2056,7 @@ def info_payload(home, cfg, agents, me, native_name):
         out.append({"agent": name, "default": name == cfg.get("default_agent"),
                     "session": session_view(b, native_name(b)) if b else None})
     return {"ok": True, "v": VERSION, "product": PRODUCT, "version": PRODUCT_VERSION, "node": me,
-            "capabilities": [REQUEST_CAPABILITY], "agents": out, "agents_total": total, "agents_truncated": total > len(names),
+            "capabilities": [REQUEST_CAPABILITY, REQUEST_PULL_CAPABILITY], "agents": out, "agents_total": total, "agents_truncated": total > len(names),
             "generated_at": iso(now_utc())}
 
 
@@ -1827,10 +2146,69 @@ def wake_payload(rec):
     return d
 
 
+# The only error codes a webhook diagnostic may name: generic categories, printed in this spelling and never as
+# received, so no prefix, suffix or variant of a remote code can carry private text into a log.
+WEBHOOK_ERROR_CODES = frozenset((
+    "bad_request", "invalid_request", "invalid_payload", "invalid_json", "invalid_hook", "unknown_hook",
+    "unauthorized", "invalid_token", "expired_token", "invalid_signature", "forbidden", "not_found",
+    "method_not_allowed", "conflict", "payload_too_large", "unsupported_media_type", "rate_limited",
+    "too_many_requests", "internal_error", "bad_gateway", "service_unavailable", "gateway_timeout", "timeout"))
+WEBHOOK_RETRY_AFTER_RE = re.compile(r"[0-9]{1,5}\Z")
+# Likewise the only Retry-After delays it may name: any other number could wrap digits that were sent (a PIN
+# inside 15739), so it is left out.
+WEBHOOK_RETRY_AFTER_SECONDS = frozenset((1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600))
+
+
+def webhook_sensitive(url, secret, payload):
+    """What a webhook must never get back into logs or inbox records: the secret, each part of the URL that can
+    carry a token (credentials, host, path, query, fragment and their segments, decoded too) and the message
+    values sent in the payload. Every non-empty value counts, however short. The port is no secret: a number
+    that only appears in it does not hide a Retry-After."""
+    u = urllib.parse.urlsplit(url)
+    values = [secret, u.hostname, u.path, u.query, u.fragment, u.username, u.password]
+    values += re.split(r"[/;,&=?#]+", "%s?%s#%s" % (u.path, u.query, u.fragment))
+    values += [payload.get(k) for k in ("id", "from", "agent", "from_agent", "text_preview")]
+    values += [urllib.parse.unquote(v) for v in list(values) if isinstance(v, str)]
+    return sorted({v for v in values if isinstance(v, str) and v}, key=len, reverse=True)
+
+
+def repeats_sent(value, sensitive):
+    """Whether a value from a webhook answer overlaps anything that was sent to it, ignoring case."""
+    low = value.lower()
+    return any(v.lower() in low or low in v.lower() for v in sensitive)
+
+
+def webhook_error(status, retry_after, body, sensitive):
+    """Bounded, non-secret diagnostics for a non-2xx webhook answer. A webhook can echo anything it received
+    (its own path, headers, the message), so no free text from the body is ever kept: only the HTTP status, one
+    error code from a JSON body (`code`, `error_code`, `error` or `error.code`) that names a category of the
+    fixed WEBHOOK_ERROR_CODES, such as `invalid_hook`, and a Retry-After of the fixed WEBHOOK_RETRY_AFTER_SECONDS,
+    each kept only when it repeats nothing that was sent (the Retry-After neither as written nor without its
+    leading zeros)."""
+    detail = []
+    try:
+        obj = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        obj = None
+    if isinstance(obj, dict):
+        nested = obj.get("error") if isinstance(obj.get("error"), dict) else {}
+        for code in (obj.get("code"), obj.get("error_code"), obj.get("error"), nested.get("code")):
+            low = code.lower() if isinstance(code, str) else ""
+            if low in WEBHOOK_ERROR_CODES and not repeats_sent(low, sensitive):
+                detail.append("code " + low)
+                break
+    seconds = retry_after.strip() if isinstance(retry_after, str) else ""
+    if (WEBHOOK_RETRY_AFTER_RE.match(seconds) and int(seconds) in WEBHOOK_RETRY_AFTER_SECONDS
+            and not any(repeats_sent(v, sensitive) for v in (seconds, str(int(seconds))))):
+        detail.append("retry after %d s" % int(seconds))
+    return "HTTP %d" % status + (" (%s)" % ", ".join(detail) if detail else "")
+
+
 def call_webhook(a, rec, timeout):
     url = read_secret_value(a, "url")
     secret = read_secret_value(a, "secret")
-    redact = lambda s: s.replace(url, "<url>").replace(secret, "<secret>") if secret else s.replace(url, "<url>")
+    payload = wake_payload(rec)
+    sensitive = webhook_sensitive(url, secret, payload)
     u = urllib.parse.urlparse(url)
     if u.scheme not in ("http", "https") or not u.hostname:
         raise AdapterError("webhook url must be http(s)://")
@@ -1840,7 +2218,8 @@ def call_webhook(a, rec, timeout):
             raise AdapterError("secret contains a newline")
         scheme = a.get("scheme", "Bearer")
         headers[a.get("header", "Authorization")] = (scheme + " " + secret) if scheme else secret
-    body = json.dumps(wake_payload(rec), ensure_ascii=False).encode("utf-8")
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    c = None
     try:
         if u.scheme == "https":
             c = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout, context=ssl.create_default_context())
@@ -1848,12 +2227,14 @@ def call_webhook(a, rec, timeout):
             c = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
         c.request("POST", (u.path or "/") + ("?" + u.query if u.query else ""), body=body, headers=headers)
         r = c.getresponse()
-        r.read(4096)
-        c.close()
-    except Exception as e:  # never let the url/secret reach the log via the exception text
-        raise AdapterError(redact("%s: %s" % (type(e).__name__, e)))
+        resp = r.read(4096)
+    except Exception as e:  # only the type: its text can echo the URL, secret or message, in any case or encoding
+        raise AdapterError(type(e).__name__)
+    finally:
+        if c is not None:
+            c.close()
     if not 200 <= r.status < 300:  # redirects are not followed (would forward the secret)
-        raise AdapterError("HTTP %d" % r.status)
+        raise AdapterError(webhook_error(r.status, r.getheader("Retry-After"), resp, sensitive))
     return "HTTP %d" % r.status
 
 
@@ -1895,7 +2276,8 @@ def wake_access_decision(ctx, rec):
 
 
 def deliver_wake(ctx, path):
-    """Run the adapter with retries. Returns True on success. Records the outcome (no secrets) in the
+    """Run the adapter with retries. Returns True on adapter success, even if recording fails.
+    Best-effort recording of the outcome (no secrets) goes in the
     inbox record as `wake_delivery`; on give-up the message simply stays in `inbox --pending`."""
     mid = Path(path).stem
     try:
@@ -1934,14 +2316,19 @@ def deliver_wake(ctx, path):
                 break
             attempted += 1
             res = call_webhook(a, rec, timeout) if a["type"] == "webhook" else call_exec(a, path, timeout, agent)
-            log("wake", mid, "@%s" % agent, a["type"], "ok (attempt %d): %s" % (n, res))
-            update_record(path, wake_delivery={"adapter": a["type"], "agent": agent, "ok": True, "attempts": attempted,
-                                               "at": iso(now_utc())})
-            return True
         except AdapterError as e:
             err = str(e)[-300:]
         except Exception as e:
             err = type(e).__name__
+        else:
+            # Notification succeeded. A bookkeeping failure must never send it again.
+            log("wake", mid, "@%s" % agent, a["type"], "ok (attempt %d): %s" % (n, res))
+            try:
+                update_record(path, wake_delivery={"adapter": a["type"], "agent": agent, "ok": True, "attempts": attempted,
+                                                   "at": iso(now_utc())})
+            except Exception as e:
+                log("wake", mid, "adapter succeeded but could not record wake_delivery:", type(e).__name__)
+            return True
         log("wake", mid, "@%s" % agent, a["type"], "failed (attempt %d/%d): %s" % (n, attempts, err))
         if n < attempts:
             time.sleep(backoff * 2 ** (n - 1))
@@ -1976,7 +2363,8 @@ def sweep_outbox(ctx):
             continue
         try:
             meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
-            expired = parse_iso(meta["expires"]) + dt.timedelta(hours=1) < now
+            expired = not meta.get("persistent_request") and \
+                parse_iso(meta["expires"]) + dt.timedelta(hours=1) < now
         except Exception:
             counts["failed"] += 1
             continue
@@ -2352,33 +2740,219 @@ def split_peer(peer, default_port):
     return peer, default_port
 
 
-def prepare_attachments(ctx, a, env, to_fqdn):
+def prepare_attachments(ctx, a, env, to_fqdn, persistent_request=None):
     me, msg_id = env["from"], env["id"]
     if a.file:
+        if persistent_request and a.ttl_hours is not None:
+            raise ValueError("pull result attachments are persistent; --ttl-hours is not supported")
+        if persistent_request and (len(a.file) > 100 or
+                sum(Path(f).stat().st_size for f in a.file) > ctx.cfg["max_fetch_bytes"]):
+            raise ValueError("result attachments exceed count or max_fetch_bytes limit")
         ttl = a.ttl_hours if a.ttl_hours is not None else ctx.cfg["outbox_ttl_hours"]
         expires = iso(now_utc() + dt.timedelta(seconds=int(ttl * 3600)))
         token = secrets.token_urlsafe(32)
         d = ctx.outbox / token
-        (d / "files").mkdir(parents=True)
-        meta = {"id": msg_id, "to": to_fqdn, "expires": expires, "files": {}}
-        items = []
-        for f in a.file:
-            src = Path(f)
-            if not src.is_file():
-                die("not a file: %s" % f)
-            name = safe_name(src.name)
-            while name in meta["files"]:
-                name = "_" + name
-            dst = d / "files" / name
-            shutil.copyfile(src, dst)  # snapshot: hash stays valid even if the original changes
-            mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
-            item = {"name": name, "size": dst.stat().st_size, "sha256": sha256_file(dst), "mime": mime,
-                    "url": "http://%s:%d/f/%s/%s" % (me, int(ctx.cfg["port"]), token, urllib.parse.quote(name)),
-                    "expires": expires}
-            meta["files"][name] = item
-            items.append(item)
-        atomic_write(d / "meta.json", json.dumps(meta, ensure_ascii=False, indent=2).encode("utf-8"))
+        private_mkdir(d / "files")
+        try:
+            items = stage_attachment_files(ctx, a, d, me, msg_id, to_fqdn, token, expires, persistent_request)
+        except BaseException:
+            shutil.rmtree(d, ignore_errors=True)       # nothing refers to a copy that was never completed
+            raise
         env["fetch"] = items
+        return d
+    return None
+
+
+def stage_attachment_files(ctx, a, d, me, msg_id, to_fqdn, token, expires, persistent_request):
+    """Snapshot each file under outbox/<token>/files and write meta.json -> the fetch entries."""
+    meta = {"id": msg_id, "to": to_fqdn, "expires": expires, "files": {}}
+    if persistent_request:
+        meta["persistent_request"] = persistent_request
+    items = []
+    copied_bytes = 0
+    for f in a.file:
+        src = Path(f)
+        if not src.is_file():
+            die("not a file: %s" % f)
+        name = safe_name(src.name)
+        while name in meta["files"]:
+            name = "_" + name
+        dst = d / "files" / name
+        if persistent_request:
+            with open(src, "rb") as reader, private_open(dst) as writer:
+                while True:
+                    chunk = reader.read(1 << 20)
+                    if not chunk:
+                        break
+                    copied_bytes += len(chunk)
+                    if copied_bytes > ctx.cfg["max_fetch_bytes"]:
+                        raise ValueError("result attachments exceed max_fetch_bytes")
+                    writer.write(chunk)
+                writer.flush()
+                os.fsync(writer.fileno())
+        else:
+            with open(src, "rb") as reader, private_open(dst) as writer:
+                shutil.copyfileobj(reader, writer)  # snapshot: hash stays valid even if the original changes
+        mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        item = {"name": name, "size": dst.stat().st_size, "sha256": sha256_file(dst), "mime": mime,
+                "url": "http://%s:%d/f/%s/%s" % (me, int(ctx.cfg["port"]), token, urllib.parse.quote(name)),
+                "expires": expires}
+        if persistent_request:
+            del item["expires"]
+        meta["files"][name] = item
+        items.append(item)
+    if persistent_request:
+        sync_directory(d / "files")
+    (durable_write if persistent_request else atomic_write)(
+        d / "meta.json", json.dumps(meta, ensure_ascii=False, indent=2).encode("utf-8"))
+    return items
+
+
+def prepare_pull_attachments(ctx, a, env):
+    """Snapshot the attachments in requests/sending/<id>, a new directory that is returned (None without files).
+    Any failure removes it again: no ledger row, printed ID or resume path refers to it yet."""
+    if a.ttl_hours is not None:
+        raise ValueError("pull requests use their request deadline for uploads; --ttl-hours is not supported")
+    if len(a.file) > 100:
+        raise ValueError("at most 100 request attachments are allowed")
+    directory = ctx.home / "requests" / "sending" / env["id"]
+    names, items, total = set(), [], 0
+    env["request"]["uploads"] = items
+    if not a.file:
+        return None
+    private_mkdir(directory.parent)
+    try:
+        directory.mkdir(mode=0o700)          # an exclusive claim: never adopt (or later remove) another attempt's
+    except FileExistsError:
+        raise ValueError("request attachment directory already exists: " + env["id"])
+    try:
+        for filename in a.file:
+            source = Path(filename)
+            if not source.is_file():
+                raise ValueError("not a file: " + str(filename))
+            name = safe_name(source.name)
+            while name in names:
+                name = "_" + name
+                if len(name) > 200:
+                    name = secrets.token_hex(4) + name[-192:]
+            names.add(name)
+            token = secrets.token_urlsafe(32)
+            target = directory / token
+            digest, size = hashlib.sha256(), 0
+            with open(source, "rb") as reader, private_open(target) as writer:
+                while True:
+                    chunk = reader.read(1 << 20)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if total + size > ctx.cfg["max_fetch_bytes"]:
+                        raise ValueError("request attachments exceed max_fetch_bytes")
+                    digest.update(chunk)
+                    writer.write(chunk)
+                writer.flush()
+                os.fsync(writer.fileno())
+            total += size
+            items.append({"token": token, "name": name, "sha256": digest.hexdigest(), "size": size,
+                          "mime": mimetypes.guess_type(name)[0] or "application/octet-stream"})
+        sync_directory(directory)
+    except BaseException:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+    return directory
+
+
+def discard_unsaved_pull_snapshots(ctx, mid, staged, saving):
+    """Remove the new attachment snapshots of a pull request that was not saved. Before the save is attempted
+    nothing durable can refer to them. After a failed save, only a readable ledger without the outgoing row
+    proves that; a saved request keeps them for resume, and a missing or unreadable ledger keeps them too."""
+    if staged is None:
+        return
+    if saving:
+        try:
+            path = Path(ctx.home) / "requests" / "ledger.sqlite3"
+            db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+            try:
+                saved = db.execute("SELECT 1 FROM requests WHERE direction='outgoing' AND id=?", (mid,)).fetchone()
+            finally:
+                db.close()
+        except Exception as exc:
+            log("kept request attachment snapshots; could not check the request ledger:", type(exc).__name__)
+            return
+        if saved:
+            return
+    shutil.rmtree(staged, ignore_errors=True)
+
+
+def upload_request_file(ctx, env, item, ip, port, peer):
+    source = ctx.home / "requests" / "sending" / env["id"] / item["token"]
+    if (not source.is_file() or source.is_symlink() or source.stat().st_size != item["size"] or
+            sha256_file(source) != item["sha256"]):
+        raise ValueError("saved request attachment is missing or changed: " + item["name"])
+    # Hashing a large snapshot takes time: check the pinned destination again right before connecting, so a
+    # private input never goes to whoever holds the address now.
+    verify_pull_destination(ctx, env, peer, ip)
+    connection = http.client.HTTPConnection(ip, port, timeout=30)
+    try:
+        with open(source, "rb") as stream:
+            connection.request("PUT", "/requests/%s/uploads/%s" % (env["id"], item["token"]), stream,
+                               headers={"Host": "%s:%d" % (peer, port), "Content-Type": "application/octet-stream",
+                                        "Content-Length": str(item["size"])})
+            response = connection.getresponse()
+            raw = response.read(64 * 1024)
+        try:
+            body = json.loads(raw)
+        except ValueError:
+            body = None
+        if (response.status not in (200, 201) or not isinstance(body, dict) or body.get("ok") is not True or
+                body.get("id") != env["id"] or body.get("token") != item["token"] or
+                body.get("sha256") != item["sha256"] or body.get("size") != item["size"]):
+            raise RuntimeError("request attachment upload not confirmed (HTTP %s)" % response.status)
+    except (OSError, http.client.HTTPException) as exc:
+        raise TransportError(transport_diagnostic(peer, ip, port, "request attachment upload", exc)) from exc
+    finally:
+        connection.close()
+
+
+def verify_pull_destination(ctx, env, peer, ip):
+    """The destination pinned when the request was saved, checked again before each new connection: the
+    address must still belong to that stable Tailscale identity and local policy must still allow it, and
+    this machine must still be the request's sender. Each upload and the final commit opens a new
+    connection, and the identity behind the address can change between them."""
+    identity = fresh_whois(ctx, ip)
+    if not identity or identity.get("node") != peer or not ctx.access_decision(identity)[0]:
+        raise RuntimeError("request destination denied by local identity/access policy")
+    with request_db(ctx) as db:
+        saved = request_row(db, "outgoing", env["id"])
+        pinned = json.loads(saved["record"] or "{}").get("peer_identity") if saved else None
+    if pinned != peer_identity(identity):
+        raise RuntimeError("request destination stable identity changed")
+    if stable_peer_id(ctx.self_node().get("stable_id")) != env["from"]:
+        raise RuntimeError("request sender stable identity changed")
+
+
+def submit_pull_request(ctx, env, peer, ip, port):
+    verify_pull_destination(ctx, env, peer, ip)
+    try:
+        status, prepared = http_json(ip, port, "POST", "/requests/prepare", env, host=peer)
+        if (status not in (200, 201) or not isinstance(prepared, dict) or prepared.get("ok") is not True or
+                prepared.get("id") != env["id"]):
+            raise RuntimeError("request preparation not confirmed (HTTP %s): %s" %
+                               (status, prepared.get("error", "invalid response") if isinstance(prepared, dict) else "invalid response"))
+        if not prepared.get("committed"):
+            for item in env["request"].get("uploads", []):
+                upload_request_file(ctx, env, item, ip, port, peer)   # checks the destination before connecting
+        verify_pull_destination(ctx, env, peer, ip)
+        status, body = http_json(ip, port, "POST", "/msg", env, host=peer)
+    except (RuntimeError, OSError, ValueError) as exc:
+        with request_db(ctx) as db:
+            db.execute("UPDATE requests SET submission='unknown' WHERE direction='outgoing' AND id=?", (env["id"],))
+        raise RuntimeError("pull request %s remains resumable with `request resume %s`: %s" %
+                           (env["id"], env["id"], exc)) from exc
+    with request_db(ctx) as db:
+        accepted = status in (200, 202) and isinstance(body, dict) and body.get("ok") is True and body.get("id") == env["id"]
+        db.execute("UPDATE requests SET submission=? WHERE direction='outgoing' AND id=?",
+                   ("accepted" if accepted else "unknown" if status in (200, 202) else "rejected", env["id"]))
+    return status, body
 
 
 def cmd_send(ctx, a, reply_to=None, peer=None, agent=None):
@@ -2394,23 +2968,35 @@ def cmd_send(ctx, a, reply_to=None, peer=None, agent=None):
     for k, v in (("agent", agent), ("from_agent", from_agent)):
         if v is not None and agent_name_error(v):
             die("bad %s %r: %s" % (k, v, agent_name_error(v)))
-    me = ctx.self_node()["node"]
+    self_node = ctx.self_node()
+    me = self_node["node"]
     host, port = split_peer(addr, int(ctx.cfg["port"]))
     to_fqdn, to_ip = ctx.resolve(host)
     tracked = a.kind == "request" and not getattr(a, "legacy_request", False)
+    pull = getattr(a, "transport", "push") == "pull"
+    if pull and not tracked:
+        die("--transport pull requires a tracked request; it cannot be combined with --legacy-request")
     if tracked:
         status, info = http_json(to_ip, port, "GET", "/info", host=to_fqdn, timeout=5)
         if (status != 200 or not isinstance(info, dict) or info.get("node") != to_fqdn or
                 not isinstance(info.get("capabilities"), list) or REQUEST_CAPABILITY not in info["capabilities"]):
             die("peer does not advertise request-lifecycle-v1; upgrade it or explicitly use --legacy-request (no receipt/result guarantee)")
+        if pull and REQUEST_PULL_CAPABILITY not in info["capabilities"]:
+            die("peer does not advertise request-pull-v1; upgrade it before using --transport pull")
         timeout_seconds = getattr(a, "timeout_seconds", 900)
         if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 604800:
             die("--timeout-seconds must be 1..604800")
+    if pull:
+        me = stable_peer_id(self_node.get("stable_id"))
+        if not me:
+            die("Tailscale did not return this machine's StableID; pull requests cannot authenticate safely")
     msg_id = secrets.token_hex(8)  # hex: never starts with "-"
     env = {"v": VERSION, "id": msg_id, "from": me, "to": to_fqdn, "ts": iso(now_utc()),
            "kind": a.kind, "text": a.text}
     if tracked:
         env["request"] = {"timeout_seconds": timeout_seconds, "reply_port": int(ctx.cfg["port"])}
+        if pull:
+            env["request"]["transport"] = "pull"
     if reply_to or a.reply_to:
         env["reply_to"] = reply_to or a.reply_to
     if a.wake:  # omitted unless given, so receivers older than the wake field still accept it
@@ -2419,14 +3005,26 @@ def cmd_send(ctx, a, reply_to=None, peer=None, agent=None):
         env["agent"] = norm_agent(agent)
     if from_agent is not None:
         env["from_agent"] = norm_agent(from_agent)
-    prepare_attachments(ctx, a, env, to_fqdn)
-    error = validate_env(env)
-    if error:
-        die(error)
-    if tracked:
-        save_outgoing_request(ctx, env, to_fqdn, port)
+    staged, saving = None, False
+    if pull:
+        staged = prepare_pull_attachments(ctx, a, env)
+    else:
+        prepare_attachments(ctx, a, env, to_fqdn)
     try:
-        status, resp = http_json(to_ip, port, "POST", "/msg", env, host=to_fqdn)
+        error = validate_env(env)
+        if error:
+            die(error)
+        if tracked:
+            if staged is not None:
+                request_db(ctx).close()      # exists before the save, so a failed save can be told from a commit
+            saving = True
+            save_outgoing_request(ctx, env, to_fqdn, port)
+    except BaseException:
+        discard_unsaved_pull_snapshots(ctx, msg_id, staged, saving)
+        raise
+    try:
+        status, resp = submit_pull_request(ctx, env, to_fqdn, to_ip, port) if pull else \
+            http_json(to_ip, port, "POST", "/msg", env, host=to_fqdn)
     except (RuntimeError, OSError):
         if tracked:
             with request_db(ctx) as db:
@@ -2443,7 +3041,10 @@ def cmd_send(ctx, a, reply_to=None, peer=None, agent=None):
         print("note: %s does not understand from_agent (old tailmsg); resent without it" % to_fqdn, file=sys.stderr)
         del env["from_agent"]
         status, resp = http_json(to_ip, port, "POST", "/msg", env, host=to_fqdn)
-    out = {"status": status, "response": resp, "id": msg_id, "to": to_fqdn, "files": len(env.get("fetch", []))}
+    out = {"status": status, "response": resp, "id": msg_id, "to": to_fqdn,
+           "files": len(env["request"].get("uploads", [])) if pull else len(env.get("fetch", []))}
+    if pull:
+        out["transport"] = "pull"
     if "agent" in env:
         out["agent"] = env["agent"]
     if tracked:
@@ -2501,13 +3102,27 @@ def cmd_inbox(ctx, a):
         if (r.get("received") or {}).get("agent_status") == "unknown":
             ag = "%s?" % ag
         e = r["envelope"]
-        nf = len(e.get("fetch", []))
-        got = sum((ctx.inbox / e["id"] / "files" / safe_name(f.get("name") or "file")).is_file() for f in e.get("fetch", []))
+        attachments = e["request"].get("uploads", []) if is_pull_request(e) else e.get("fetch", [])
+        nf = len(attachments)
+        got = sum((ctx.inbox / e["id"] / "files" / safe_name(f.get("name") or "file")).is_file() for f in attachments)
         wd = r.get("wake_delivery") or {}
         mark = ("" if acked else "*") + ("!" if wd and not wd.get("ok") else "")
         frm = e["from"].split(".")[0] + ("/" + e["from_agent"] if e.get("from_agent") else "")
+        if getattr(a, "json", False):
+            # the same rows as the table, unabridged where it truncates; text stays the sender's data
+            rows.append((r["received"]["at"], e["id"], {
+                "id": e["id"], "received_at": r["received"]["at"], "from": e["from"],
+                "from_agent": e.get("from_agent"), "agent": rec_agent(r, dflt),
+                "agent_known": (r.get("received") or {}).get("agent_status") != "unknown",
+                "kind": e.get("kind"), "tracked_request": "request" in e, "wake": w, "acked": acked,
+                "wake_failed": bool(wd) and not wd.get("ok"), "files": nf, "files_fetched": got,
+                "reply_to": e.get("reply_to"), "text_preview": (e.get("text") or "")[:INBOX_PREVIEW]}))
+            continue
         rows.append((r["received"]["at"], e["id"], frm, "@" + ag if ag else "-", w + mark, nf, got,
                      e.get("reply_to") or "", (e.get("text") or "").replace("\n", " ")[:60]))
+    if getattr(a, "json", False):
+        print(json.dumps([row[2] for row in sorted(rows, key=lambda row: row[:2])], ensure_ascii=True, indent=2))
+        return
     for at, mid, frm, ag, w, nf, got, rt, txt in sorted(rows):
         files = "%d/%d files" % (got, nf) if nf else ""
         local = parse_iso(at).astimezone().strftime("%m-%d %H:%M %Z")
@@ -2556,7 +3171,15 @@ def cmd_fetch(ctx, a):
     _, r = load_msg(ctx, a.id)
     env, sender = r["envelope"], r["received"]["peer"]["node"]
     out = ctx.inbox / env["id"] / "files"
-    out.mkdir(parents=True, exist_ok=True)
+    private_mkdir(out)
+    if is_pull_request(env):
+        for item in env["request"].get("uploads", []):
+            path = out / item["name"]
+            if (not path.is_file() or path.is_symlink() or path.stat().st_size != item["size"] or
+                    sha256_file(path) != item["sha256"]):
+                raise ValueError("received request attachment is missing or changed: " + item["name"])
+            print("OK    %s  %d bytes  sha256 verified -> %s" % (item["name"], item["size"], path))
+        return
     ok = True
     for f in env.get("fetch", []):
         name = safe_name(f.get("name") or Path(urllib.parse.urlparse(f["url"]).path).name)
@@ -2573,6 +3196,14 @@ def cmd_fetch(ctx, a):
             _, ip = ctx.resolve(u.hostname)
             if not is_tailnet_ip(ip):
                 raise RuntimeError("resolved to non-tailnet ip %s" % ip)
+            if env.get("response") and env.get("reply_to"):
+                with request_db(ctx) as db:
+                    original = request_row(db, "outgoing", env["reply_to"])
+                if original and is_pull_request(json.loads(original["envelope"])):
+                    ident = fresh_whois(ctx, ip)
+                    pinned = json.loads(original["record"] or "{}").get("peer_identity")
+                    if not ident or pinned != peer_identity(ident) or not ctx.access_decision(ident)[0]:
+                        raise RuntimeError("result attachment destination identity or authorization changed")
             c = http.client.HTTPConnection(ip, u.port or 80, timeout=30)
             try:
                 try:
@@ -2584,7 +3215,7 @@ def cmd_fetch(ctx, a):
                     raise TransportError(transport_diagnostic(sender, ip, u.port or 80, "file fetch", e)) from e
                 h, n = hashlib.sha256(), 0
                 part = dst.with_name(dst.name + ".part")
-                with open(part, "wb") as w:
+                with private_open(part, truncate=True) as w:
                     while True:
                         try:
                             chunk = resp.read(1 << 20)
@@ -2611,14 +3242,71 @@ def cmd_fetch(ctx, a):
         sys.exit(2)
 
 
+def staged_result_referenced(ctx, request_id, token, since_seq=None):
+    """Whether a durable response of this incoming request may refer to the staged outbox token. The ledger is
+    opened read-only and nothing is created. Only a readable ledger with the original request's row, whose
+    responses all parse and name other copies, proves the copy unused; anything else counts as referenced.
+    since_seq is the response sequence seen before staging: any response committed since then may have been
+    this attempt's, published and already replaced as latest (pull responses keep no other record)."""
+    path = Path(ctx.home) / "requests" / "ledger.sqlite3"
+    if not path.is_file():
+        return True
+    db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        row = db.execute("SELECT latest,seq FROM requests WHERE direction='incoming' AND id=?",
+                         (request_id,)).fetchone()
+        if row is None or (since_seq is not None and row[1] != since_seq):
+            return True
+        packed = ([row[0]] if row[0] else []) + [r[0] for r in db.execute(
+            "SELECT envelope FROM response_outbox WHERE request_id=?", (request_id,))]
+    finally:
+        db.close()
+    marker = "/f/%s/" % token
+    for value in packed:
+        try:
+            fetch = json.loads(value).get("fetch", [])
+            urls = [item["url"] for item in fetch]
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return True
+        if any(not isinstance(url, str) or marker in url for url in urls):
+            return True
+    return False
+
+
+def discard_unreferenced_staging(ctx, request_id, staged, since_seq=None):
+    """Remove the copy this attempt staged, but only once the ledger proves that no durable response refers to
+    it. A missing, unreadable or malformed ledger keeps the copy: a response may already refer to it."""
+    if staged is None:
+        return
+    try:
+        if staged_result_referenced(ctx, request_id, staged.name, since_seq):
+            return
+    except Exception as exc:
+        log("kept staged result files; could not check the request ledger:", type(exc).__name__)
+        return
+    shutil.rmtree(staged, ignore_errors=True)
+
+
 def respond_with_files(ctx, rec, a, state):
     original = rec["envelope"]
     snapshot = request_snapshot(ctx.home, original["id"])
     if not snapshot:
         raise ValueError("no tracked incoming request with this ID")
     envelope = {"id": original["id"], "from": snapshot["response"]["from"]}
-    prepare_attachments(ctx, a, envelope, rec["received"]["peer"]["node"])
-    return respond_request(ctx, original["id"], state, a.text, envelope.get("fetch"))
+    staged = prepare_attachments(ctx, a, envelope, rec["received"]["peer"]["node"],
+                                 persistent_request=original["id"] if is_pull_request(original) else None)
+    try:
+        result = respond_request(ctx, original["id"], state, a.text, envelope.get("fetch"))
+    except BaseException:
+        # A refused or failed response leaves this copy unreferenced, unless the failure came after the durable
+        # commit: the ledger decides, not the exception. Once any response was committed after the snapshot, a
+        # requester may already have this copy's URLs although a later response replaced them as latest.
+        discard_unreferenced_staging(ctx, original["id"], staged, since_seq=snapshot["seq"])
+        raise
+    if result.get("fetch") != envelope.get("fetch"):
+        # An identical retry returned the stored response, which keeps its own copy and URLs.
+        discard_unreferenced_staging(ctx, original["id"], staged)
+    return result
 
 
 def cmd_reply(ctx, a):
@@ -2629,7 +3317,8 @@ def cmd_reply(ctx, a):
         if getattr(a, "agent", None) or getattr(a, "as_agent", None) or a.port:
             die("tracked reply uses original authenticated sender and agent routing; route overrides are not allowed")
         result = respond_with_files(ctx, r, a, "completed")
-        print(json.dumps({"id": r["envelope"]["id"], "response_id": result["id"], "state": "completed", "queued": True}))
+        detail = {"stored": True, "transport": "pull"} if is_pull_request(r["envelope"]) else {"queued": True}
+        print(json.dumps(dict(detail, id=r["envelope"]["id"], response_id=result["id"], state="completed")))
         return
     # route back to the sender's agent (from_agent) unless --agent overrides
     cmd_send(ctx, a, reply_to=r["envelope"]["id"], peer=r["received"]["peer"]["node"] +
@@ -2640,11 +3329,32 @@ def cmd_request(ctx, a):
     if a.request_cmd == "send":
         a.kind, a.reply_to = "request", None
         return cmd_send(ctx, a)
+    if a.request_cmd == "resume":
+        if not ID_RE.fullmatch(a.id):
+            die("bad request id")
+        with request_db(ctx) as db:
+            row = request_row(db, "outgoing", a.id)
+            if not row:
+                die("no outgoing request with this ID")
+            env, peer, port = json.loads(row["envelope"]), row["peer"], row["port"]
+        if not is_pull_request(env):
+            die("request resume is only supported for pull requests")
+        resolved, ip = ctx.resolve(peer)
+        if resolved != peer:
+            die("request destination identity changed")
+        status, response = submit_pull_request(ctx, env, peer, ip, port)
+        snapshot = request_snapshot(ctx.home, a.id, "outgoing")
+        print(json.dumps({"id": a.id, "status": status, "response": response,
+                          "submission": snapshot["submission"], "transport": "pull"}))
+        if snapshot["submission"] != "accepted":
+            sys.exit(2)
+        return
     if a.request_cmd == "respond":
         _, rec = load_msg(ctx, a.id)
         mid = rec["envelope"]["id"]
         result = respond_with_files(ctx, rec, a, a.state)
-        print(json.dumps({"id": mid, "response_id": result["id"], "state": a.state, "queued": True}))
+        detail = {"stored": True, "transport": "pull"} if is_pull_request(rec["envelope"]) else {"queued": True}
+        print(json.dumps(dict(detail, id=mid, response_id=result["id"], state=a.state)))
         return
     if a.request_cmd == "maintain":
         phases = request_maintenance(ctx)
@@ -2667,9 +3377,15 @@ def cmd_request(ctx, a):
             peer, ip = ctx.resolve(output["peer"])
             if peer != output["peer"]:
                 raise RuntimeError("request destination identity changed")
-            identity = ctx.whois(ip)
+            identity = fresh_whois(ctx, ip) if output.get("transport") == "pull" else ctx.whois(ip)
             if not identity or identity.get("node") != peer or not ctx.access_decision(identity)[0]:
                 raise RuntimeError("request destination denied by local identity/access policy")
+            if output.get("transport") == "pull":
+                with request_db(ctx) as db:
+                    row = request_row(db, "outgoing", a.id)
+                    pinned = json.loads(row["record"] or "{}").get("peer_identity")
+                if pinned != peer_identity(identity):
+                    raise RuntimeError("request destination stable identity changed")
             status, body = http_json(ip, output["port"], "GET", "/requests/" + a.id, host=peer, timeout=5)
             if status != 200 or not isinstance(body, dict):
                 raise RuntimeError("receiver status unavailable (HTTP %s); outcome remains unknown" % status)
@@ -2750,6 +3466,7 @@ def main():
             p.add_argument("--reply-to")
             p.add_argument("--timeout-seconds", type=int, default=900)
             p.add_argument("--legacy-request", action="store_true", help="opt out of request lifecycle for an old peer")
+            p.add_argument("--transport", choices=("push", "pull"), default="push")
     pr = sp.add_parser("request", help="tracked requests, receipts, results and timeout status")
     rs = pr.add_subparsers(dest="request_cmd", required=True)
     rq = rs.add_parser("send")
@@ -2757,11 +3474,14 @@ def main():
     rq.add_argument("text")
     rq.add_argument("--timeout-seconds", type=int, default=900)
     rq.add_argument("--legacy-request", action="store_true")
+    rq.add_argument("--transport", choices=("push", "pull"), default="push",
+                    help="pull sends files and polls results without any reverse connections")
     rq.add_argument("--file", action="append", default=[])
     rq.add_argument("--ttl-hours", type=float)
     rq.add_argument("--wake", choices=WAKE_LEVELS)
     rq.add_argument("--agent")
     rq.add_argument("--as", dest="as_agent")
+    rs.add_parser("resume", help="retry the same saved pull request and immutable attachments").add_argument("id")
     rq = rs.add_parser("status")
     rq.add_argument("id")
     rq.add_argument("--direction", choices=("incoming", "outgoing"), default="outgoing")
@@ -2779,6 +3499,8 @@ def main():
     pi = sp.add_parser("inbox", help="list received messages")
     pi.add_argument("--pending", action="store_true", help="only un-acked messages with effective wake now/batch")
     pi.add_argument("--agent", help="only messages for this agent (no `agent` in message = default_agent)")
+    pi.add_argument("--json", action="store_true", help="one JSON array, oldest first (text cut to %d characters)"
+                    % INBOX_PREVIEW)
     sp.add_parser("ack", help="mark message(s) as processed").add_argument("id", nargs="+")
     for name in ("show", "fetch"):
         sp.add_parser(name).add_argument("id")
