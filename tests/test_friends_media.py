@@ -10,12 +10,17 @@ import hashlib
 import io
 import itertools
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
 
-from support.public_harness import C, FriendsGateway, cli
+from support.public_harness import PUBLIC, C, FriendsGateway, cli, plain_env
+from test_friends_e2e import E2ECase
+
+import bot_gateway as G  # noqa: E402
 
 import bot_client as P  # noqa: E402
 import bot_mcp as M  # noqa: E402
@@ -194,10 +199,11 @@ class CliTests(MediaCase):
         self.assertEqual(200, status, job)
         stashed = P.stash_job_files(st, mid, job)
         self.assertNotIn(b64(PNG)[:40], json.dumps(stashed))
-        self.assertIn("data_omitted", json.dumps(stashed))
+        self.assertTrue(stashed["untrusted_content"]["attachments_stashed"])
         lease = {"job": stashed}
         with redirect_stderr(io.StringIO()):
-            saved = P.export_attachments(st, P.job_files(st, mid, lease), {"job_id": mid})
+            files = P.cached_job(st, mid, lease)["untrusted_content"]["attachments"]
+            saved = P.export_attachments(st, files, {"job_id": mid})
         self.assertEqual(PNG, Path(saved["files"][0]["path"]).read_bytes())
         self.assertEqual("image/png", saved["files"][0]["media_type"])
         # printed output never carries the base64
@@ -207,6 +213,76 @@ class CliTests(MediaCase):
             P.out(job)
         self.assertNotIn(b64(PNG)[:40], buf.getvalue())
         self.assertIn("attachments save", buf.getvalue())
+
+
+class SealedMediaTests(E2ECase):
+    def test_a_sealed_menu_photo_reaches_the_host_and_back(self):
+        bot_id, _ = self.bot_with_host()
+        self.y("caller", "connect", "%s/@%s" % (self.gw.url, self.handle), "--name", "Sealed caller")
+        (self.files / "menu.png").write_bytes(PNG)
+        self.y("caller", "attachments", "allow", str(self.files))
+        sent = self.y("caller", "chat", self.handle, "tonight's menu", "--attach", str(self.files / "menu.png"))
+        mid = sent["message_id"]
+        content = json.loads(self.stored(mid)["content"])
+        self.assertEqual({"count": 1, "bytes": len(PNG)}, content["files"])
+        self.assertNotIn(b64(PNG)[:24], json.dumps(self.stored(mid)), "the gateway holds ciphertext only")
+        self.y("owner", "review", "approve-inbound", self.handle, mid)
+        job = self.y("host", "job", "claim", bot_id, mid)
+        shown = job["untrusted_content"]["attachments"][0]
+        self.assertEqual(("menu.png", "image/png", len(PNG)), (shown["name"], shown["media_type"], shown["bytes"]))
+        self.assertNotIn("data", shown)
+        leases = (self.homes["host"] / "public" / "leases.json").read_text()
+        self.assertLess(len(leases), 20000, "the sealed files live beside the lease, not in it")
+        saved = self.y("host", "job", "attachments", bot_id, mid)
+        self.assertEqual(PNG, Path(saved["files"][0]["path"]).read_bytes())
+        self.assertEqual(PNG, Path(self.y("host", "job", "show", bot_id, mid) and saved["files"][0]["path"])
+                         .read_bytes())
+        (self.files / "dish.jpg").write_bytes(JPG)
+        self.y("host", "attachments", "allow", str(self.files))
+        self.y("host", "job", "reply", bot_id, mid, "--text", "and a photo", "--attach", str(self.files / "dish.jpg"))
+        draft = [x for x in self.y("owner", "review", "list", self.handle)["replies"] if x["job_id"] == mid][0]
+        self.y("owner", "review", "approve-reply", self.handle, mid, "--draft-hash", draft["draft_hash"])
+        got = self.y("caller", "attachments", "save", mid)
+        self.assertEqual(JPG, Path(got["files"][0]["path"]).read_bytes())
+        second = self.y("caller", "chat", self.handle, "thanks")["message_id"]
+        self.y("owner", "review", "approve-inbound", self.handle, second)
+        job2 = self.y("host", "job", "claim", bot_id, second)
+        first = job2["transcript"][0]
+        self.assertEqual({"count": 1, "reason": "earlier_turn"}, first["attachments_omitted"])
+        self.assertEqual("tonight's menu", first["text"])
+
+
+class MigrationTests(unittest.TestCase):
+    def test_schema_5_gives_friends_files_unless_the_owner_changed_the_preset(self):
+        old = {"offered": ["faq", "leave_message", "calendar_slots", "chat"], "visitor": ["faq"], "follower": ["faq"],
+               "friend": ["chat", "faq", "leave_message"]}
+        self.assertTrue(G.friend_files_policy(old))
+        self.assertEqual((["faq", "leave_message", "chat", "files"], ["faq", "leave_message", "calendar_slots", "chat",
+                                                                     "files"]), (old["friend"], old["offered"]))
+        custom = {"offered": ["faq", "chat"], "visitor": [], "follower": [], "friend": ["chat"]}
+        self.assertFalse(G.friend_files_policy(custom))
+        self.assertEqual(["chat"], custom["friend"])
+        with tempfile.TemporaryDirectory(prefix="yobiru migration 5-6 ") as tmp:
+            gw = FriendsGateway(Path(tmp)).start()
+            try:
+                plain = gw.bot("plain-old", policy={"offered": ["faq", "leave_message", "chat"],
+                                                    "friend": ["faq", "leave_message", "chat"]})
+                tuned = gw.bot("tuned-old", policy={"offered": ["faq", "chat"], "friend": ["faq"]})
+            finally:
+                gw.stop()
+            db = gw.db()
+            try:
+                db.execute("UPDATE meta SET value='5' WHERE key='schema_version'")
+            finally:
+                db.close()
+            done = subprocess.run([sys.executable, str(PUBLIC / "bot_gateway.py"), "--gateway-home", str(gw.home),
+                                   "migrate"], capture_output=True, text=True, env=plain_env(Path(tmp)), timeout=60)
+            self.assertEqual(0, done.returncode, done.stderr)
+            summary = json.loads(done.stdout)
+            self.assertEqual(("6", "5", 1), (summary["schema"], summary["from_schema"], summary["friend_files_bots"]))
+            pols = {r["id"]: json.loads(r["policy"]) for r in gw.sql("SELECT id, policy FROM bots")}
+            self.assertIn("files", pols[plain]["friend"])
+            self.assertEqual(["faq"], pols[tuned]["friend"])
 
 
 if __name__ == "__main__":

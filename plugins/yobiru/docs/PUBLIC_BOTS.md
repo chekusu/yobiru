@@ -374,7 +374,8 @@ together:
 
 - images (`.jpg .jpeg .png .webp .gif .heic .heif .avif`), PDF (`.pdf`), audio (`.mp3 .m4a .wav .ogg .opus`) and video
   (`.mp4 .mov .webm`) of up to 4 MiB each, sent as base64 and checked against the file signature of their extension
-  (a renamed program, page or archive is refused at the sender, the gateway and the recipient);
+  (a renamed program, page or archive is refused at the sender and the recipient, and at the gateway when the
+  message is not end-to-end encrypted; a sealed message shows the gateway only the file count and size);
 - UTF-8 text files of up to 16 KiB each, with an extension from `.txt .md .markdown .json .csv .tsv .yaml .yml .toml
   .log .diff .patch .rst` or none.
 
