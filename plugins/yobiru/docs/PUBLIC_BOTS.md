@@ -127,7 +127,7 @@ The owner can add up to 5 https links (`bot edit BOT --link "Label=https://..."`
 `{"data_base64"}`): PNG, JPEG or WebP of at most 64 KB and 32-2048 px a side, the type read from the bytes, EXIF,
 XMP and text chunks removed before storing. The card's `avatar` is then `<public URL>/@bot_.../avatar/<hash>`,
 served by the gateway itself (`Content-Security-Policy: sandbox`, `nosniff`); without one it is `null` and the page
-shows the name's first letter. Both live in the additive `bot_profiles` table, created at start when missing, so
+shows the yobiru spirit. Both live in the additive `bot_profiles` table, created at start when missing, so
 schema 4 gateways need no migration and older code ignores it.
 
 Its `chat` block:

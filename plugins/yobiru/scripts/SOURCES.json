@@ -36,7 +36,7 @@
     },
     "docs/PUBLIC_BOTS.md": {
       "source": "docs/PUBLIC_BOTS.md",
-      "sha256": "702dd61754a1e48bdf77d036756d8478089bc00c9739e260fb5cbe1c2573e935"
+      "sha256": "60735554c8abd4fff673a4d16106276e531185b6d3d09fbcd2b984d12c8260c0"
     },
     "scripts/public_bots/bot_calendar.py": {
       "source": "public_bots/bot_calendar.py",
@@ -64,7 +64,7 @@
     },
     "scripts/public_bots/bot_profile.py": {
       "source": "public_bots/bot_profile.py",
-      "sha256": "d379a49378e2610c9f9d34809a1ac9504b86a159a4cc0a3cb7013b284f518e5d"
+      "sha256": "f17bf32c1086ca16b6364c509964cd162331e9306585fc5f6e6fd3ee6d55eace"
     },
     "scripts/public_bots/bot_resources.py": {
       "source": "public_bots/bot_resources.py",

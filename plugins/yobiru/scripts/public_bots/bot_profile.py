@@ -23,6 +23,44 @@ MAX_LINKS, LINK_LABEL_MAX, LINK_URL_MAX = 5, 40, 300
 REPO = "https://github.com/chekusu/yobiru"
 
 
+# The default picture: the orange spirit of the yobiru logo on its dark ground (192 px PNG, inlined so the page
+# needs no extra request).
+DEFAULT_AVATAR = ("data:image/png;base64,"
+                  "iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAMAAABlApw1AAAAwFBMVEUwMDAAAAD9WiErLi87OztVVVX+YCQTExL8WR4wMDCOQynTUiVsPCtONS0s"
+                  "LCwwMDCtSSctLS0wMDAwMDAwMDAwMDAuLi4vLy8vLy9/f38uLi7ETiUEDA8vLy9RJRYpGROSORq1Rh3RTB1mLBncUR5+QCqkPxoAAAAAAAAAAAAA"
+                  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADe/D69AAAAQHRSTlP+AP/8CQP/"
+                  "//+u/////xNP/yx40SuLUYvGAm7//7H///////////8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC27+NQAACUVJREFUeNrdXYmWojoQLSEgOwjq"
+                  "uLTdPdv7/098JICiiFRShcDknJ4zchTq5taSVEIFVlxNCKf6zyZNT37ZbLg2W34+pemm+oYjBNtjgeUuTiWQ2Ob5oYAXrTjk+bb+sjMXALU86a7V"
+                  "53bZ2oLffbb9XSpaP50UgOpHZ7vzG0FhoDXf8Hdb58bdVADk05PUL+pOBmSrv1r4aUKmgQDAUdJfkD3fw8RFYXAmACCfud0VRsLfgSh2WwoEMNYd"
+                  "kdKkb2OQNi3eCKDsrmSnHg8MTd1klxiyAEa9n+QMnf9AQ54YsQAGvS9yrs6/pyEXBiyAmfIwi99AMFAk0NWedBzxGwiprh6BXvfvi9HEryEUez0S"
+                  "tBiQ2jOi+DUEqUcjACh7JS9Gl78iIdcgAc+A8N8gfg3BF/wMpG8Sv4aQsgIo+dy9Uf7KEpBqBCjnKQp4eysEyqEiABxX+7d2/5WEffloFgbyCeRX"
+                  "j8wZGCj10IfJmj9sCDCk/lt/iu5vSPC3Q4YAA/JvYDr51aM3AwhgzvJjEMBr/ZlYfvX411oEc+5/DAcwc/kHEcCc9QejRdDr/zczkb/mwNEDcJyR"
+                  "/DWCow4AZyVmJL8SRfRwAD0E+HOSX8XkHgrguQHPTP4KgcACEKvT3OSXCE5PEcAzA0jnJ79EkD4zg2cAEpwB29fW/TSOIScoAM6qAMRCkQ1xFAVZ"
+                  "lp3Dqp2zLAiiKO4ukLEhKJ5QAF35fwzKb9txkIVW01zXrf+x5F+YBSWMEUDY8KOLAJ4YwOCNoswaamH2dwwQXTOAJwYwJH9gDTfJR5hFMTeGZAjA"
+                  "cARAyV+BKP8UBtZo8BKAMxwB7MjSaNIysohvMUdGA+cVADHsfzLL0oVgBXw02OIFAIHwQGDpN9dSNHB5ItEHAOWBYqXaBhjCiImFe090r0KYFGho"
+                  "eZZZC3lYKPpUCDcGsjPPFAAPCw9jojYDAvX72JgB2bKYgQTxlAGxynFjuMgyM4OahYCqRzbkLTu+ATgK7A0CAgDL8hj0SBy7ALAEvIrFWN3KaCTc"
+                  "UXBjING4Q6TGOsZq5IZUS0g6DKBiWMuSz1gEnvfUawUUNWpHM9ByQa0ZAXpI542iRo8qpGEBL50R3sOS1KhlBQ0Dif6mtzikGEKJPqJoUXLHgFjt"
+                  "9Rm1IbMsEoLAfLcd7GsKGgYORrcJSAAoCODQZuAoU+mTIMjMEWyrXCPo+1Dz+dmTyY4pgqsnrVQoMd5KQENgmSOAIrmqkJEJMyGwTBE0ZgxqIkBJ"
+                  "RhPHdpahHcgEhdOoUEIbW2U0AKa+qAoFIDWImI22afHAMotocmYmFABndaEOb0MiApNRhQ0XqUOgPY57Ps2cAEE1ogO1oEqdIdECWtnORsTLxVcg"
+                  "RLH7ZMvbDbmKZSUDyYEOgK5EkcFg8pBIBohOlMsTmZiBdKRACsOvKNDMfxlEZBWMgccElB173nuVSBkBOKsDD4CYCsDSlaM0gpUD9ChwpYAov8mg"
+                  "SHqhDReA+OW8HkOPvh1vSgA517K8fXYN0it34Uxbh3JWAJH15mBQATgAlw7By17GWEioP7VnBCDXPqw3jyhKABvgA0DXIW1XuoE9I4CYOLk0oGDP"
+                  "yQDYoUunQJcBzs1Z5NmxriOyS/EvnAAYjCDUc3wX4NzeR58VaFJgl+Lz7k8M6QCyKQHYZwYKNEZENnP/M8zLdD0p92vNgctgxlO+8zIAwOPWIXYA"
+                  "kftyxRU3Ow7mCgA7vT9PCYC0djy9DrFEMou0/joLAMGsAYwwN54dA9MZwRQA7Pd7oeF4gDcC5tEQEwB0opd/NBqxaBA6lPEDCHgAhBoKdJkhALQV"
+                  "yynladkATqxpFZ4JjdZggjWxNQWAPTMDZyYAf/EMMCZ3ZWqOCQA2kvFmp3nSKtoAck439F4AzCs0BgA8DgCsVqwpv9pX7RFUSC7yiekA9A/rsADE"
+                  "im2h28wGvB4tQsWBaqGba6sBrw0gAfxQeyX2rAAM1vmevGIQ4wDIzR5M221IbrSLANenarsNz4Yn5qFEiHOi1YYnTiPgGsxlaBNg2vTHml7HetFm"
+                  "09+KMRL0Aui/7BFG0/XeafLG18HstGv9+uO6Xvf1gbAnlmGc0G3jq+ArhNGT2Pr+Wq8/f7qPqH7Ly39cw6TEbesxqyMNn3To58d6vf74eERQil9e"
+                  "/uqu7iNXOK6bv4nb74dm9e5/Uv6yfd1f/l1f/nQNNei2/Z4xGD/LbH2u6/bfXfBqrq7DTlYIHYYZXkHp3LYL4KsW9OO7ffXXFUBnpxpOg1qvoHDG"
+                  "ssdQVjqZzwEAHSMAGxvFyK9hoXTou5H0T9vA3RrXx6cZAXevYZm+CIcbz7m1F/p27zW98kJdDcJl5Q70VxGxFJQOvxT/67tjq5KDz/AxwGU6Jkx5"
+                  "GVRnSO39/NUdNLju+ad8n9QzIeDhZVCD13HHWiNAjuM6r+NyjugIySH0yoCgvZI+HgUxfiZAKAow3ioBNp2SkMoyIOzYHXEm1leW4choBfGIU2Fl"
+                  "AUdCaZIRzSDWJ0C/OAzeDNxx5Ie+4jC8JQq1X9J18Qt7veV5cAWSxnFFHr7MRG+BJFSJqrHsQKPQx4sSVbyJXjtGhmRPo9TKyyJhqDJtWtOzrFTt"
+                  "4b0psuIQ/qbCoRXK01QjTLpao+bTUKE8TKlCTRKCcMAdZRpF9AZLFaKKRbJCyDRrAA4Wi+T1RDWEKKs1ybtfGtOvJDlcrhNVMFUbQomhrrDqytqL"
+                  "cj0j1JceVTAVWbLWAENV4zYIsvIvig2qqSJL1uKLBpuAIJQWRhcNXn7Z5sUXzl5+6fLlF49ffvn+xR+gsPwjLJZ/iMjyj3FZ/kE6yz/KaPmHSS3/"
+                  "OK/lH6i2/CPtln+o4D9xrOPSD9Zc/tGmyz9c9p843nf5Bywv/Yjrf+KQ8aUf816RIPVoDAjyllJ7nNWYANT9Rc4PQd4uF9riGwBQFCd5lXPmy16X"
+                  "4ie62mMK4KZIXIf7mCkPAYDqKpEWDDSo3xepMOp9AoCqu7Y7GoZK+t12Zdj7JADVM5P0chNFX3iAS5pQxCcBqDSpxOAXzRqMxnKN7HtfSS9IItAA"
+                  "lE+Xnedsdz4gmWi+4e+26qeCKAAVwLUHRbrz7bvVpMfVpdsHf5eK1k+nBnDrR7HN88PLyVtxyPOtuHE3FwBKoEaiTZqe/LK1KLDl51Oabhq8gu2x"
+                  "/wOmeJx9yPPmmwAAAABJRU5ErkJggg==")
+
+
 def image_info(data):
     """(content type, width, height) of a PNG, JPEG or WebP read from its own bytes, never from a declared type.
     Anything else (SVG, GIF, HTML, truncated or oversized files) raises ValueError."""
@@ -404,9 +442,7 @@ def render_profile(card, lang, path, nonce):
     t = T[lang]
     name, handle, address = card["display_name"] or card["handle"], card["handle"], card["address"]
     json_url = address + ".json"
-    initial = (name.strip()[:1] or "@").upper()
-    avatar = ('<img class="avatar" src="%s" width="84" height="84" alt="">' % _e(card["avatar"]) if card.get("avatar")
-              else '<div class="avatar" aria-hidden="true">%s</div>' % _e(initial))
+    avatar = '<img class="avatar" src="%s" width="84" height="84" alt="">' % _e(card.get("avatar") or DEFAULT_AVATAR)
     own_links = "".join('<a class="btn" href="%s" rel="noopener nofollow ugc me">%s</a>' % (_e(l["url"]), _e(l["label"]))
                         for l in card.get("links") or [])
     chat = card.get("chat") or {}
@@ -470,9 +506,9 @@ def _linkify(text, urls):
 
 def render_not_found(lang, path, nonce):
     t = T[lang]
-    body = ('<main><section class="card hero"><div class="avatar" aria-hidden="true">?</div><h1>%s</h1>'
+    body = ('<main><section class="card hero"><img class="avatar" src="%s" width="84" height="84" alt=""><h1>%s</h1>'
             '<p class="desc">%s</p></section><nav class="links"><a class="btn primary" href="%s">%s</a></nav>'
-            '</main>') % (_e(t["notfound_title"]), _e(t["notfound_body"]), SITE, _e(t["home"]))
+            '</main>') % (DEFAULT_AVATAR, _e(t["notfound_title"]), _e(t["notfound_body"]), SITE, _e(t["home"]))
     return _page(lang, t["notfound_title"], t["notfound_body"], '<meta name="robots" content="noindex">', body, nonce,
                  _lang_links(path)).encode("utf-8")
 

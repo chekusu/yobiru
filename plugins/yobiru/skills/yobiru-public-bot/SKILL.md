@@ -66,7 +66,7 @@ The share link opens a profile page for people in a browser and returns the JSON
     sh Y public bot edit alice --link "Website=https://alice.example" --link "GitHub=https://github.com/alice"
     sh Y public bot edit alice --clear-links
     sh Y public bot avatar alice photo.jpg       # PNG, JPEG or WebP, at most 64 KB; --remove to go back
-                                                 # to the initial; resize/crop to about 512x512 first
+                                                 # to the yobiru spirit; resize/crop to about 512x512 first
 
 Up to 5 https links; each `--link` list replaces the previous one. The gateway strips photo metadata
 (EXIF/GPS) and serves the image itself. Everything here is public: ask before using a photo of a person.
