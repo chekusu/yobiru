@@ -1,0 +1,20 @@
+{
+  "name": "yobiru",
+  "owner": {
+    "name": "Chekusu"
+  },
+  "metadata": {
+    "description": "Yobiru agent messaging plugin (tailmsg protocol v1) for Codex, Cursor, Claude Code and Grok Bot.",
+    "version": "0.5.3"
+  },
+  "plugins": [
+    {
+      "name": "yobiru",
+      "source": "./plugins/yobiru",
+      "description": "Peer-to-peer messages, file handoff and receiver-controlled wake-ups between AI agents on your own Tailscale network. Speaks the tailmsg protocol v1; no central server.",
+      "version": "0.5.3",
+      "category": "productivity",
+      "homepage": "https://yobiru.com"
+    }
+  ]
+}

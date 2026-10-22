@@ -87,6 +87,9 @@ not survive between commands in many hosts). On Windows use `py -3 "<plugin>\scr
    deny rules still apply. Add `--allow PEER` for a requested restricted new setup (hostname, FQDN,
    `tag:NAME` or `user:LOGIN`). A machine that only sends: `setup --send-only`. Existing configs keep
    their current policy; do not silently widen it to fix a rejected message.
+   In Claude Code, name the agent `claude`. On a machine whose config already has another agent, add
+   it with `sh Y setup --agent claude` only (keep the existing self and default agent); the plugin's
+   MCP server then sends as `claude` and lists `claude`'s inbox.
 5. **Durable receiver**: `sh Y install-runtime --apply`, then `sh Y service-template KIND` (the kind
    `onboard` names: `systemd-user`, `systemd`, `launchd` or `windows`); install the printed definition
    where its header says and start it. Without a service manager `onboard` gives a foreground

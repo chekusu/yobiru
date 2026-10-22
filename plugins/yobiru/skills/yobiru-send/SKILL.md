@@ -13,6 +13,10 @@ written `Y`, so a real command looks like `sh "/abs/path/yobiru/scripts/yobiru" 
 `py -3 "<plugin>\scripts\yobiru.py"`. If the file is missing or `send` says "not set up", use the
 yobiru-setup skill first. A non-default data home goes before the command: `sh Y --home DIR send ...`.
 
+In Claude Code the plugin's `yobiru` MCP server offers `yobiru_send` (with `track: true` for a tracked
+request), `yobiru_reply`, `yobiru_request_status` and `yobiru_agents` for the default data home; the rules
+below apply to them unchanged.
+
 ## Before sending
 
 - Send what the user asked for, or what a collaboration the user set up needs: follow-ups, answers

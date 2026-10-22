@@ -13,11 +13,15 @@ and CLI observations retain their dates below; check them again before relying o
 | `plugins/yobiru/.cursor-plugin/plugin.json` | Cursor | Native manifest; no component paths, so Cursor's default discovery finds `skills/`. |
 | `.agents/plugins/marketplace.json` | Codex repository marketplace | `source: {source: local, path: ./plugins/yobiru}`, policy `AVAILABLE` / `ON_INSTALL`, category `Productivity`. |
 | `.cursor-plugin/marketplace.json` | Cursor (repository, team marketplace import) | `name`, `owner.name`, `plugins[]` with `source: plugins/yobiru`. |
+| `plugins/yobiru/.claude-plugin/plugin.json` | Claude Code | Native manifest; default discovery finds `skills/`. Declares one stdio MCP server inline: `sh ${CLAUDE_PLUGIN_ROOT}/scripts/yobiru mcp`. |
+| `.claude-plugin/marketplace.json` | Claude Code repository marketplace | `name`, `owner.name`, `plugins[]` with `source: ./plugins/yobiru` and the version. |
 
-Not shipped: MCP servers (`mcp.json`), hooks, rules, commands, agents, variables. The skills plus the
-bundled command already cover every operation. A stdio MCP wrapper would need separate tested launch
-configuration per host, because Cursor does not expand the standard `${PLUGIN_ROOT}` variable in
-`mcp.json`, and a remote MCP endpoint would need a server this project deliberately does not run.
+Not shipped: a shared MCP file (`mcp.json` / `.mcp.json`), hooks, rules, commands, agents, variables. The
+skills plus the bundled command already cover every operation. The one MCP server lives in the Claude Code
+manifest only, because Claude Code expands `${CLAUDE_PLUGIN_ROOT}` and no other host reads that file; a
+shared `mcp.json` would reach Cursor, which does not expand the standard `${PLUGIN_ROOT}` variable. Other
+MCP clients can register `yobiru mcp` by hand. A remote MCP endpoint would need a server this project
+deliberately does not run.
 
 ## Tailscale (onboarding)
 
@@ -54,6 +58,33 @@ machine's own Tailscale address, so hosts that can only run Tailscale in userspa
   app-server themselves (for example `codex app-server --listen unix://PATH`); how a given setup keeps
   that app-server running is outside Yobiru. Historical live Linux 0.5.0 acceptance and remaining
   host tests are separated in [VERIFICATION.md](VERIFICATION.md).
+
+## Claude Code
+
+- Plugins, marketplaces and the `${CLAUDE_PLUGIN_ROOT}` variable: <https://code.claude.com/docs/en/plugins>,
+  <https://code.claude.com/docs/en/plugin-marketplaces>, <https://code.claude.com/docs/en/plugins-reference>
+- CLI used in the instructions (checked against `claude plugin --help`, Claude Code 2.1.306):
+  `claude plugin marketplace add|update|remove`, `claude plugin install|update|uninstall NAME@MARKETPLACE`,
+  `claude plugin validate [--strict] PATH`. Inside a session: `/plugin marketplace add chekusu/yobiru`,
+  `/plugin install yobiru@yobiru`.
+- `yobiru mcp` (`plugins/yobiru/scripts/yobiru_mcp.py`) speaks MCP over stdio (protocol 2025-11-25,
+  2025-06-18 and 2025-03-26; tools only). Each tool runs one `yobiru` command of the same plugin and data
+  home, with option values before `--` and positional values after it. It listens on no port and holds no
+  state of its own; the receiver (`serve`) still has to run for anything to arrive. If the config has an
+  agent named `claude`, the server sends as `claude` (`--as`) and lists `claude`'s inbox; `--agent NAME`
+  chooses another name.
+- Waking: the plugin ships no wake adapter for Claude Code. Messages wait in the inbox until a session
+  checks it; a user may configure their own `--exec` program for agent `claude` (yobiru-wake skill).
+- Checked on 2026-10-21 with Claude Code 2.1.306: `claude plugin validate --strict` passes for the plugin
+  and the marketplace, `claude plugin marketplace add` + `claude plugin install yobiru@yobiru` from a local
+  checkout work, and `claude mcp list` reports the plugin's server as connected.
+- Live on 2026-10-21, Mac Studio (receiver 0.6.0-dev.1, agent `claude` added) to a Grok Bot cloud computer
+  (receiver 0.6.0-beta.1): Claude Code 2.1.306 loaded the plugin from a checkout (`--plugin-dir`) and listed
+  the 10 tools; its headless run then stopped at sign-in, so the steps were driven over stdio against the
+  server launched as the manifest launches it. A tracked `yobiru_send` was received at once and completed
+  about 26 s later; Grok Bot's plain message to `claude` was read, replied to (routed to `grok`) and
+  acknowledged. The run also showed that a long `request list` overflowed the output cap; listings are now
+  filtered to the server's agent and trimmed (`limit`, `total`, `truncated`).
 
 ## Cursor
 
@@ -141,7 +172,9 @@ verifies official release checksums before using an archive in `/workspace`.
    marketplace, enable Yobiru, add it in Grok Bot, confirm the skills and run `paths` on the
    conversation's computer.
 4. Two real machines: setup on both, `send`, `fetch`, `reply`, and a `now` wake through each adapter.
-5. Marketplaces: the repository <https://github.com/chekusu/yobiru> is packaged for Codex repository
+5. Claude Code: the same exchange driven by a signed-in Claude Code session itself (marketplace install,
+   then the model calling the tools), and Windows.
+6. Marketplaces: the repository <https://github.com/chekusu/yobiru> is packaged for Codex repository
    installation (`codex plugin marketplace add chekusu/yobiru`) and Cursor team import. Record
    actual host tests, submission receipts, review decisions and public listing links separately in
    [MARKETPLACE_SUBMISSION.md](MARKETPLACE_SUBMISSION.md). Preparing a valid archive is not a submission.

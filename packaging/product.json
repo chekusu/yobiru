@@ -22,7 +22,7 @@
   "marketplace": {
     "name": "yobiru",
     "displayName": "Yobiru",
-    "description": "Yobiru agent messaging plugin (tailmsg protocol v1) for Codex, Cursor and Grok Bot."
+    "description": "Yobiru agent messaging plugin (tailmsg protocol v1) for Codex, Cursor, Claude Code and Grok Bot."
   },
   "codex": {
     "shortDescription": "Connect your personal agents",
@@ -49,6 +49,17 @@
   },
   "cursor": {
     "logo": "assets/icon.png"
+  },
+  "claude": {
+    "marketplaceCategory": "productivity",
+    "mcpServer": {
+      "name": "yobiru",
+      "command": "sh",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/yobiru",
+        "mcp"
+      ]
+    }
   },
   "bundle": {
     "core": {

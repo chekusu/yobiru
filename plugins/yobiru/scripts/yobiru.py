@@ -84,6 +84,8 @@ Check and set up (read-only unless --apply):
   codex-bridge {{status,install,rollback}} ...
                              optional Codex bridge: macOS desktop app, or Linux user systemd + a local
                              app-server socket (install/rollback support --dry-run and --no-start)
+  mcp [--agent NAME]         local MCP server on stdio with the messaging commands as tools (the Claude Code
+                             plugin registers it; other MCP clients can run it the same way)
   version
 
 Messaging (passed unchanged to the bundled tailmsg.py):
@@ -3666,11 +3668,19 @@ def run_core(home, cmd, rest):
     return subprocess.call(argv)
 
 
+def cmd_mcp(home, home_source, argv):
+    """Local stdio MCP server over the messaging commands (yobiru_mcp.py next to this file)."""
+    sys.path.insert(0, str(HERE))
+    import yobiru_mcp
+    return yobiru_mcp.main(home, argv)
+
+
 PLUGIN_COMMANDS = {"paths": cmd_paths, "doctor": cmd_doctor, "status": cmd_status, "setup": cmd_setup,
                    "policy": cmd_policy,
                    "wake-config": cmd_wake_config, "install-runtime": cmd_install_runtime,
                    "service-template": cmd_service_template, "codex-bridge": cmd_codex_bridge,
-                   "onboard": cmd_onboard, "agents": cmd_agents, "peers": cmd_agents, "session": cmd_session, "update": cmd_update}
+                   "onboard": cmd_onboard, "agents": cmd_agents, "peers": cmd_agents, "session": cmd_session, "update": cmd_update,
+                   "mcp": cmd_mcp}
 
 
 def main(argv=None):
