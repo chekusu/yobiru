@@ -161,6 +161,30 @@ class GatewayTests(MediaCase):
         status, obj = self.chat(vcid, visitor, [media("big.png", PNG * 30)])
         self.assertEqual(413, status, obj)
 
+    def test_an_unfollow_withholds_files_but_keeps_the_rest_of_the_conversation(self):
+        a, wtoken, b, b_source, cid = self.friends()
+        a_source = self.gw.source_for(a)
+
+        def answered(attachments):
+            status, sent = self.chat(cid, b_source, attachments) if attachments else (202, {
+                "message_id": self.gw.chat(cid, b_source, "text only")})
+            self.assertEqual(202, status, sent)
+            mid = sent["message_id"]
+            if [x for x in self.gw.reviews(a)["inbound"] if x["job_id"] == mid]:
+                self.assertEqual(200, self.gw.admit(a, mid)[0])
+            status, job = self.gw.claim_job(wtoken, mid)
+            self.assertEqual(200, status, job)
+            status, done = self.gw.reply_job(wtoken, job, "answer")
+            if done.get("state") == "review":
+                self.assertEqual(200, self.gw.approve_reply(a, mid)[0])
+            return mid
+        plain, with_file = answered(None), answered([media()])
+        self.assertEqual(200, self.gw.unfollow(a_source, b)[0])
+        self.assertEqual("answer", self.gw.ok("GET", "/v1/messages/%s" % plain, None, b_source)["result"]["text"])
+        view = self.gw.ok("GET", "/v1/messages/%s" % with_file, None, b_source)
+        self.assertIn("result_withheld", view)
+        self.assertEqual("files_not_granted", view["content"]["attachments_withheld"]["reason"])
+
     def test_a_forged_file_is_refused_before_any_effect(self):
         a, _, _, b_source, cid = self.friends()
         for bad in ([media("menu.png", EXE)], [media("menu.png", PNG * 400)], [{"name": "menu.png", "content": "x"}]):

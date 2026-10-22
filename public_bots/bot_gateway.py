@@ -1312,11 +1312,15 @@ def pair_caps(db, bot_id, pid):
 
 def change_graph(db, now, pairs, mutate, code):
     """Run a follow-graph mutation; every (bot, principal) pair whose capabilities shrank is narrowed in the
-    same transaction. Presets may differ per level, so any edge change can narrow either direction."""
+    same transaction. Presets may differ per level, so any edge change can narrow either direction. Losing only
+    `files` (a friend who is no longer one, under the default presets) is not narrowed: every read and every step
+    of a job already requires `files` wherever attachments appear, so files are withheld without voiding the
+    conversation's other turns."""
     before = [(pair, pair_caps(db, *pair)) for pair in pairs]
     mutate()
     for (bot_id, pid), caps in before:
-        if not pair_caps(db, bot_id, pid) >= caps:
+        lost = caps - pair_caps(db, bot_id, pid)
+        if lost and lost != {"files"}:
             narrow_contact(db, bot_id, pid, now, code)
 
 

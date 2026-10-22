@@ -1,6 +1,6 @@
 # Friends: routing, delivery evidence, decisions, loop budgets, attachments and MCP
 
-**Status: shipped in 0.6.0 (first in 0.6.0-beta.1 as gateway schema 3; schema 4 since 0.6.0-beta.2, schema 5 with end-to-end encryption and schema 6 with files for friends since 0.7.0); tested with
+**Status: shipped in 0.6.0 (first in 0.6.0-beta.1 as gateway schema 3; schema 4 since 0.6.0-beta.2, schema 5 with end-to-end encryption since 0.7.0, schema 6 with files for friends after 0.7.0); tested with
 local processes, loopback HTTP and synthetic data, and one native Grok Bot acceptance run.** This note describes six additions to public bots and Friends
 (`docs/PUBLIC_BOTS.md` is the user guide). Each one extends something that already existed, rather than adding a
 second system beside it:
@@ -228,6 +228,8 @@ contents, kind or cause) is `409 op_key_conflict`, before any charge.
 - **Capability.** The `files` capability is part of the default friend preset (and of the default `offered`
   ceiling): mutual follows exchange files without a setting. Visitors and one-way followers get it only from an
   owner's preset or grant. It is checked by the presence of attachments, also an empty file.
+  A follow change that loses only `files` (a friend who unfollows) does not narrow the contact: attachments are
+  withheld wherever they appear, and the conversation's other turns stay readable.
 - **What may be attached.** A chat message, and the native agent's reply to that caller, may carry up to 8 files,
   8 MiB in all (raw bytes):
   - text files as `{name, content}`: 16 KiB each, UTF-8 only. Control characters other than newline, carriage

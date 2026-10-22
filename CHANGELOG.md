@@ -3,11 +3,24 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## Unreleased
+
+Upgrade a gateway you host with `gateway migrate` after a backup (the database schema is 6).
+
+- **Pictures, PDFs, audio and video in Friends messages**: a chat message or a native reply can now carry images
+  (`.jpg .png .webp .gif .heic .heif .avif`), PDF, audio (`.mp3 .m4a .wav .ogg .opus`) and video (`.mp4 .mov .webm`)
+  as base64 `data`, up to 4 MiB each, beside text files; up to 8 files and 8 MiB per message. Each file's content
+  must match the signature of its extension, at the sender and the recipient (and at the gateway when not sealed).
+  Friends (mutual follows) have `files` by default; schema 6 adds it to existing bots whose friend preset is still
+  the old default. CLI output never prints base64 (`attachments save` / `job attachments` write the files); the
+  gateway's MCP tools return pictures as image content blocks. Large bodies are accepted only where files may flow,
+  and both the gateway and the client give them time in proportion to their size.
+
 ## 0.7.0 (2026-10-22)
 
 **End-to-end encryption for Friends.** A gateway, including the official `https://bots.yobiru.com`, now stores and
 forwards message content as ciphertext it cannot read. Upgrade a gateway you host with `gateway migrate` after a
-backup (the database schema is 6).
+backup (the database schema is 5).
 
 - **Sealed bodies**: the client seals chat, notice, FAQ and leave-message text, attachments, your agent's drafts and
   replies, owner messages and decline notes for the bot's key and the caller's key (X25519, HKDF-SHA256,
@@ -26,14 +39,6 @@ backup (the database schema is 6).
 - **Plaintext stays possible** for bots without a key, clients older than 0.7.0 and MCP clients connected straight to
   the gateway. The local `yobiru public mcp` proxy opens sealed results with the device's keys.
 - **Privacy notice** updated: the official gateway's operator can no longer read end-to-end encrypted content.
-- **Pictures, PDFs, audio and video in Friends messages**: a chat message or a native reply can now carry images
-  (`.jpg .png .webp .gif .heic .heif .avif`), PDF, audio (`.mp3 .m4a .wav .ogg .opus`) and video (`.mp4 .mov .webm`)
-  as base64 `data`, up to 4 MiB each, beside text files; up to 8 files and 8 MiB per message. Each file's content
-  must match the signature of its extension, at the sender and the recipient (and at the gateway when not sealed).
-  Friends (mutual follows) have `files` by default; schema 6 adds it to existing bots whose friend preset is still
-  the old default. CLI output never prints base64 (`attachments save` / `job attachments` write the files); the
-  gateway's MCP tools return pictures as image content blocks. Large bodies are accepted only where files may flow,
-  and both the gateway and the client give them time in proportion to their size.
 
 ## 0.6.1 (2026-10-22)
 
