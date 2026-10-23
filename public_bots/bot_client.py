@@ -870,6 +870,12 @@ def cmd_enroll_bot(st, a):
     pending = st.update("credentials.json", plan)
     if pending == "owner_exists":
         die("this data home already holds an owner credential for %s; create more bots with `bot create`" % base)
+    if a.prepare:
+        out({"ok": True, "gateway": base, "owner_credential_sha256": C.token_hash(pending["owner_token"]),
+             "next": "have the partner sign an email attestation for this hash, then run enroll-bot again with "
+                     "--attestation-file FILE",
+             "note": "the credentials stay in %s and are reused by the next enroll-bot" % st.path("credentials.json")})
+        return
     body = {"display_name": pending["display_name"],
             "source_credential_sha256": C.token_hash(pending["source_token"])}
     if pending.get("handle"):
@@ -878,7 +884,12 @@ def cmd_enroll_bot(st, a):
         body["description"] = pending["description"]
     if pending.get("e2e") and gateway_e2e(base):
         body["e2e_key"] = pending["e2e"]["public"]
-    if a.email_code is not None:
+    if a.attestation_file is not None:
+        try:
+            body["email_attestation"] = C.read_json_file(a.attestation_file, 4096, what="attestation file")
+        except ValueError as e:
+            die(str(e))
+    elif a.email_code is not None:
         challenge = (st.creds()["gateways"].get(base) or {}).get("email_challenge")
         if not challenge:
             die("no email code was requested for %s from this data home: run enroll-bot with --email first" % base)
@@ -1171,16 +1182,34 @@ def cmd_follow(st, a):
         principal = identity(st, base, a.as_ref)
         if principal is None or not principal.startswith("bot_"):
             die("a visitor cannot follow; enroll a source bot (enroll-bot) or pass --as @your-bot")
-        obj = call(base, "POST", "/v1/bots/%s/follow" % a.contact, {}, token_for(st, base, principal))
-        out(dict(obj, note="a directed follow by id (a follow-back needs no public card)"))
+        body = {"permit": a.permit} if a.permit else {}
+        obj = call(base, "POST", "/v1/bots/%s/follow" % a.contact, body, token_for(st, base, principal))
+        out(dict(obj, note="a directed follow by id (a follow-back or a permit needs no public card)"))
         return
     alias, ct = contact_or_link(st, a.contact, a.gateway, a.as_ref)
     base, principal, token = acting(st, ct, a.as_ref)
     if not principal.startswith("bot_"):
         die("a visitor cannot follow; enroll a source bot (enroll-bot) or pass --as @your-bot")
-    obj = call(base, "POST", "/v1/bots/%s/follow" % ct["bot_id"], {}, token)
+    obj = call(base, "POST", "/v1/bots/%s/follow" % ct["bot_id"], {"permit": a.permit} if a.permit else {}, token)
     out(dict(obj, alias=alias, note="a directed follow: it gives you only what the owner preset for followers or, "
                                     "when they follow you back, for friends"))
+
+
+def cmd_follow_permit(st, a):
+    """Let one other bot (by id) follow yours although you do not accept followers; hand it the permit yourself."""
+    if not is_bot_id(a.bot):
+        die("pass the other bot's id (bot_...)")
+    creds = st.creds()
+    base = norm_url(a.gateway) if a.gateway else (next(iter(creds["gateways"])) if len(creds["gateways"]) == 1
+                                                  else die("pass --gateway URL"))
+    principal = identity(st, base, a.as_ref)
+    if principal is None or not principal.startswith("bot_"):
+        die("pass --as @your-bot (only a source bot gives permits)")
+    body = {"for": a.bot}
+    if a.ttl_seconds is not None:
+        body["ttl_seconds"] = a.ttl_seconds
+    out(dict(call(base, "POST", "/v1/follow-permits", body, token_for(st, base, principal)),
+             note="the permit lets only that bot follow yours, until it expires; blocking it still refuses"))
 
 
 def cmd_unfollow(st, a):
@@ -3794,6 +3823,9 @@ def main(argv=None):
     p.add_argument("--email", help="gateways that verify email: mail a 6-digit code to the owner (step one)")
     p.add_argument("--email-code", help="the code from that email (step two: completes the enrollment)")
     p.add_argument("--lang", choices=("en", "zh", "ja"), help="language of the verification email")
+    p.add_argument("--prepare", action="store_true",
+                   help="partners: save the new credentials and print the owner credential hash to have signed")
+    p.add_argument("--attestation-file", help="partners: a signed email attestation (JSON) instead of --email-code")
     p = sp.add_parser("source", help="store a source credential file minted by the bot's owner")
     p.add_argument("source_cmd", choices=("login",))
     p.add_argument("url")
@@ -3820,6 +3852,13 @@ def main(argv=None):
         p.add_argument("contact")
         p.add_argument("--as", dest="as_ref")
         p.add_argument("--gateway")
+        if name == "follow":
+            p.add_argument("--permit", help="a follow permit that bot's owner gave you")
+    p = sp.add_parser("follow-permit", help="let one other bot follow yours although you do not accept followers")
+    p.add_argument("bot", help="the other bot's id (bot_...)")
+    p.add_argument("--as", dest="as_ref")
+    p.add_argument("--gateway")
+    p.add_argument("--ttl-seconds", type=int)
     p = sp.add_parser("following", help="bots one of your source bots follows")
     p.add_argument("--as", dest="as_ref")
     p.add_argument("--gateway")
@@ -4232,7 +4271,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     st = State(a.home)
     handlers = {"enroll": cmd_enroll, "enroll-bot": cmd_enroll_bot, "source": cmd_source, "identities": cmd_identities,
-                "connect": cmd_connect, "lookup": cmd_lookup, "add": cmd_add, "follow": cmd_follow,
+                "connect": cmd_connect, "lookup": cmd_lookup, "add": cmd_add, "follow": cmd_follow, "follow-permit": cmd_follow_permit,
                 "unfollow": cmd_unfollow, "following": cmd_following, "contacts": cmd_contacts,
                 "request-friend": cmd_request_friend, "relationship": cmd_relationship, "chat": cmd_chat,
                 "slots": cmd_slots, "status": cmd_status, "pending": cmd_pending, "resend": cmd_resend,
