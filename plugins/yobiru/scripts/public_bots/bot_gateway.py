@@ -34,6 +34,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import socket
 import sqlite3
 import struct
@@ -41,6 +42,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import weakref
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -58,7 +60,8 @@ DEFAULT_HOME = "~/.yobiru-gateway"
 DEFAULT_PORT = 7780
 SCHEMA_VERSION = "7"
 CONFIG_KEYS = {"v", "bind", "port", "public_base_url", "allow_non_loopback_bind", "trust_forwarded_for", "limits",
-               "enrollment", "mcp", "partners"}
+               "enrollment", "mcp", "partners", "processes"}
+MAX_PROCESSES = 64
 # The MCP endpoint: the same API for MCP clients, under the same credentials. Browsers never need it, so a request
 # that carries an Origin header is refused unless the operator lists that origin.
 MCP_DEFAULTS = {"enabled": True, "allowed_origins": []}
@@ -499,6 +502,9 @@ def load_config(home):
     port = cfg.get("port", DEFAULT_PORT)
     if not C.int_in(port, 0, 65535):
         raise ValueError("gateway.json: port must be 0-65535")
+    processes = cfg.get("processes", 1)
+    if not C.int_in(processes, 1, MAX_PROCESSES):
+        raise ValueError("gateway.json: processes must be 1-%d" % MAX_PROCESSES)
     limits = dict(LIMIT_DEFAULTS)
     extra = cfg.get("limits") or {}
     if not isinstance(extra, dict) or set(extra) - set(LIMIT_DEFAULTS):
@@ -556,7 +562,8 @@ def load_config(home):
         partners[name] = secret
     return {"bind": bind, "port": port, "public_base_url": public, "limits": limits, "enrollment": enrollment,
             "allow_non_loopback_bind": cfg.get("allow_non_loopback_bind", False),
-            "trust_forwarded_for": cfg.get("trust_forwarded_for", False), "mcp": mcp, "partners": partners}
+            "trust_forwarded_for": cfg.get("trust_forwarded_for", False), "mcp": mcp, "partners": partners,
+            "processes": processes}
 
 
 BODY_COLUMNS = ("content", "result", "draft")
@@ -580,8 +587,9 @@ def row_factory(blobs):
     return type("Row", (_Row,), {"blobs": blobs})
 
 
-def open_db(path, blobs=None):
-    db = sqlite3.connect(str(path), timeout=15, isolation_level=None)
+def open_db(path, blobs=None, shared=False):
+    """`shared`: the connection may move between request threads (the store's pool hands it to one at a time)."""
+    db = sqlite3.connect(str(path), timeout=15, isolation_level=None, check_same_thread=not shared)
     db.row_factory = row_factory(blobs)
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA synchronous=FULL")
@@ -618,25 +626,90 @@ class Store(object):
                 db.execute(statement)
         finally:
             db.close()
+        self._idle, self._idle_lock = [], threading.Lock()
+        weakref.finalize(self, close_all, self._idle)
 
-    def tx(self):
-        return _Tx(self.path, self.blobs)
+    def tx(self, write=True):
+        return _Tx(self, write)
+
+    def attempt(self, fn, write=False):
+        """fn(db) in a read transaction, unless `write`: many run at once, in this and in other gateway processes,
+        without the write lock. One that turns out to need a write (an expiry or a "served" mark to record) is rolled
+        back and runs again under the write lock, so a request never depends on guessing which kind it is."""
+        if not write:
+            try:
+                with self.tx(write=False) as db:
+                    return fn(db)
+            except sqlite3.OperationalError as e:
+                if not needs_write(e):
+                    raise
+        with self.tx() as db:
+            return fn(db)
+
+    def _take(self):
+        with self._idle_lock:
+            if self._idle:
+                return self._idle.pop()
+        return open_db(self.path, self.blobs, shared=True)
+
+    def _give(self, db):
+        with self._idle_lock:
+            if len(self._idle) < IDLE_CONNECTIONS:
+                self._idle.append(db)
+                return
+        db.close()
+
+
+IDLE_CONNECTIONS = 16           # open connections kept for the next requests instead of reconnecting every time
+
+
+def close_all(connections):
+    while connections:
+        connections.pop().close()
+
+
+def needs_write(error):
+    """The error a read transaction raises when its handler tries to write (the connection is query_only)."""
+    code = getattr(error, "sqlite_errorcode", None)
+    return code == sqlite3.SQLITE_READONLY if code is not None else "readonly database" in str(error)
 
 
 class _Tx(object):
-    def __init__(self, path, blobs=None):
-        self.path, self.blobs = path, blobs
+    """One transaction on a pooled connection. A write transaction takes the database's write lock at BEGIN
+    (IMMEDIATE). A read transaction reads one snapshot and neither waits for nor blocks writers; its connection is
+    query_only, so a write inside it fails instead of happening outside the lock."""
+
+    def __init__(self, store, write=True):
+        self.store, self.write = store, write
 
     def __enter__(self):
-        self.db = open_db(self.path, self.blobs)
-        self.db.execute("BEGIN IMMEDIATE")
-        return self.db
+        db = self.store._take()
+        try:
+            db.execute("PRAGMA query_only=%d" % (0 if self.write else 1))
+            db.execute("BEGIN IMMEDIATE" if self.write else "BEGIN")
+        except BaseException:
+            db.close()
+            raise
+        self.db = db
+        return db
 
     def __exit__(self, exc_type, exc, tb):
-        try:
-            self.db.execute("COMMIT" if exc_type is None else "ROLLBACK")
-        finally:
-            self.db.close()
+        db = self.db
+        if exc_type is None:
+            try:
+                db.execute("COMMIT")
+            except BaseException:
+                db.close()                  # closing rolls back whatever is left; never pooled
+                raise
+        else:
+            try:
+                if db.in_transaction:
+                    db.execute("ROLLBACK")
+            except sqlite3.Error:
+                db.close()                  # the original error matters more than a failed rollback
+                return False
+        self.store._give(db)
+        return False
 
 
 def canonical(obj):
@@ -1446,16 +1519,25 @@ def requeue_where(db, where, args):
                " WHERE author='caller' AND replay_safe=1 AND state IN ('claimed','started') AND " + where, tuple(args))
 
 
+DUE = "author='caller' AND state IN ('queued','claimed','started','review','uncertain') AND deadline_ts<=?"
+
+
 def expire_due(db, now):
+    # Many reads call this. The maintenance sweep expires work within a second, so usually nothing is due and the
+    # request needs no write (in a read transaction, no rerun under the write lock).
+    if db.execute("SELECT 1 FROM messages WHERE " + DUE + " LIMIT 1", (int(now),)).fetchone() is None:
+        return
     db.execute("UPDATE messages SET state='expired', code=CASE WHEN state IN ('started','review','uncertain') THEN "
                "'deadline_after_start' ELSE 'deadline_before_start' END, finished_ts=?, " + DROP_DRAFT + ", " + CLEAR_WORK +
-               " WHERE author='caller' AND state IN ('queued','claimed','started','review','uncertain') AND "
-               "deadline_ts<=?", (int(now), int(now)))
+               " WHERE " + DUE, (int(now), int(now)))
 
 
 def quarantine_expired(db, now):
     """An expired lease leaves the outcome unknown for the owner to decide, except for a message from someone in the
     inbox: its reply would have gone out unreviewed anyway, so an unanswered one simply counts as read."""
+    if db.execute("SELECT 1 FROM messages WHERE author='caller' AND state='started' AND lease_expires<=? LIMIT 1",
+                  (now,)).fetchone() is None:
+        return                      # as in expire_due: no write when no lease has run out
     rows = db.execute("SELECT * FROM messages WHERE author='caller' AND route='agent' AND state='started' AND "
                       "lease_expires<=?", (now,)).fetchall()
     for m in rows:
@@ -2060,8 +2142,9 @@ def note_wake(db, worker_id, now, at, intent_ts, seen_before_ts, route, quiet_se
 
 # ---------------------------------------------------------------- API
 class Api(object):
-    """Each handler runs inside one IMMEDIATE transaction and returns (status, body). Raising Fail rolls
-    the transaction back; returning an error tuple keeps writes such as a cancellation."""
+    """Each handler runs inside one transaction and returns (status, body): a GET in a read transaction (run again
+    in an IMMEDIATE one if it needs to write), everything else in an IMMEDIATE one. Raising Fail rolls the
+    transaction back; returning an error tuple keeps writes such as a cancellation."""
 
     def __init__(self, store):
         self.store, self.cfg, self.limits = store, store.cfg, store.limits
@@ -2100,7 +2183,9 @@ class Api(object):
         return L["max_body_bytes"] + sealed
 
     # ---- auth
-    def authenticate(self, db, kinds, token, now):
+    def authenticate(self, db, kinds, token, now, touch=True):
+        """The credential's subject, or None. `touch=False` checks it without recording a worker's last use (the
+        check before a request body is read runs in a read transaction)."""
         kind = C.token_kind(token)
         if kind is None or kind not in kinds:
             return None
@@ -2127,7 +2212,7 @@ class Api(object):
                 return None
             if kind == "connector" and w["adapter"] != "native":
                 return None
-            if kind == "worker":
+            if kind == "worker" and touch:
                 db.execute("UPDATE workers SET last_seen_ts=? WHERE id=?", (int(now), w["id"]))
             return dict(w)
         if kind == "verifier":
@@ -4443,17 +4528,19 @@ class Api(object):
     def connector_jobs(self, db, r):
         worker, now = r.subject, r.now
         bot = db.execute("SELECT * FROM bots WHERE id=?", (worker["bot_id"],)).fetchone()
-        expire_due(db, now)
-        # Restoring ignored requests can exceed the normal pending limit. Stream
-        # candidates so completed wake attempts do not hide later due jobs, and
-        # apply the response limit only after eligibility checks.
+        # Every online connector polls this, so it only reads: a message past its deadline is left out here and
+        # expired by the maintenance sweep within a second. Restoring ignored requests can exceed the normal pending
+        # limit. Stream candidates so completed wake attempts do not hide later due jobs, and apply the response
+        # limit only after eligibility checks.
         rows = db.execute("SELECT m.* FROM messages m JOIN contacts c ON c.bot_id=m.bot_id AND c.actor_id=m.actor_id "
                           "WHERE m.bot_id=? AND m.author='caller' AND m.route='agent' AND m.state='queued' "
                           "AND (m.review_in IS NULL OR m.review_in!='ignored' OR c.preapproved=1) "
                           "ORDER BY m.created_ts, m.rowid", (bot["id"],))
         jobs = []
         for m in rows:
-            if block_reason(db, m, bot=bot):
+            # Checked here, not in the query: a deadline condition there would steer SQLite to the global
+            # deadline index instead of this bot's own work.
+            if m["deadline_ts"] <= now or block_reason(db, m, bot=bot):
                 continue
             phase = self.job_phase(db, m, bot)
             if phase == "ready" and turn_blocker(db, m, bot) is not None:
@@ -5111,31 +5198,36 @@ def make_handler(api):
                 if auth and req.token is None:
                     self.close_connection = True
                     raise Fail(401, "unauthorized")
+                body_needed = self.command in ("POST", "PATCH", "PUT", "DELETE")
                 if kinds is not None:
                     if not req.token:
                         self.close_connection = True
                         raise Fail(401, "unauthorized")
-                    with api.store.tx() as db:
-                        req.subject = api.authenticate(db, kinds, req.token, req.now)
-                        if req.subject is None:
-                            raise Fail(401, "unauthorized")
-                        limit = api.body_limit(db, name, req.params, req.subject)
+                    if body_needed:         # the credential decides how large a body may be, before it is read
+                        with api.store.tx(write=False) as db:
+                            req.subject = api.authenticate(db, kinds, req.token, req.now, touch=False)
+                            if req.subject is None:
+                                raise Fail(401, "unauthorized")
+                            limit = api.body_limit(db, name, req.params, req.subject)
                 elif req.token is not None and C.token_kind(req.token) is None:
                     raise Fail(401, "unauthorized")
                 else:
                     limit = None
-                body_needed = self.command in ("POST", "PATCH", "PUT", "DELETE")
                 req.body = self.read_body(limit) if body_needed else {}
                 self._timer.cancel()
-                with api.store.tx() as db:
-                    # The decision time is taken after the body arrived and the write lock was acquired:
-                    # a slow body or a busy database can never make an expired lease or deadline look valid.
+
+                def handle(db):
+                    # The decision time is taken after the body arrived and the transaction began: a slow body or
+                    # a busy database can never make an expired lease or deadline look valid.
                     req.now = C.now_ts()
                     if kinds is not None:
                         req.subject = api.authenticate(db, kinds, req.token, req.now)
                         if req.subject is None:
                             raise Fail(401, "unauthorized")
-                    status, obj = getattr(api, name)(db, req)
+                    return getattr(api, name)(db, req)
+                # A GET reads first: most of them never write (the connector poll above all), and one that does
+                # runs again under the write lock. A worker credential records its last use, so it writes anyway.
+                status, obj = api.store.attempt(handle, write=self.command != "GET" or "worker" in (kinds or ()))
                 if name == "share_card" and self._html:
                     card = {k: v for k, v in obj.items() if k != "ok"}
                     return self.reply_page(status, lambda nonce: P.render_profile(card, self._html, url.path, nonce),
@@ -5194,8 +5286,7 @@ def make_handler(api):
         def serve_avatar(self, m):
             self._route = "avatar"
             self._timer.cancel()
-            with api.store.tx() as db:
-                found = api.avatar_image(db, m.group("ref"))
+            found = api.store.attempt(lambda db: api.avatar_image(db, m.group("ref")))
             if found is None or (m.group("v") and not found[2].startswith(m.group("v"))):
                 raise Fail(404, "not_found")
             kind, data, sha = found
@@ -5318,18 +5409,38 @@ def make_handler(api):
     return Handler
 
 
+SHARED_ACCEPT_WAIT = 0.05      # seconds a full process leaves a connection to the other gateway processes
+
+
 class BoundedServer(ThreadingHTTPServer):
-    """Threads are capped: a connection over the limit gets an immediate 503 instead of a new thread."""
+    """Threads are capped: a connection over the limit gets an immediate 503 instead of a new thread. When several
+    gateway processes accept from one socket (`shared`), a process without a free thread first gives the others a
+    moment to take the connection, so a 503 means that every process is full."""
     daemon_threads = True
     allow_reuse_address = True
+    # socketserver's default backlog is 5: a burst of new connections beyond it waits for a SYN retry (a second)
+    request_queue_size = 1024
 
     def __init__(self, address, handler, slots, family):
         self.address_family = family
         self._slots = threading.BoundedSemaphore(slots)
+        self.shared, self._slot = False, False
         ThreadingHTTPServer.__init__(self, address, handler)
 
+    def get_request(self):
+        self._slot = self._slots.acquire(blocking=False) or \
+            (self.shared and self._slots.acquire(timeout=SHARED_ACCEPT_WAIT))
+        try:
+            conn, addr = self.socket.accept()
+        except OSError:                     # shared: another process took this connection
+            if self._slot:
+                self._slots.release()
+            raise
+        conn.setblocking(True)
+        return conn, addr
+
     def process_request(self, request, client_address):
-        if not self._slots.acquire(blocking=False):
+        if not self._slot:
             body = b'{"ok":false,"error":"busy"}'
             try:
                 request.sendall(b"HTTP/1.0 503 Service Unavailable\r\nContent-Type: application/json\r\n"
@@ -5381,11 +5492,112 @@ def sweep_blobs(store, now):
     return len(dead)
 
 
+def sweep_forever(store):
+    while True:
+        try:
+            maintenance(store)
+        except Exception as e:
+            log("maintenance failed:", type(e).__name__)
+        time.sleep(1)
+
+
+RESTARTS_PER_MINUTE = 10
+
+
+def exit_text(status):
+    return "signal %d" % os.WTERMSIG(status) if os.WIFSIGNALED(status) else "status %d" % os.WEXITSTATUS(status)
+
+
+def supervise(srv, store, count):
+    """`count` request processes accept connections from the one listening socket and one more runs the
+    maintenance sweeps. This process only starts them, replaces one that exits and stops them all on SIGTERM or
+    SIGINT. It never runs a thread, so forking stays safe, and each child opens its own database connections."""
+    srv.shared = True
+    srv.socket.setblocking(False)       # a process that loses the race for a connection goes back to waiting
+    children, stopping, recent = {}, [], []
+    stop_signals = {signal.SIGTERM, signal.SIGINT}
+
+    def spawn(role):
+        signal.pthread_sigmask(signal.SIG_BLOCK, stop_signals)
+        try:
+            pid = os.fork()
+            if pid == 0:
+                code = 1
+                try:
+                    for sig in stop_signals:
+                        signal.signal(sig, signal.SIG_DFL)
+                    signal.pthread_sigmask(signal.SIG_UNBLOCK, stop_signals)
+                    if role == "maintenance":
+                        sweep_forever(store)
+                    else:
+                        srv.serve_forever()
+                except BaseException as e:
+                    log("%s process failed: %s" % (role, type(e).__name__))
+                finally:
+                    os._exit(code)
+            children[pid] = role
+        finally:
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, stop_signals)
+
+    def stop(signum, frame):
+        stopping.append(signum)
+        for pid in list(children):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+    for sig in stop_signals:
+        signal.signal(sig, stop)
+    spawn("maintenance")
+    for _ in range(count):
+        spawn("request")
+    failed = False
+    while children:
+        try:
+            pid, status = os.wait()
+        except ChildProcessError:
+            break
+        role = children.pop(pid, None)
+        if role is None or stopping:
+            continue
+        now = time.monotonic()
+        recent[:] = [t for t in recent if now - t < 60] + [now]
+        if len(recent) > RESTARTS_PER_MINUTE:
+            log("gateway processes keep exiting; stopping")
+            failed = True
+            stop(signal.SIGTERM, None)
+            continue
+        log("%s process %d exited (%s); starting another" % (role, pid, exit_text(status)))
+        spawn(role)
+    return 1 if failed else 0
+
+
+WAL_RESET_BYTES = 8 << 20
+
+
+def reset_wal(store):
+    """With reads running all the time (connector polls, several processes) SQLite never finds a moment to start its
+    write-ahead log over, and the log grows with every write. Once it passes WAL_RESET_BYTES, copy it back into the
+    database and truncate it. Writers wait for this (well under a second); readers are not stopped."""
+    try:
+        size = os.path.getsize(str(store.path) + "-wal")
+    except OSError:
+        return
+    if size > WAL_RESET_BYTES:
+        db = store._take()
+        try:
+            db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        finally:
+            store._give(db)
+
+
 def maintenance(store):
     now = C.now_ts()
     if now - getattr(store, "blob_swept", 0) >= BLOB_SWEEP_SECONDS:
         store.blob_swept = now
         sweep_blobs(store, now)
+    reset_wal(store)
     with store.tx() as db:
         expire_due(db, now)
         quarantine_expired(db, now)
@@ -5634,24 +5846,23 @@ def cmd_serve(home, a):
         die("refusing to listen on %s: the gateway binds loopback by default. Put an HTTPS reverse proxy in "
             "front of it, or set allow_non_loopback_bind in gateway.json deliberately (see docs/PUBLIC_BOTS.md)"
             % bind, 2)
+    processes = a.processes if a.processes is not None else cfg["processes"]
+    if not C.int_in(processes, 1, MAX_PROCESSES):
+        die("--processes must be 1-%d" % MAX_PROCESSES, 2)
+    if processes > 1 and not hasattr(os, "fork"):
+        die("more than one gateway process needs fork (Linux, macOS or another POSIX system)", 2)
     family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
     api = Api(store)
     srv = BoundedServer((bind, port), make_handler(api), cfg["limits"]["max_concurrent_requests"], family)
     actual = srv.server_address[1]
-
-    def sweeper():
-        while True:
-            try:
-                maintenance(store)
-            except Exception as e:
-                log("maintenance failed:", type(e).__name__)
-            time.sleep(1)
-    threading.Thread(target=sweeper, daemon=True).start()
     host = "[%s]" % bind if ip.version == 6 else bind
     if not ip.is_loopback:
         log("WARNING: listening on a non-loopback address; serve the public API only through HTTPS")
     print(json.dumps({"listening": "http://%s:%d" % (host, actual), "service": C.SERVICE}), flush=True)
-    log("%s serving on %s:%d home=%s" % (C.SERVICE, bind, actual, home))
+    log("%s serving on %s:%d home=%s processes=%d" % (C.SERVICE, bind, actual, home, processes))
+    if processes > 1:
+        return supervise(srv, store, processes)
+    threading.Thread(target=sweep_forever, args=(store,), daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -5907,6 +6118,8 @@ def main(argv=None):
     ps = sp.add_parser("serve", help="serve the HTTP API (loopback by default)")
     ps.add_argument("--port", type=int)
     ps.add_argument("--bind")
+    ps.add_argument("--processes", type=int,
+                    help="request processes sharing the port (default: gateway.json processes, else 1)")
     pm = sp.add_parser("mail-relay", help="deliver queued verification emails over SMTP (the only part that "
                                           "connects out; run it as its own service)")
     pm.add_argument("--config", help="SMTP settings (default: <home>/mail.json)")

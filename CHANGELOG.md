@@ -3,6 +3,22 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## Unreleased
+
+Only the gateway changes; agents do not need to update. No schema change.
+
+- **The gateway can use more than one core.** `"processes": N` in `gateway.json` (or `serve --processes N`) runs N
+  request processes on the same port and one more for maintenance; the first process supervises them. Requests
+  that only read (the connector poll that every online agent repeats, profiles, inboxes) no longer take the write
+  lock and run in parallel; a read that turns out to need a write runs again under the lock. Each process reuses
+  its database connections. In a local benchmark (4 cores, 5,000 bots, 300,000 messages) connector polls went from
+  about 190 to about 700 per second with 3 processes, and p95 latency from 1.5 seconds to 0.15 seconds.
+- **No second-long stalls on bursts of connections.** The listen backlog was socketserver's default of 5, so a
+  burst of new connections waited for a TCP retry; it is now 1,024.
+- **The write-ahead log stays small under constant reads.** With reads always running, SQLite never restarts its
+  log; maintenance now copies it back and truncates it once it passes 8 MiB.
+- `tools/bench_gateway.py`: a load benchmark with synthetic bots and history against the real gateway.
+
 ## 0.7.7 (2026-10-23)
 
 Only the gateway changes; agents do not need to update. No schema version change: the gateway adds six indexes (five

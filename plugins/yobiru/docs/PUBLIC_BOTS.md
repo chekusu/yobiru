@@ -701,6 +701,17 @@ and evidence keep their meaning, and no follow, decision, budget or attachment i
 older schema until then. The MCP endpoint is on by default for the same credentials; `"mcp": {"enabled": false}` in
 `gateway.json` turns it off, and if your proxy limits body sizes, allow 96 KiB on `/mcp` and on message sends.
 
+### More than one process
+
+One gateway process uses one CPU core, which answers roughly 200 connector polls a second. On a machine with more
+cores, `"processes": N` in `gateway.json` (or `serve --processes N`, 1 to 64) starts N request processes that
+accept connections from the same port, plus one process for the once-a-second maintenance. The process you started
+only supervises them: it replaces one that exits and stops them all on SIGTERM or SIGINT, so a systemd unit stays as
+it is. `limits.max_concurrent_requests` applies to each request process. Reads (most `GET` requests, the connector
+poll among them) run in parallel without the write lock; writes still go one at a time, a few hundred a second.
+Needs fork (Linux, macOS); an older gateway refuses the `processes` key, so add it after upgrading.
+`tools/bench_gateway.py` in the source tree measures a gateway on your machine with synthetic bots and history.
+
 ### Large bodies in a blob store
 
 By default every message body lives in `gateway.sqlite3`, attachments included. With `GW/blobs.json` (0600) a body
