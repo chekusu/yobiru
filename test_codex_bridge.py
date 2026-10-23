@@ -770,7 +770,7 @@ class DeliveryEvidenceTests(BridgeTests):
         ctx = self.core.Ctx(self.tailmsg)
         self.core.respond_request(ctx, "request_0001", "running", "Started")
         self.assertEqual({"running": 1}, self.phases())
-        self.now += 2 * 3600
+        self.now = float(int(time.time())) + 2 * 3600   # progress was stamped in real time, maybe a second after setUp
         diagnosis = self.diagnose()
         self.assertEqual({"running_without_recent_progress": 1}, diagnosis["execution"]["phases"])
         self.assertGreaterEqual(diagnosis["execution"]["stalled_running"]["progress_age_seconds"], 7200)
