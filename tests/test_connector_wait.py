@@ -93,6 +93,38 @@ class GatewayWaitTests(WaitCase):
         self.assertNotEqual(first["cursor"], obj["cursor"])
         self.assertLess(took, 3)
 
+    def test_following_a_sender_ends_the_wait_for_a_blocked_turn(self):
+        self.assert_follow_ends_wait(existing_edge=False)
+
+    def test_following_a_sender_again_ends_the_wait_for_a_blocked_turn(self):
+        self.assert_follow_ends_wait(existing_edge=True)
+
+    def assert_follow_ends_wait(self, existing_edge):
+        gw = self.gw
+        sender, source = gw.owned_bot("sender")
+        if existing_edge:
+            self.assertEqual(201, gw.follow(self.sb, sender)[0])
+            self.assertEqual(200, gw.unfollow(self.sb, sender)[0])
+        cid = gw.conversation(self.beta, source)
+        first = gw.chat(cid, source, "first turn")
+        second = gw.chat(cid, source, "second turn")
+        for mid in (first, second):
+            self.assertEqual(200, gw.admit(self.beta, mid)[0])
+        self.assertEqual(200, gw.claim_job(self.wtok, first)[0])
+        before = self.listing()
+        self.assertEqual([], before["jobs"], "the claimed first turn blocks the second")
+
+        followed = []
+        self.later(0.5, lambda: followed.append(gw.follow(self.sb, sender)))
+        (status, obj), took = timed(lambda: self.poll(wait=5, cursor=before["cursor"]))
+        self.assertTrue(wait_until(lambda: followed), "the follow request completed")
+        self.assertEqual(201, followed[0][0], followed)
+        self.assertEqual([second], [j["job_id"] for j in self.listing()["jobs"]])
+        self.assertEqual(200, status)
+        self.assertEqual([second], [j["job_id"] for j in obj["jobs"]])
+        self.assertNotEqual(before["cursor"], obj["cursor"])
+        self.assertLess(took, 3, "following removes the turn blocker and wakes the held poll")
+
     def test_a_reply_to_what_the_bot_sent_and_a_binding_check_end_the_wait(self):
         gw = self.gw
         awtok, awid = gw.native(self.alpha)
@@ -211,6 +243,13 @@ class ChangeTriggerTests(unittest.TestCase):
                 self.assertEqual(6, seqs()["bot_a"], "a check that is answered leaves the listing")
                 db.execute("UPDATE bots SET state='draft' WHERE id='bot_a'")
                 self.assertEqual(7, seqs()["bot_a"])
+                db.execute("INSERT INTO follows(src, dst, state, revision, created_ts, updated_ts) "
+                           "VALUES('bot_a', 'bot_b', 'active', 1, 1, 1)")
+                self.assertEqual({"bot_a": 8, "bot_b": 9}, seqs(), "a follow can change either bot's listing")
+                db.execute("UPDATE follows SET state='removed' WHERE src='bot_a' AND dst='bot_b'")
+                self.assertEqual({"bot_a": 10, "bot_b": 11}, seqs())
+                db.execute("UPDATE follows SET state='active' WHERE src='bot_a' AND dst='bot_b'")
+                self.assertEqual({"bot_a": 12, "bot_b": 13}, seqs())
             finally:
                 db.close()
 

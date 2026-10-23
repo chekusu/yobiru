@@ -200,6 +200,21 @@ async def http(port, method, path, token=None, body=None, timeout=60):
     return int(status[9:12]), json.loads(rest) if rest else {}
 
 
+def listing_cursor(status, obj):
+    """Only successful, well-formed listings can establish or change a held poll's cursor."""
+    if status != 200 or not isinstance(obj, dict) or obj.get("ok") is not True:
+        return None
+    cursor = obj.get("cursor")
+    if not isinstance(cursor, str) or len(cursor) != 32 or any(c not in "0123456789abcdef" for c in cursor):
+        return None
+    for key, ident in (("jobs", "job_id"), ("checks", "check_id"), ("replies", "message_id")):
+        items = obj.get(key)
+        if not isinstance(items, list) or any(not isinstance(item, dict) or
+                                             not isinstance(item.get(ident), str) for item in items):
+            return None
+    return cursor
+
+
 async def hold(port, pid, bots, probes, wait=25):
     """Every bot's connector waits for a change; then a visitor writes to `probes` of them."""
     settle = min(8.0, wait / 3.0)
@@ -207,42 +222,59 @@ async def hold(port, pid, bots, probes, wait=25):
 
     async def listing(bot):
         async with gate:
-            return (await http(port, "GET", "/v1/connector/jobs", bot["connector"]))[1].get("cursor")
+            cursor = listing_cursor(*(await http(port, "GET", "/v1/connector/jobs", bot["connector"])))
+            if cursor is None:
+                raise ValueError("invalid initial connector listing")
+            return cursor
     cursors = await asyncio.gather(*(listing(b) for b in bots))
     done = {}
 
     async def held_poll(bot, cursor):
-        t0 = time.time()
+        t0 = time.monotonic()
         try:
             status, obj = await http(port, "GET", "/v1/connector/jobs?wait=%d&cursor=%s" % (wait, cursor),
                                      bot["connector"], timeout=wait + 30)
         except (OSError, ValueError, asyncio.TimeoutError):
             status, obj = -1, {}
-        done[bot["bot_id"]] = (time.time(), status, obj.get("cursor") != cursor, time.time() - t0)
+        finished, current = time.monotonic(), listing_cursor(status, obj)
+        done[bot["bot_id"]] = {"finished": finished, "status": status, "valid": current is not None,
+                               "changed": current is not None and current != cursor, "seconds": finished - t0,
+                               "jobs": {j["job_id"] for j in obj["jobs"]} if current is not None else set()}
     cpu0, _ = gateway_usage(pid)
     waits = [asyncio.ensure_future(held_poll(b, c)) for b, c in zip(bots, cursors)]
     await asyncio.sleep(settle)
     cpu1, rss = gateway_usage(pid)
     actor = (await http(port, "POST", "/v1/actors", body={"display_name": "Bench visitor"}))[1]["token"]
-    sent = {}
-    for bot in random.Random(7).sample(bots, min(probes, len(bots))):
+    sent, probe_statuses = {}, {}
+    selected = random.Random(7).sample(bots, min(probes, len(bots)))
+    for bot in selected:
         cid = (await http(port, "POST", "/v1/bots/%s/conversations" % bot["bot_id"], actor,
                           {"op_key": "probe%016x" % random.getrandbits(64)}))[1]["conversation_id"]
-        await http(port, "POST", "/v1/conversations/%s/messages" % cid, actor,
-                   {"op_key": "probe%016x" % random.getrandbits(64), "kind": "chat", "text": "probe"})
-        sent[bot["bot_id"]] = time.time()
+        started = time.monotonic()  # A held poll may finish before this sender receives its receipt.
+        try:
+            status, obj = await http(port, "POST", "/v1/conversations/%s/messages" % cid, actor,
+                                     {"op_key": "probe%016x" % random.getrandbits(64), "kind": "chat", "text": "probe"})
+        except (OSError, ValueError, asyncio.TimeoutError):
+            status, obj = -1, {}
+        probe_statuses[str(status)] = probe_statuses.get(str(status), 0) + 1
+        if status == 202 and isinstance(obj, dict) and obj.get("ok") is True and isinstance(obj.get("message_id"), str):
+            sent[bot["bot_id"]] = (started, obj["message_id"])
     await asyncio.sleep(settle / 2)
     cpu2, _ = gateway_usage(pid)
     await asyncio.gather(*waits)
-    woke = sorted(done[b][0] - t for b, t in sent.items() if done[b][2])
+    woke = sorted(done[b]["finished"] - t for b, (t, mid) in sent.items()
+                  if done[b]["changed"] and mid in done[b]["jobs"] and done[b]["finished"] >= t)
     statuses = {}
-    for _, status, _, _ in done.values():
+    for result in done.values():
+        status = result["status"]
         statuses[str(status)] = statuses.get(str(status), 0) + 1
-    held = [d for d in done.values() if not d[2] and d[3] >= wait - 1]
+    held = [d for d in done.values() if d["valid"] and not d["changed"] and d["seconds"] >= wait - 1]
 
     def ms(x):
         return round(x * 1000, 1)
-    return {"held": len(bots), "held_full_wait": len(held), "status": statuses, "probes": len(sent),
+    return {"held": len(bots), "held_full_wait": len(held), "status": statuses,
+            "invalid_listings": sum(d["status"] == 200 and not d["valid"] for d in done.values()),
+            "probes": len(selected), "probe_status": probe_statuses,
             "woken": len(woke), "wake_p50_ms": ms(woke[len(woke) // 2]) if woke else None,
             "wake_max_ms": ms(woke[-1]) if woke else None,
             "gateway_cpu_seconds_while_holding": round(cpu2 - cpu1, 2) if cpu1 is not None else None,

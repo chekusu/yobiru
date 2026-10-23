@@ -384,8 +384,8 @@ def change_trigger(name, event, *exprs):
 
 
 # A connector poll can wait for its listing to change. Every write that can change a bot's listing (its own work,
-# replies to what it sent, its contacts, a binding check for one of its workers, the bot itself) moves that bot's
-# row here to the next sequence number, in the writing transaction, so every gateway process sees the change.
+# replies to what it sent, its contacts and follows, a binding check for one of its workers, the bot itself) moves
+# that bot's row here to the next sequence number, in the writing transaction, so every gateway process sees it.
 # Additive like the tables above: an older gateway ignores the table and its triggers keep it current.
 CHANGE_TABLES = (
     "CREATE TABLE IF NOT EXISTS connector_changes (bot_id TEXT PRIMARY KEY, seq INTEGER NOT NULL)",
@@ -394,6 +394,8 @@ CHANGE_TABLES = (
     change_trigger("connector_change_message", "UPDATE ON messages", "NEW.bot_id", "NEW.actor_id"),
     change_trigger("connector_change_contact_new", "INSERT ON contacts", "NEW.bot_id", "NEW.actor_id"),
     change_trigger("connector_change_contact", "UPDATE ON contacts", "NEW.bot_id", "NEW.actor_id"),
+    change_trigger("connector_change_follow_new", "INSERT ON follows", "NEW.src", "NEW.dst"),
+    change_trigger("connector_change_follow", "UPDATE ON follows", "NEW.src", "NEW.dst"),
     change_trigger("connector_change_inbox", "INSERT ON inbox_acceptances", "NEW.bot_id"),
     change_trigger("connector_change_check_new", "INSERT ON checks",
                    "(SELECT bot_id FROM workers WHERE id=NEW.worker_id)"),

@@ -3393,7 +3393,8 @@ def connector_run(st, a, base, bot_id, conn, route):
         return False
 
     def recover():
-        """Settle what an earlier process left behind, or what the gateway did not take while it was away."""
+        """Settle leftover wakes; return True while any still need the gateway to accept their result."""
+        pending = False
         for key, entry in list(st.load(ledger_name)["wakes"].items()):
             if not key.startswith(bot_id + ":") or entry["kind"] == "reply":
                 continue                        # a reply wake is a local never-again marker, nothing to settle
@@ -3401,23 +3402,24 @@ def connector_run(st, a, base, bot_id, conn, route):
                 res = request(base, "POST", path_for(entry["kind"], entry["ref"]),
                               {"step": "intent", "wake_id": entry["wake_id"], "phase": entry.get("phase")}, token)
                 if not res.get("ok"):
-                    ledger_put(key, None)       # never recorded: nothing was woken
+                    if transient(res):
+                        pending = True          # the intent may already be recorded; retry the same wake id
+                    else:
+                        ledger_put(key, None)   # the gateway no longer accepts this intent
                     continue
                 if not res.get("duplicate"):
-                    ledger_put(key, None)       # recorded now, and nothing was woken: report it as refused
-                    request(base, "POST", path_for(entry["kind"], entry["ref"]),
-                            {"step": "result", "wake_id": entry["wake_id"], "outcome": "refused",
-                             "detail": "connector restarted before waking"}, token)
-                    report["recovered"].append({"ref": entry["ref"], "outcome": "refused"})
-                    continue
-                entry.update(step="woken", outcome="uncertain", detail="connector restarted after recording intent")
+                    entry.update(step="woken", outcome="refused", detail="connector restarted before waking")
+                else:
+                    entry.update(step="woken", outcome="uncertain", detail="connector restarted after recording intent")
             elif entry["step"] == "intended":
                 entry.update(step="woken", outcome="uncertain", detail="connector restarted during the wake")
-            settle(key, entry)
+            ledger_put(key, entry)               # keep the recovered outcome across another outage or restart
+            pending = not settle(key, entry) or pending
             report["recovered"].append({"ref": entry["ref"], "outcome": entry["outcome"]})
+        return pending
 
-    recover()
-    idle_since, cursor, failures, unsettled = time.monotonic(), None, 0, False
+    unsettled = recover()
+    idle_since, cursor, failures = time.monotonic(), None, 0
     wait = 0 if a.once else a.wait_seconds
     while True:
         # A gateway that names its listing with a cursor holds the next poll until the listing changes, so the
@@ -3446,14 +3448,16 @@ def connector_run(st, a, base, bot_id, conn, route):
             time.sleep(delay)
             continue
         if failures or unsettled:
-            recover()                           # the gateway answers again: give it the results it missed
-        failures, unsettled = 0, False
+            unsettled = recover()               # keep retrying until the gateway takes every missed result
+        failures = 0
         sent, cursor, skipped = cursor, listing.get("cursor"), len(report["skipped"])
         todo = [("binding_check", c["check_id"], None) for c in listing.get("checks", [])]
         todo += [("job", j["job_id"], j["phase"]) for j in listing.get("jobs", [])
                  if j["phase"] == "ready" or route.get("wake_on_review", True)]
         for kind, ref, phase in todo:
             key = "%s:%s" % (bot_id, ref)
+            if unsettled and key in st.load(ledger_name)["wakes"]:
+                continue                        # finish recovering the original wake before replacing its record
             entry = {"kind": kind, "ref": ref, "phase": phase, "wake_id": new_op(), "step": "planned"}
             ledger_put(key, entry)
             res = request(base, "POST", path_for(kind, ref),
