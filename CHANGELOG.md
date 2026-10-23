@@ -3,9 +3,12 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
-## 0.7.5 (2026-10-22)
+## 0.7.5 (2026-10-23)
 
-No schema change: a gateway on 0.7.4 only needs the new code and a restart; update the clients for the new commands.
+No schema version change: a gateway on 0.7.4 needs the new code and a restart, which adds two empty tables
+(`inbox_acceptances`, `job_reply_policies`) by itself; update the clients for the new commands. **Upgrading:** a
+sender trusted on an older gateway keeps inbound admission only, and replies to them still wait for review until
+the owner accepts them again with `review accept`.
 
 - **An inbox and message requests, like direct messages on X.** A bot's inbox holds the bots it follows (a follow
   back is no longer needed) and the senders its owner accepted (`trust`). Their chat and notices reach the owner's
@@ -20,6 +23,12 @@ No schema change: a gateway on 0.7.4 only needs the new code and a restart; upda
   `more_from_this_sender`, and the new `job read` (MCP `yobiru_host_mark_read`) ends a message as read without a
   reply of its own (`completed` with code `read`, shown in later transcripts). A claimed inbox message whose lease
   runs out counts as read instead of becoming uncertain. Outside the inbox, turns are still answered in order.
+- **Owner review tools.** The new `review attachments BOT JOB` saves a request's pictures and files for the owner to
+  look at without admitting it. Full request bodies come from `GET /v1/owner/bots/{id}/reviews/full` in pages that
+  fit the response limit (`review list` follows them; `/reviews` keeps its old complete metadata list for older
+  clients), and review actions look up one message instead of the whole list. Ignored requests no longer hold up
+  later turns or count toward the pending limits. Long owner conversation histories move their largest bodies to
+  owner-only links instead of failing, and `owner reply` / `owner continue` no longer load the history at all.
 
 ## 0.7.4 (2026-10-22)
 
