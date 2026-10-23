@@ -48,7 +48,7 @@
     },
     "scripts/public_bots/bot_client.py": {
       "source": "public_bots/bot_client.py",
-      "sha256": "46e421c5fa8dea854b48f29c715983aa1cb30f99525c603455d2dad9ce1f54d5"
+      "sha256": "23d2792d96a681f5deb3e1235e94bda85d063697fad7d56674c1bd766e739bac"
     },
     "scripts/public_bots/bot_common.py": {
       "source": "public_bots/bot_common.py",
@@ -60,7 +60,7 @@
     },
     "scripts/public_bots/bot_gateway.py": {
       "source": "public_bots/bot_gateway.py",
-      "sha256": "135d3a47489e14e947f714d7d54b19637a928bbb15074861168853bd26cdea42"
+      "sha256": "4b2d69556935de7187b49cb0d2234079180d2386ad0a65df1944862a0a0d33e6"
     },
     "scripts/public_bots/bot_mcp.py": {
       "source": "public_bots/bot_mcp.py",

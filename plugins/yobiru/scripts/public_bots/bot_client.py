@@ -2086,9 +2086,7 @@ def cmd_owner(st, a):
     elif a.owner_cmd == "continue":
         anchor = a.anchor
         if anchor is None:
-            view = call(base, "GET", "/v1/owner/conversations/%s" % a.conversation_id, None, token)
-            turns = [m["message_id"] for m in view["messages"] if m["author"] == "caller"]
-            anchor = turns[-1] if turns else None
+            anchor = owner_conversation_context(base, token, a.conversation_id).get("latest_caller_message_id")
         body = {"op_key": a.op_key or new_op(), "turns": a.turns, "anchor_message_id": anchor}
         if a.ttl_seconds is not None:
             body["ttl_seconds"] = a.ttl_seconds
@@ -2117,10 +2115,10 @@ def cmd_owner(st, a):
     elif a.owner_cmd == "conversations":
         out(call(base, "GET", "/v1/owner/bots/%s/conversations" % owner_bot(base, token, a.bot), None, token))
     elif a.owner_cmd == "conversation":
-        out(unseal(st, base, call(base, "GET", "/v1/owner/conversations/%s" % a.conversation_id, None, token)))
+        out(unseal(st, base, owner_conversation_view(base, token, a.conversation_id)))
     elif a.owner_cmd == "reply":
         op = a.op_key or new_op()
-        conv = call(base, "GET", "/v1/owner/conversations/%s" % a.conversation_id, None, token)
+        conv = owner_conversation_context(base, token, a.conversation_id)
         if conv.get("actor_e2e_key"):
             pin_peer(st, base, conv["actor_id"], conv["actor_e2e_key"])
         body = seal_from_bot(st, base, conv["bot_id"], conv["actor_id"], "owner", a.conversation_id, a.text,
@@ -2291,6 +2289,44 @@ def cmd_verifier(st, a):
     write_new_token(target, obj.pop("token"))
     out(dict(obj, token_file=str(target),
              note="for the private capability service only; it is not stored in the client credentials"))
+
+
+def owner_conversation_context(base, token, cid):
+    """Reply and continue need identity/key metadata and an anchor, never the history's bodies."""
+    path = "/v1/owner/conversations/%s" % cid
+    try:
+        _, obj = C.api_ok(base, "GET", path + "/context", None, token)
+        return obj
+    except C.ApiError as e:
+        if e.status != 404 or e.code != "not_found":
+            fail(e)
+        obj = call(base, "GET", path, None, token)
+        turns = [m["message_id"] for m in obj["messages"] if m["author"] == "caller"]
+        obj["latest_caller_message_id"] = turns[-1] if turns else None
+        return obj
+    except ValueError as e:
+        die(str(e))
+
+
+def owner_conversation_view(base, token, cid):
+    """Hydrate individually bounded history bodies before displaying or opening sealed content."""
+    view = call(base, "GET", "/v1/owner/conversations/%s" % cid, None, token)
+    for message in view["messages"]:
+        for part in ("content", "result", "draft"):
+            path = message.get(part + "_url")
+            if not path:
+                continue
+            mid = message["message_id"]
+            expected = "/v1/owner/conversations/%s/messages/%s/%s" % (cid, mid, part)
+            if path != expected or not re.fullmatch(r"msg_[a-z2-7]{16}", mid):
+                die("invalid conversation body link")
+            body = call(base, "GET", path, None, token)
+            if body.get("conversation_id") != cid or body.get("message_id") != mid or any(
+                    body.get(k) != view.get(k) for k in ("bot_id", "actor_id")):
+                die("invalid conversation body context")
+            message[part] = body["content"]
+            del message[part + "_url"]
+    return view
 
 
 def owner_message_context(base, token, bot_id, mid, retry_state=None):

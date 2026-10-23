@@ -3249,17 +3249,63 @@ class Api(object):
         return 200, {"ok": True, "conversations": out}
 
     def owner_conversation_get(self, db, r):
+        status, view = self.owner_conversation_context(db, r)
+        rows = db.execute("SELECT * FROM messages WHERE conversation_id=? ORDER BY created_ts, rowid",
+                          (view["conversation_id"],))
+        contact = contact_row(db, view["bot_id"], view["actor_id"])
+        view["messages"] = [owner_message_view(m, contact) for m in rows]
+
+        def wire_size(value):
+            return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+        # Keep the complete ordered message list for older clients, which cannot follow history pages.
+        # Only overflowing bodies move to individual owner-only responses; no admission/reveal occurs.
+        used = wire_size(view)
+        if used > C.MAX_RESPONSE_BYTES:
+            bodies = sorted(((wire_size(m[part]), i, part) for i, m in enumerate(view["messages"])
+                             for part in ("content", "result", "draft") if m.get(part)), reverse=True)
+            for size, i, part in bodies:
+                message = view["messages"][i]
+                link = "/v1/owner/conversations/%s/messages/%s/%s" % (
+                    view["conversation_id"], message["message_id"], part)
+                message[part] = None
+                message[part + "_url"] = link
+                used += wire_size({part + "_url": link}) - 1 + len("null") - size
+                if used <= C.MAX_RESPONSE_BYTES:
+                    break
+            if used > C.MAX_RESPONSE_BYTES:
+                raise Fail(413, "conversation_metadata_too_large", "this conversation's metadata exceeds the response limit")
+        return status, view
+
+    def owner_conversation_context(self, db, r):
+        """Owner reply identity/key context and continuation anchor, independent of history bodies."""
         conv, bot = self.owner_conversation(db, r.subject, r.params["cid"])
         if conv["deleted_ts"] is not None:
             raise Fail(404, "not_found")
-        rows = db.execute("SELECT * FROM messages WHERE conversation_id=? ORDER BY created_ts, rowid",
-                          (conv["id"],)).fetchall()
+        latest = db.execute("SELECT id FROM messages WHERE conversation_id=? AND author='caller' "
+                            "ORDER BY created_ts DESC, rowid DESC LIMIT 1", (conv["id"],)).fetchone()
         contact = contact_row(db, bot["id"], conv["actor_id"])
         return 200, {"ok": True, "conversation_id": conv["id"], "bot_id": bot["id"], "actor_id": conv["actor_id"],
                      "actor_e2e_key": principal_key(db, conv["actor_id"]),
                      "contact": contact_owner_view(db, contact, bot),
                      "conversation_readable_by_caller": contact["epoch"] == conv["epoch"] and contact["status"] != "revoked",
-                     "messages": [owner_message_view(m, contact) for m in rows], "notice": UNTRUSTED_NOTICE}
+                     "latest_caller_message_id": latest["id"] if latest else None, "notice": UNTRUSTED_NOTICE}
+
+    def owner_conversation_content(self, db, r):
+        """One linked history body, including sealed files, readable only by this conversation's owner."""
+        conv, bot = self.owner_conversation(db, r.subject, r.params["cid"])
+        if conv["deleted_ts"] is not None:
+            raise Fail(404, "not_found")
+        msg = db.execute("SELECT * FROM messages WHERE id=? AND conversation_id=?",
+                         (r.params["mid"], conv["id"])).fetchone()
+        if msg is None:
+            raise Fail(404, "not_found")
+        contact = contact_row(db, bot["id"], conv["actor_id"])
+        content = owner_message_view(msg, contact).get(r.params["part"])
+        if content is None:
+            raise Fail(404, "not_found")
+        return 200, {"ok": True, "conversation_id": conv["id"], "bot_id": bot["id"], "actor_id": conv["actor_id"],
+                     "actor_e2e_key": principal_key(db, conv["actor_id"]), "message_id": msg["id"], "content": content}
 
     def owner_reply(self, db, r):
         """An owner-authored message in a caller's conversation (a notification: no lifecycle, no reply
@@ -4482,6 +4528,9 @@ ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
     ("GET", r"/v1/owner/bots/(?P<bid>%s)/reviews/after/(?P<after>msg_[a-z2-7]{16})" % BOT_ID, "reviews", ("owner",)),
     ("GET", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/review-content/message", "review_message_content", ("owner",)),
     ("GET", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})", "owner_conversation_get", ("owner",)),
+    ("GET", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})/context", "owner_conversation_context", ("owner",)),
+    ("GET", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})/messages/(?P<mid>msg_[a-z2-7]{16})/"
+     r"(?P<part>content|result|draft)", "owner_conversation_content", ("owner",)),
     ("POST", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})/messages", "owner_reply", ("owner",)),
     ("DELETE", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})", "owner_conversation_delete", ("owner",)),
     ("POST", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})/continue", "conversation_continue", ("owner",)),
