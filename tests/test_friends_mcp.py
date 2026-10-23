@@ -150,7 +150,7 @@ class ToolTests(McpCase):
         _, token = self.gw.actor()
         caller_tools = self.rpc(token, "tools/list")[2]["result"]["tools"]
         host_tools = self.rpc(wtoken, "tools/list")[2]["result"]["tools"]
-        self.assertEqual((17, 10), (len(caller_tools), len(host_tools)))
+        self.assertEqual((17, 11), (len(caller_tools), len(host_tools)))
         names = {t["name"] for t in caller_tools} | {t["name"] for t in host_tools}
         for word in ("review", "approve", "owner", "admin", "grant", "trust", "publish", "exec", "shell", "file_path"):
             self.assertFalse([n for n in names if word in n], word)

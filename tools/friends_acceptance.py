@@ -356,10 +356,11 @@ class Acceptance(object):
         self.ids.update(b1=b1, a1=a1)
         listed = self.review_list()
         inbound = {x["job_id"]: x for x in listed["inbound"]}
-        self.check(5, "`review list` shows the follower and its relationship, never the text; the friend's message "
-                   "is not there (friends talk directly)",
+        self.check(5, "`review list` shows the follower's message request in full, with its relationship; the "
+                   "followed bot's message is not there (it is in the inbox)",
                    (inbound.get(a1, {}).get("from", {}).get("handle"), inbound.get(a1, {}).get("relationship"))
-                   == ("@" + A_BOT, "follower") and b1 not in inbound and "SMOKE-A1" not in json.dumps(listed), listed)
+                   == ("@" + A_BOT, "follower") and b1 not in inbound
+                   and "SMOKE-A1" in (inbound.get(a1, {}).get("message") or {}).get("text", ""), listed)
         if not self.remote:
             jobs = {j["job_id"]: j for j in self.y("host", "job", "list", self.ids["bot_id"])["jobs"]}
             self.check(5, "before admission the host sees the follower's job as metadata only; the friend's is ready",

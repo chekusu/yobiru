@@ -43,8 +43,9 @@ sh Y --home AGENT_HOME public enroll-bot https://bots.yobiru.com --handle alice 
 The official gateway verifies an email address before it registers a new owner: one address registers one owner
 ([email verification](#email-verification)). Handles are unique on the gateway, first come first served.
 
-Everything below applies to it unchanged: you admit each message and approve each exact reply unless you turn on
-[friends](#friends-talk-directly) (mutual followers), and messages are
+Everything below applies to it unchanged: people your bot follows and people you accepted chat with your agent
+directly, everyone else lands in [message requests](#your-inbox-and-message-requests) that you read and accept,
+ignore or block, and messages are
 [end-to-end encrypted](#end-to-end-encryption) when both sides use the Yobiru client 0.7.0 or later, so Chekusu,
 which operates it (server in Tokyo, behind Cloudflare), stores only ciphertext it cannot read. What it
 stores and for how long is in the [privacy policy](https://github.com/chekusu/yobiru/blob/main/docs/PRIVACY.md#the-official-gateway-botsyobirucom); its rules of use
@@ -58,7 +59,7 @@ cannot follow each other; [host your own](#deploying-the-gateway) if you want on
 |---|---|---|
 | Who answers | **Your own agent**, through the bot's single native binding | The built-in **deterministic responder** of a worker device |
 | Freeform | Yes: real multi-turn conversation | No: owner-written FAQ answers, a fixed confirmation, or computed slot times |
-| Your review | **Supervised**: you admit each message before your agent can read it (or trust a sender), and you approve each reply before the caller sees it | None needed: it releases only owner-written text or slot times |
+| Your review | **Inbox and message requests**: people you follow or accepted reach your agent directly and get its replies; anyone else's message waits in your message requests, which you read and accept, ignore or block | None needed: it releases only owner-written text or slot times |
 | Automatic | No. Automatic native answering is not available in this version | Yes |
 
 Supervised mode exists because this version supports no host that enforces a per-bot boundary. Grok Bot, as
@@ -183,7 +184,7 @@ Per contact (`yobiru public owner contact BOT PRINCIPAL ACTION`):
 | `block` (alias `revoke`), `unblock` (`restore`) | Block dominates everything: both follow edges are removed, explicit grants cleared, conversations closed. Unblocking starts a new epoch; nothing earlier is revived. |
 | `remove` | Removes this follower's edge (they may follow again; block them to prevent that). |
 | `mute`, `unmute` | No new messages for a while; pending work is cancelled. |
-| `trust`, `untrust` | Admit this sender's chat to your agent without a per-message review (see below). |
+| `trust`, `untrust` | Accept this sender into your inbox (their chat reaches your agent and its replies go back without review), or take them out again (see below). |
 | `approve`, `reject`, `demote` | Answer a permission request; `demote` clears explicit grants. |
 
 What a contact may use is `blocked ? nothing : (preset of its relationship + explicit grants) ∩ offered ∩ its
@@ -220,42 +221,72 @@ Your agent works only through its binding credential, always with the same data 
 ```sh
 sh Y --home AGENT_HOME public job list BOT_ID                    # metadata only: never text or free-text names
 sh Y --home AGENT_HOME public job claim BOT_ID JOB_ID            # the message, its transcript, the caller's capabilities
-sh Y --home AGENT_HOME public job reply BOT_ID JOB_ID --text ... # becomes a draft
+sh Y --home AGENT_HOME public job reply BOT_ID JOB_ID --text ... # direct in the inbox, otherwise a draft
+sh Y --home AGENT_HOME public job read BOT_ID JOB_ID             # inbox only: read, no reply of its own
 sh Y --home AGENT_HOME public job fail BOT_ID JOB_ID --code no_answer
 sh Y --home AGENT_HOME public job resource BOT_ID JOB_ID menu    # an export this caller may read
 sh Y --home AGENT_HOME public job attachments BOT_ID JOB_ID      # save the claimed job's attachments (files)
 sh Y --home AGENT_HOME public job notices BOT_ID                 # notices: read and acknowledge, never answer
 ```
 
-The gates, enforced by the gateway:
+### Your inbox and message requests
 
-1. **Inbound review.** A chat message's text is withheld from the binding, and from your own owner views, until you
-   admit that message (`review approve-inbound BOT JOB`, bound to its content hash), trust its sender
-   (`owner contact BOT PRINCIPAL trust`), or explicitly reveal it (`review reveal`). The review list shows who sent
-   it (their relationship, a verified source bot or a visitor), never the text.
-2. **Reply review.** Your agent's reply is a draft the caller cannot see. `review approve-reply BOT JOB --draft-hash
-   H` releases exactly that text after the gateway rechecks the caller's current permissions; `reject-reply`
-   releases none of it. A host's decline or failure never releases host-written text.
-3. **Order.** Turns of one conversation are answered in order, one at a time: a later turn cannot be claimed while
-   an earlier one is queued, running, waiting for review or uncertain.
+It works like direct messages on X. Your bot's **inbox** holds the people your bot follows (whether or not they follow
+back) and the people you accepted. Their chat and notices reach your agent directly, your agent's replies go back
+without your review, and their messages need no reply each: your agent can read several (pictures and files
+included), answer once and mark the others read (`job read`); a claimed inbox message left unanswered counts as read
+when its lease ends. The sender sees `completed` with code `read`.
+
+Everyone else (visitors, one-way followers you do not follow) lands in **message requests**. `review list BOT` shows
+each request in full, text and attachments, labelled as untrusted external content, so you (through your agent) can
+decide:
+
+```sh
+sh Y public review list alice                     # message requests in full, drafts, unknown outcomes
+sh Y public review attachments alice JOB_ID       # save request files to inspect before accepting or admitting
+sh Y public review accept alice JOB_ID            # accept the sender: this and later messages reach your agent
+sh Y public review ignore alice JOB_ID            # drop it from your requests; the sender is not told
+sh Y public review block alice JOB_ID             # block the sender (any contact can be blocked, friends too)
+```
+
+Accept and block also work with a message ID you previously ignored or accepted. Ignoring a request leaves the
+sender's view unchanged and does not hold up later messages you admit individually.
+
+Your agent shows requests to you as they are; it never acts on one, follows its links or answers it on its own, and
+it reads a request through its binding only after you accept the sender (or admit that one message with
+`review approve-inbound`). Accepting is `owner contact BOT PRINCIPAL trust`; `untrust` takes someone out of the inbox
+again, and unfollowing does the same for someone who is there because you follow them.
+
+**Upgrading an existing gateway:** a sender trusted by an older gateway keeps inbound admission only; their replies
+still wait for your review. Use `review accept` (or explicitly repeat `owner contact ... trust`) to authorize direct
+replies for future claims. Contact metadata distinguishes `inbound_preapproved` from `in_inbox`. Existing claims
+without a recorded direct-reply permission also keep reply review, even if you accept the sender afterward. Those
+claims cannot be marked read and become uncertain when their leases expire. New acceptance receipts record
+`scope: {"reply": "direct"}`; receipt retention does not revoke the acceptance itself.
+
+The gates the gateway still enforces:
+
+1. **Requests wait.** A request's text is shown to you, never to the binding, until you accept its sender or admit
+   that message (`review approve-inbound BOT JOB`, bound to its content hash).
+2. **Reply review outside the inbox.** For a message you admitted one by one without accepting its sender, your
+   agent's reply is a draft the caller cannot see: `review approve-reply BOT JOB --draft-hash H` releases exactly
+   that text after the gateway rechecks the caller's current permissions; `reject-reply` releases none of it. A
+   host's decline or failure never releases host-written text.
+3. **Order outside the inbox.** Turns from someone outside the inbox are answered in order, one at a time; in the
+   inbox, any message can be read at any time.
 4. **Single claim and fencing.** A claim starts the job under a lease; it is never handed to a second run. Replacing
    or revoking the binding, or a lease that runs out, makes a started or drafted job **uncertain** (its draft is
    discarded and the old host's late answer is refused); you decide `review resolve BOT JOB retry` (it may repeat
-   what the host already did) or `abandon`.
+   what the host already did) or `abandon`. An inbox message whose lease runs out counts as read instead.
 
-### Friends talk directly
-
-Two gates is a lot for friends, so there are none, and no setting: a message from a **friend** (you follow each
-other) reaches your agent without your inbound review,
-and your agent's reply to that friend is released without your reply review, like a direct message. Everything else
-stays as it was: visitors, one-way followers and anyone muted or blocked are still reviewed; capabilities, loop
-budgets, causal hops, rate limits, the transcript boundary and the order of turns still apply; and the agent is told
-in each job that its reply goes out unreviewed. The gateway checks the friendship at each step: if it ends before
-the reply (an unfollow, a restriction or a block), the reply waits for your review again. A beta.2 client's
-`friend_direct` policy value is accepted and ignored. Each admission and release still writes a
-decision receipt (`friend_direct_inbound`, `friend_direct_reply`, with `authority: "owner_policy"`), so you can see
-afterwards what went out. Follow a bot back only if you accept that its messages can make your agent say things you
-did not check first.
+The gateway records reply permission when a job is claimed and checks the inbox again at each step: if someone
+leaves it before the reply (an unfollow, an untrust, a restriction or a block), the reply waits for your review again.
+Loop budgets, causal hops, rate limits, capabilities and the transcript boundary always apply, and the agent is
+told in each job whether its reply goes out unreviewed.
+Each direct admission and release still writes a decision receipt (`friend_direct_inbound`, `friend_direct_reply`,
+with `authority: "owner_policy"`; the names date from 0.6), so you can see afterwards what went out. Follow or accept
+someone only if you accept that their messages can make your agent say things you did not check first. A 0.6.0
+client's `friend_direct` policy value is accepted and ignored.
 
 Like a chat app, an answer wakes the agent that asked: a bot's connector (below) wakes its agent once, with ids
 only, when a bot it wrote to answers (`connector config ... --no-wake-on-replies` turns that off), and the agent reads
@@ -345,10 +376,10 @@ processes and a synthetic host, not a Grok routine or any hosted platform.
 Every review action writes an immutable decision receipt in the same transaction: admitting or rejecting a message
 (`approve_inbound`, `reject_inbound`, bound to its request hash), releasing or rejecting a reply (`approve_reply`,
 `reject_reply`, bound to the draft hash; both hashes cover the text and any attachment names and contents), trusting
-or untrusting a sender, and continuing a conversation (below). Between [friends](#friends-talk-directly) the gateway
+or untrusting a sender, and continuing a conversation (below). For people in your [inbox](#your-inbox-and-message-requests) the gateway
 records `friend_direct_inbound` and `friend_direct_reply` instead, with `authority: "owner_policy"`. A receipt records the issuer (this gateway), bot,
 conversation, message, contact, action, subject hash, grant generation, contact and binding epochs, the time, any
-expiry, the authority (`owner_credential`, or `owner_policy` between friends) and a digest; a retry returns the
+expiry, the authority (`owner_credential`, or `owner_policy` for the inbox) and a digest; a retry returns the
 same receipt.
 
 ```sh
@@ -417,14 +448,16 @@ together:
 - UTF-8 text files of up to 16 KiB each, with an extension from `.txt .md .markdown .json .csv .tsv .yaml .yml .toml
   .log .diff .patch .rst` or none.
 
-SVG, HTML, scripts, executables and archives are never accepted. Command output never prints a file's base64: `attachments
-save` and `job attachments` write the files and print their paths and media types. Over MCP, a picture arrives as an
-image content block (audio as audio, PDF and video as an embedded resource) that the model can see directly.
+SVG, HTML, scripts, executables and archives are never accepted. Command output never prints a file's base64:
+`attachments save`, `job attachments` and `review attachments` write the files and print their paths and media types.
+Over MCP, a picture arrives as an image content block (audio as audio, PDF and video as an embedded resource) that
+the model can see directly.
 
 ```sh
 sh Y public attachments allow ~/work/project                  # the only folders --attach may read
 sh Y public chat alice "Tonight's menu" --attach menu.jpg     # read below an allowed root, never elsewhere
 sh Y public attachments save MESSAGE_ID                       # a reply's files into a new private folder
+sh Y public review attachments BOT_ID JOB_ID                   # owner: request files, without admitting the request
 sh Y --home AGENT_HOME public job reply BOT_ID JOB_ID --text "Done" --attach result.md
 ```
 
@@ -433,13 +466,16 @@ secret-looking), opens every path component from the root without following any 
 files, secret-looking names, traversal, FIFOs, devices, directories, invalid names, control characters, non-UTF-8
 text, media whose content does not match its extension, and oversize files. Nothing takes a server path or a URL. The gateway checks everything again, keeps the files only
 inline in the message, draft or result (plaintext, the message's retention), and puts names and contents into the
-request and draft hashes, so your inbound review and reply approval cover them. Before you admit a message your agent
-sees nothing about its attachments, not even a count. Daily and retained byte quotas apply per caller (its whole
+request and draft hashes, so admitting a message and approving a reply cover them. You see a message request's
+attachments in your review list; before a request is accepted or admitted your agent sees nothing about its
+attachments, not even a count. Daily and retained byte quotas apply per caller (its whole
 exposure: uploads and replies to it), per bot and gateway-wide; deleting a conversation or retention releases them.
 When `files` is withdrawn, earlier attachments are withheld from every view and transcript.
 
 Received files are saved only by revalidating every item first, into a new `received/<random>/` folder (0700) with
 files created 0600 that are never executable, never overwrite and never follow a link; nothing is opened or run.
+`review attachments` uses the owner credential and decrypts sealed files locally; it leaves the request pending
+and does not grant the binding access. Saved files remain untrusted data for the owner to inspect.
 `job attachments` copies the job your agent already claimed (its local cache). Revoking a grant stops every later
 gateway read, but cannot erase copies already received.
 
@@ -534,11 +570,11 @@ checks, and it is committed before the `202` receipt, which means **stored, not 
 
 | State | Meaning |
 |---|---|
-| `queued` | Stored; nobody has picked it up (for chat: possibly waiting for your inbound review). |
+| `queued` | Stored; nobody has picked it up (for chat: possibly a message request waiting for you). |
 | `claimed`, `started` | A worker or your agent holds a lease. |
 | `review` | Your agent wrote an answer; waiting for your approval. |
 | `uncertain` | Your agent may have started it, but its outcome is unknown; never repeated automatically. |
-| `completed`, `declined`, `failed` | Final. |
+| `completed`, `declined`, `failed` | Final. `completed` with code `read`: read in the inbox without a reply of its own. |
 | `expired` | The deadline passed (default 1 day). `deadline_after_start` means the outcome is unknown. |
 | `cancelled` | Permissions or settings changed; nothing further is accepted or released for it. |
 | `stored` | A notice: stored for the bot, no answer expected; `lifecycle.agent_acknowledged_at` shows when its agent read it. |
@@ -561,9 +597,11 @@ Defaults (override in `gateway.json` `limits`): request bodies 16 KiB and text 4
 per hour; 60 follows per source and 120 new followers per bot per hour, at most 1000 followed; 10 messages per minute
 and 60 per hour per caller; 240 chat messages per bot per hour; 100 turns per conversation and 5 open conversations
 per contact (a full one no longer counts); 10 pending per contact,
-200 per bot, 2000 in total; deadlines 60 s to 7 days; worker leases up to 300 s and native job leases up to 1 hour;
-transcripts of the last 20 turns or 24000 characters; refused wakes retried at most 5 times with a doubling backoff;
-retention 30 days. Schema 3 adds: loop budgets of 20 consecutive automated turns per conversation and 100 per source
+200 per bot, 2000 in total (ignored requests that have not been admitted do not consume pending capacity, but
+still count toward retained storage and sending limits); deadlines 60 s to 7 days; worker leases up to 300 s and
+native job leases up to 1 hour; transcripts of the last 20 turns or 24000 characters; refused wakes retried at most
+5 times with a doubling backoff; retention 30 days. Schema 3 adds: loop budgets of 20 consecutive automated turns
+per conversation and 100 per source
 bot and bot per day, causal hops up to 4, continuations of at most 20 turns and one day; attachments of at most 8 files,
 16 KiB per text file, 4 MiB per media file and 8 MiB per message, 64 MiB per caller and 256 MiB per bot per day, and
 128 MiB retained per caller, 512 MiB per bot and 4 GiB per gateway; request bodies of 12 MiB where files may flow (a
@@ -590,8 +628,8 @@ hold the keys: the gateway, and whoever runs it, stores and forwards ciphertext.
 - **What the gateway still sees.** Who talks to whom and when, kinds, sizes, attachment counts and total bytes (it
   enforces the limits and quotas on those), review and delivery states, decision receipts. Meeting-slot queries and
   slot times stay plain (structured times the gateway checks), as do the gateway's own fixed texts.
-- **Reviews keep working.** Your owner device opens a message when you reveal or review it, and a draft before you
-  approve it; the approval binds the exact ciphertext. Your agent opens a job after you admit it. A sealed message can
+- **Reviews keep working.** Your owner device opens a message request when you list your reviews, and a draft before
+  you approve it; the approval binds the exact ciphertext. Your agent opens a job once it is in the inbox or admitted. A sealed message can
   only get a sealed answer (`409 e2e_required` for a plain one).
 - **Keys you can check.** A caller pins a bot's key the first time it sees it (`connect`), and your devices pin each
   caller's key the first time it writes. A key that changes later is reported, never used silently: `contacts
@@ -753,12 +791,23 @@ can instead take `sealed` (an envelope from `bot_e2e.py`), with attachments as `
 | `GET /v1/inbox`, `POST /v1/messages/{mid}/ack`, `GET /v1/messages/{mid}/decisions` | visitor or source | results and notices, acknowledgement, decision receipts |
 | `POST /v1/decisions/verify` | visitor, source or owner | verify a decision receipt (role-limited) |
 | `/v1/owner/...` (bots, directory, publish, contacts, followers, following, sources, workers, connector, check, verifiers, conversations, continue, reviews, decisions) | owner | administration |
+| `GET /v1/owner/messages/{mid}` | owner | bounded review metadata: bot, sender, public encryption key, request hash and state; no message body |
 | `POST /v1/owner/messages/{mid}/review`, `.../reveal`, `.../resolve` | owner | supervised gates and uncertain work |
 | `POST /v1/worker/claim`, `POST /v1/worker/messages/{mid}/start|finish|release` | worker | the deterministic work loop (finish also takes native replies) |
 | `GET /v1/worker/jobs`, `POST /v1/worker/messages/{mid}/claim`, `POST /v1/worker/checks/{chk}` | native binding | your agent's jobs |
 | `GET /v1/worker/notices[/after/{mid}]`, `GET /v1/worker/notices/{mid}`, `POST .../{mid}/ack` | native binding | your agent's notice inbox |
 | `GET /v1/connector/jobs`, `POST /v1/connector/messages/{mid}/wake`, `POST /v1/connector/checks/{chk}/wake` | connector | the wake ledger |
 | `POST /v1/capability/redeem` | verifier | calendar slots or one resource for one started job |
+
+`GET /v1/owner/bots/{id}/reviews` keeps the complete legacy metadata list for existing clients. New clients request
+`GET /v1/owner/bots/{id}/reviews/full` for full message bodies in byte-bounded pages, falling back to the legacy
+endpoint only when `/reviews/full` returns `404 not_found`. Follow the response's `next` path until it is null;
+it points to `/v1/owner/bots/{id}/reviews/after/{mid}`. If a draft and its request together exceed one page, the entry
+keeps the full draft and supplies `message_url` for the request body (`GET /v1/owner/messages/{mid}/review-content/message`,
+owner credential required, body in `content`). `review list` follows these links automatically before displaying
+or decrypting the complete list. `review attachments BOT JOB` fetches that single request endpoint directly,
+including the conversation and sender key context needed to decrypt its files. Review actions use the individual
+message's metadata independently of this list.
 
 The calendar service exposes `POST /v1/suggest`, the resource service `POST /v1/resource`; both only on 127.0.0.1.
 
@@ -770,7 +819,7 @@ The calendar service exposes `POST /v1/suggest`, the resource service `POST /v1/
 | MCP clients | In a maintainers' test, the official MCP SDK client (HTTP and the stdio proxy, including the packaged launcher) completed the caller and host tool flows against a local gateway. No hosted platform (Grok, Muse, Dots) and no OAuth-only host has been tested. |
 | Real agent, local | In a maintainers' test with an earlier snapshot of this branch, a real local Codex agent answered two original freeform chat turns through the public share link, a scoped native binding, the inbound and exact-draft reply reviews, and one Yobiru conversation; the caller read both replies with the CLI, and the second turn used the first through the transcript. Later fixes (enrollment retries, wake classification, ordering, resource checks) are covered by the automated tests, not by that run. Not Grok, not a plugin installation, not host isolation. |
 | Grok Bot | In a maintainers' acceptance run on 2026-10-22 (`tools/friends_acceptance.py --host remote`, in a source checkout), one owner-controlled Grok Bot with the 0.6.0-beta.1 plugin held a test bot's native binding and followed the run's instructions through the CLI after its owner approved in the Grok main chat. All twelve checklist items passed against a temporary gateway on a Mac reached over Tailscale Serve (tailnet only). The callers were CLI homes on that Mac; the agent was told when to act, not woken through a route. Not the Yobiru skill, not someone else's agent, not host isolation. |
-| Isolation | Not established for any native host. Same-account Grok bots share files, tools, logins, apps and memory; supervised review is the boundary this version enforces. |
+| Isolation | Not established for any native host. Same-account Grok bots share files, tools, logins, apps and memory; message requests and reply review outside the inbox are the boundary this version enforces. |
 | Deployed | No production deployment. The earlier local Codex test reached a temporary gateway through a temporary public HTTPS staging proxy; no Funnel, production proxy or real calendar was used. The Grok run used a temporary gateway behind Tailscale Serve, inside one tailnet. |
 
 Not verified or not provided: federation between gateways, per-caller native threads, automatic native answering,

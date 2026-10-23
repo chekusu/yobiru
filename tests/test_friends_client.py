@@ -136,6 +136,31 @@ class OnboardingTests(FriendsClientCase):
 
 
 class NativeFlowTests(FriendsClientCase):
+    def test_message_requests_and_the_inbox_from_the_command_line(self):
+        alice = self.owner_bot("alice")
+        self.native("alice", alice)
+        self.y("caller", "connect", self.gw.url + "/@alice", "--name", "Visitor")
+        first = self.y("caller", "chat", "alice", "REQ-CLI hello")["message_id"]
+        listed = self.y("owner", "review", "list", "alice")
+        self.assertEqual(("REQ-CLI hello", first), (listed["inbound"][0]["message"]["text"],
+                                                    listed["inbound"][0]["job_id"]))
+        self.assertEqual("ignored", self.y("owner", "review", "ignore", "alice", first)["inbound"])
+        self.assertEqual([], self.y("owner", "review", "list", "alice")["inbound"])
+        second = self.y("caller", "chat", "alice", "hello again")["message_id"]
+        self.assertTrue(self.y("owner", "review", "accept", "alice", second)["inbound_preapproved"])
+        third = self.y("caller", "chat", "alice", "and a third")["message_id"]
+        claimed = self.y("host", "job", "claim", alice, second)
+        self.assertIn(third, claimed["more_from_this_sender"])
+        self.y("host", "job", "claim", alice, third)
+        self.assertEqual("read", self.y("host", "job", "read", alice, second)["code"])
+        self.assertEqual("completed", self.y("host", "job", "reply", alice, third, "--text", "hi!")["state"])
+        # block straight from a request
+        self.y("other", "connect", self.gw.url + "/@alice", "--name", "Pest")
+        pest = self.y("other", "chat", "alice", "buy my stuff")["message_id"]
+        self.assertEqual("revoked", self.y("owner", "review", "block", "alice", pest)["status"])
+        refused = self.y("other", "chat", "alice", "again?", expect=2)
+        self.assertIn(refused.get("error"), ("blocked", "contact_revoked", "not_found", "forbidden"), refused)
+
     def test_two_supervised_turns_through_connector_and_synthetic_host(self):
         alice = self.owner_bot("alice")
         wid = self.native("alice", alice)
@@ -148,7 +173,7 @@ class NativeFlowTests(FriendsClientCase):
         self.assertEqual([(first, "review", "accepted")], [(w["ref"], w["phase"], w["outcome"]) for w in woke["woken"]])
         listed = self.y("owner", "review", "list", "alice")
         self.assertEqual([first], [x["job_id"] for x in listed["inbound"]])
-        self.assertNotIn("name a robot", json.dumps(listed), "the review list never shows the body")
+        self.assertIn("name a robot", json.dumps(listed), "the owner reads a message request in full")
         self.y("owner", "review", "approve-inbound", "alice", first)
         self.y("connector", "connector", "run", alice, "--once")
         reply = self.y("owner", "review", "list", "alice")["replies"][0]
@@ -156,14 +181,14 @@ class NativeFlowTests(FriendsClientCase):
         self.assertEqual("review", self.y("caller", "status", first)["state"])
         self.y("owner", "review", "approve-reply", "alice", first, "--draft-hash", reply["draft_hash"])
         self.assertIn("earlier bot turns: 0", self.y("caller", "status", first)["result"]["text"])
-        # second turn: the owner trusts this sender, so the job is ready at once and carries turn one
+        # second turn: the owner accepts this sender (trust), so bob is in the inbox: the job is ready at once,
+        # carries turn one, and its reply goes back without review
         self.y("owner", "owner", "contact", "alice", bob, "trust")
         second = self.y("caller", "chat", "alice", "turn two: continue")["message_id"]
         self.y("connector", "connector", "run", alice, "--once")
-        reply = self.y("owner", "review", "list", "alice")["replies"][0]
+        self.assertEqual([], self.y("owner", "review", "list", "alice")["replies"])
         self.assertIn("earlier bot turns: 1; last: SYNTHETIC-HOST reply to 'turn one: name a robot'",
-                      reply["draft"]["text"])
-        self.y("owner", "review", "approve-reply", "alice", second, "--draft-hash", reply["draft_hash"])
+                      self.y("caller", "status", second)["result"]["text"])
         history = self.y("caller", "history", "alice")
         self.assertEqual(["completed", "completed"], [m["state"] for m in history["messages"]])
         self.assertIn("earlier bot turns: 1", history["messages"][1]["result"]["text"])
@@ -307,9 +332,8 @@ class ResourceTests(FriendsClientCase):
         self.y("owner", "owner", "contact", "alice", self.y("other", "identities")["identities"][0]["visitor"][
             "actor_id"], "trust")
         other_mid = self.y("other", "chat", "alice", "and for me?")["message_id"]
-        self.y("host", "job", "reply", alice, mid, "--text", "Soup and bread.")
-        self.y("owner", "review", "approve-reply", "alice", mid, "--draft-hash",
-               self.y("owner", "review", "list", "alice")["replies"][0]["draft_hash"])
+        # an accepted (trusted) caller is in the inbox: the reply goes out without review
+        self.assertEqual("completed", self.y("host", "job", "reply", alice, mid, "--text", "Soup and bread.")["state"])
         other_job = self.y("host", "job", "claim", alice, other_mid)
         self.assertEqual([], other_job["allowed"]["resources"])
         self.y("host", "job", "resource", alice, other_mid, "menu", expect=2)
@@ -473,7 +497,8 @@ class ClientFixTests(FriendsClientCase):
                          "nothing was sent")
         ok_file = self.root / "ok.txt"
         ok_file.write_text("a fine answer")
-        self.assertEqual("review", self.y("host", "job", "reply", alice, mid, "--text-file", str(ok_file))["state"])
+        self.assertEqual("completed", self.y("host", "job", "reply", alice, mid, "--text-file", str(ok_file))["state"],
+                         "an accepted (trusted) sender is in the inbox: no review")
 
 
 class RetryIdentityTests(FriendsClientCase):

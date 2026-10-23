@@ -7,6 +7,7 @@ question the friend's bot asks is held for the owner's answer and answered by th
 notes come in once each; the bot's general routine is kept away from these friends' jobs; full conversations make
 room for new ones. Real bot_gateway.py subprocesses, synthetic homes and files, loopback only.
 """
+import argparse
 import base64
 import itertools
 import json
@@ -16,9 +17,11 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from support.public_harness import FriendsGateway, cli
 from test_public_gateway import png
+import bot_client as P
 
 LIMITS = {"min_deadline_seconds": 1, "read_timeout_seconds": 5, "messages_per_minute_per_actor": 1000,
           "messages_per_hour_per_actor": 5000, "pending_per_contact": 100, "new_conversations_per_hour_per_bot": 1000,
@@ -159,6 +162,38 @@ class MessageTests(ContactBotCase):
         nxt = self.y("ann", "friend", "send", "ben", "--text", "and you?")
         self.assertEqual("message", nxt["sent_as"], "with no question waiting, the owner's words are a message")
 
+    def test_concurrent_same_second_questions_are_answered_in_receipt_order(self):
+        asked = [self.y("ben", "chat", "ann", "Question %d" % i)["message_id"] for i in range(3)]
+        stamp = self.gw.sql("SELECT created_ts FROM messages WHERE id=?", (asked[0],))[0]["created_ts"]
+        for mid in asked:
+            self.gw.sql("UPDATE messages SET created_ts=? WHERE id=?", (stamp, mid))
+        shown = self.sync("ann", "ben")
+        self.assertEqual(asked, [m["id"] for m in shown["messages"]])
+        self.assertEqual(1, len({m["at"] for m in shown["messages"]}))
+        self.assertEqual((asked, 0), (shown["waiting_for_your_answer"], shown["waiting_behind_your_answer"]))
+        self.assertEqual(asked, self.sync("ann", "ben")["waiting_for_your_answer"],
+                         "renewing persisted leases preserves the question order")
+        api_call = P.C.api_call
+
+        def lose_finish_response(base, method, path, *args, **kwargs):
+            result = api_call(base, method, path, *args, **kwargs)
+            if method == "POST" and path.endswith("/%s/finish" % asked[0]):
+                raise P.C.ApiError(0, "connection_failed", "Synthetic lost finish response")
+            return result
+
+        with patch.object(P.C, "api_call", side_effect=lose_finish_response):
+            failed, _ = self.y("ann", "friend", "send", "ben", "--text", "Answer 0", expect=2)
+        self.assertEqual("connection_failed", failed["error"])
+        listed = self.y("ann-agent", "job", "list", self.ids["ann"])["jobs"]
+        self.assertEqual(asked[1:], [job["job_id"] for job in listed], "the finished question is no longer listed")
+        for i, mid in enumerate(asked):
+            answer = self.y("ann", "friend", "send", "ben", "--text", "Answer %d" % i)
+            self.assertEqual(mid, answer["answered"])
+            self.assertEqual(asked[i + 1:], answer["still_waiting"])
+            if i == 0:
+                self.assertTrue(answer["duplicate"], "a lost finish response retries the same held question")
+            self.assertEqual("Answer %d" % i, self.y("ben", "status", mid)["result"]["text"])
+
     def test_the_general_routine_leaves_a_linked_friend_alone(self):
         asked = self.y("ben", "chat", "ann", "are you there?")
         _, err = self.y("ann-agent", "job", "claim", self.ids["ann"], asked["message_id"], expect=2)
@@ -180,6 +215,63 @@ class MessageTests(ContactBotCase):
         for i in range(8):                        # 3 turns per conversation, at most 2 conversations at a time
             self.y("ben", "friend", "send", "ann", "--text", "line %d" % i)
         self.assertEqual(["line %d" % i for i in range(8)], [m["text"] for m in self.sync("ann", "ben")["messages"]])
+
+
+class HeldQuestionOrderTests(unittest.TestCase):
+    """Use deliberately reversed IDs to make the same-second ordering regression deterministic."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory(prefix="yobiru held questions ")
+        self.addCleanup(tmp.cleanup)
+        self.source, self.agent = P.State(Path(tmp.name) / "source"), P.State(Path(tmp.name) / "agent")
+        self.ids = ["msg_" + c * 16 for c in "zyx"]
+        self.bot, self.friend = "bot_" + "a" * 16, "bot_" + "b" * 16
+        self.base = "http://127.0.0.1:1"
+        self.source.save(P.CONTACT_BOTS, {"v": 1, "bots": {}, "links": {"ben": {
+            "gateway": self.base, "as": self.bot, "bot_id": self.friend,
+            "agent_home": str(self.agent.home)}}})
+        for mid in self.ids:
+            P.save_lease(self.agent, mid, {"bot_id": self.bot, "contact_bot": "ben",
+                                          "job": {"created_at": "2026-01-01T00:00:00Z"}})
+        self.args = argparse.Namespace(friend="ben", text="Synthetic answer", text_file=None, attach=None,
+                                       new_message=False)
+
+    def test_same_second_legacy_leases_use_receipt_order_not_random_ids(self):
+        def reply(fn, agent, args):
+            self.assertIs(P.cmd_job, fn)
+            P.forget_lease(agent, args.job)
+            return 0, {"ok": True}
+
+        # State serialization sorts object keys, and old leases have no local ordering field.
+        self.assertEqual(list(reversed(self.ids)), list(self.agent.load("leases.json")["leases"]))
+        with patch.object(P, "agent_home", return_value=(self.agent, "synthetic-token")), \
+                patch.object(P, "call", return_value={"jobs": [{"job_id": mid} for mid in self.ids]}), \
+                patch.object(P, "captured", side_effect=reply), patch.object(P, "out") as output:
+            for i, mid in enumerate(self.ids):
+                P.friend_send(self.source, self.args)
+                self.assertEqual(mid, output.call_args.args[0]["answered"])
+                self.assertEqual(self.ids[i + 1:], output.call_args.args[0]["still_waiting"])
+
+    def test_unlisted_lease_remains_available_for_reply_retry(self):
+        with patch.object(P, "agent_home", return_value=(self.agent, "synthetic-token")), \
+                patch.object(P, "call", return_value={"jobs": [{"job_id": mid} for mid in self.ids[1:]]}), \
+                patch.object(P, "captured", return_value=(0, {"ok": True, "duplicate": True})) as captured, \
+                patch.object(P, "out") as output:
+            P.friend_send(self.source, self.args)
+        self.assertIs(P.cmd_job, captured.call_args.args[0])
+        self.assertEqual(self.ids[0], captured.call_args.args[2].job,
+                         "a completed reply missing from jobs may need an idempotent retry")
+        self.assertTrue(output.call_args.args[0]["duplicate"])
+
+    def test_single_held_question_retries_without_listing(self):
+        for mid in self.ids[1:]:
+            P.forget_lease(self.agent, mid)
+        with patch.object(P, "agent_home", return_value=(self.agent, "synthetic-token")), \
+                patch.object(P, "call", side_effect=AssertionError("one question needs no ordering lookup")), \
+                patch.object(P, "captured", return_value=(0, {"ok": True, "duplicate": True})), \
+                patch.object(P, "out") as output:
+            P.friend_send(self.source, self.args)
+        self.assertEqual(self.ids[0], output.call_args.args[0]["answered"])
 
 
 class AvatarTests(ContactBotCase):

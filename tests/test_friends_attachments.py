@@ -149,7 +149,8 @@ class GatewayTests(AttachmentCase):
             self.assertNotIn(leak, listing, leak)
         pending = [x for x in self.gw.reviews(bot_id)["inbound"] if x["job_id"] == mid][0]
         self.assertEqual({"count": 1, "bytes": 14}, pending["attachments_pending"])
-        self.assertNotIn("SECRETNAME", json.dumps(pending), "the owner admits by hash, without the names")
+        self.assertEqual("SECRET-CONTENT", pending["message"]["attachments"][0]["content"],
+                         "a message request is shown to the owner in full; the agent's listing stays metadata only")
         self.assertEqual(200, self.gw.admit(bot_id, mid)[0])
         job = [j for j in self.gw.ok("GET", "/v1/worker/jobs", None, wtoken)["jobs"] if j["job_id"] == mid][0]
         self.assertEqual(1, job["attachments"])

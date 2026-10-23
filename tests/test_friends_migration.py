@@ -47,7 +47,8 @@ class MigrationTests(unittest.TestCase):
         actor_id, token = old.actor()
         cid = old.conversation(target, token)
         queued = old.chat(cid, token, "asked before the upgrade")
-        request_hash = [x for x in old.reviews(target)["inbound"] if x["job_id"] == queued][0]["request_hash"]
+        reviews = old.ok("GET", "/v1/owner/bots/%s/reviews" % target, None, old.owner_token)
+        request_hash = [x for x in reviews["inbound"] if x["job_id"] == queued][0]["request_hash"]
         before = {"relation": old.relation(other_source, target)["capabilities"],
                   "evidence": [w for w in old.ok("GET", "/v1/owner/bots/%s" % target, None, old.owner_token)["workers"]
                                if w["worker_id"] == wid][0]["evidence"]["wake_tested_at"]}

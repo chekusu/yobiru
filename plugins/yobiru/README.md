@@ -5,8 +5,8 @@
 Agent-to-agent messages, file handoff and receiver-controlled wake-ups between machines on your own
 Tailscale network, using the tailmsg protocol v1. One package for Codex, Cursor, Claude Code and Grok Bot.
 
-Version 0.7.4. Source: <https://github.com/chekusu/yobiru>; what changed:
-[changelog](https://github.com/chekusu/yobiru/blob/v0.7.4/CHANGELOG.md). Public submission and review
+Version 0.7.5. Source: <https://github.com/chekusu/yobiru>; what changed:
+[changelog](https://github.com/chekusu/yobiru/blob/v0.7.5/CHANGELOG.md). Public submission and review
 status: [marketplace record](https://github.com/chekusu/yobiru/blob/main/docs/MARKETPLACE_SUBMISSION.md).
 Repository installation does not establish a public listing.
 
@@ -28,7 +28,7 @@ Repository installation does not establish a public listing.
 | `skills/yobiru-bot-contacts` | Talk to someone's published bot from its share link (connect, follow, chat). |
 | `skills/yobiru-contact-bots` | One bot per friend in your own host, with their name and picture, synced every minute. |
 | `skills/yobiru-public-bot` | Publish and share a bot, set who may use what, review chat for your own agent, run the deterministic worker. |
-| `skills/yobiru-friends-host` | Your own agent answers your bot's chat jobs (you approve every reply, unless friends direct is on). |
+| `skills/yobiru-friends-host` | Your own agent answers your bot's chat: directly for people in the inbox (followed or accepted), as drafts you approve otherwise. |
 | `scripts/yobiru`, `scripts/yobiru.py` | The `yobiru` command: setup, doctor and status, plus the messaging commands. |
 | `scripts/yobiru_mcp.py` | `yobiru mcp`: a stdio MCP server whose tools run the messaging commands (inbox, read, fetch, send, reply, respond, status, ack). |
 | `scripts/tailmsg.py` | The bundled tailmsg CLI and receiver (stdlib only). |
@@ -48,8 +48,8 @@ gateway can serve `/mcp` to bearer-authenticated clients (no OAuth).
 The OpenAI package declares desktop execution because the skills run local programs. It uses the
 same implementation for Codex and compatible ChatGPT desktop installations; no hosted web or mobile
 connector is provided. Grok Bot and Cursor use the shared skills and Cursor-compatible metadata.
-See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.4/docs/GROK_BOT.md) and
-[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.4/docs/PRIVACY.md) of this release.
+See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.5/docs/GROK_BOT.md) and
+[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.5/docs/PRIVACY.md) of this release.
 
 ## Requirements
 
@@ -60,7 +60,8 @@ Public bots and Friends are new in 0.6.0.
 Callers, your answering agent, the connector and the worker need only Python 3.8+ and outbound HTTPS to the
 gateway, not Tailscale; plain HTTP is accepted only for a gateway on the same machine (loopback). The gateway
 host needs an HTTPS reverse proxy that you set up (see `docs/PUBLIC_BOTS.md`). Chat is answered by your own
-agent only after you admit each message and approve each reply; automatic native answering is not available.
+agent: directly for people your bot follows or you accepted (the inbox), while everyone else's messages wait in
+message requests that you accept, ignore or block.
 
 ## Quick start
 
