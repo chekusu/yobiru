@@ -865,6 +865,8 @@ class SweepIndexTests(FriendsCase):
                              "'review','uncertain') AND deadline_ts<=1"),
                 ("messages", "SELECT id FROM messages WHERE author='caller' AND route='agent' AND state='started' AND "
                              "lease_expires<=1"),
+                ("messages", "SELECT 1 FROM messages WHERE author='caller' AND state='started' AND lease_expires<=1 "
+                             "LIMIT 1"),
                 ("messages", "SELECT id FROM messages WHERE finished_ts IS NOT NULL AND finished_ts<1"),
                 ("counters", "SELECT key FROM counters WHERE expires_ts<1"),
                 ("messages", "SELECT * FROM messages WHERE actor_id='bot_x' AND author='caller' AND caller_ack_ts IS "
