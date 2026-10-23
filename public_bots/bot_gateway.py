@@ -4044,8 +4044,13 @@ class Api(object):
         bot = db.execute("SELECT * FROM bots WHERE id=?", (worker["bot_id"],)).fetchone()
         expire_due(db, now)
         quarantine_expired(db, now)
-        rows = db.execute("SELECT * FROM messages WHERE bot_id=? AND author='caller' AND route='agent' AND state IN "
-                          "('queued','started','review','uncertain') ORDER BY created_ts, rowid", (bot["id"],)).fetchall()
+        # Ignored requests do not consume pending capacity, so including their retained history could
+        # grow this response beyond the client's limit. Offer them again only when admitted or trusted.
+        rows = db.execute("SELECT m.* FROM messages m LEFT JOIN contacts c ON c.bot_id=m.bot_id AND "
+                          "c.actor_id=m.actor_id WHERE m.bot_id=? AND m.author='caller' AND m.route='agent' "
+                          "AND m.state IN ('queued','started','review','uncertain') "
+                          "AND (m.state!='queued' OR m.review_in IS NULL OR m.review_in!='ignored' OR c.preapproved=1) "
+                          "ORDER BY m.created_ts, m.rowid", (bot["id"],)).fetchall()
         jobs = []
         for m in rows:
             if m["state"] == "queued":

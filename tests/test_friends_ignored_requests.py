@@ -42,6 +42,7 @@ class IgnoredRequestTests(unittest.TestCase):
         self.assertEqual(200, self.gw.admit(bot, second)[0])
         self.assertEqual([], self.gw.reviews(bot)["inbound"])
         listed = self.gw.ok("GET", "/v1/worker/jobs", None, worker)["jobs"]
+        self.assertEqual([second], [j["job_id"] for j in listed])
         self.assertTrue(next(j for j in listed if j["job_id"] == second)["claimable"])
         status, job = self.gw.claim_job(worker, second)
         self.assertEqual(200, status, job)
@@ -60,12 +61,16 @@ class IgnoredRequestTests(unittest.TestCase):
         self.assertEqual([{"job_id": mid, "phase": "review", "wake_attempts": 0}], jobs())
         self.assertEqual(200, self.ignore(mid)[0])
         self.assertEqual([], jobs())
+        self.assertEqual([], self.gw.ok("GET", "/v1/worker/jobs", None, worker)["jobs"])
         status, result = self.gw.call("POST", "/v1/connector/messages/%s/wake" % mid,
                                       {"step": "intent", "wake_id": C.new_token("ticket")[4:],
                                        "phase": "review"}, connector)
         self.assertEqual((409, "not_due"), (status, result["error"]))
         self.assertEqual(200, self.gw.contact(bot, actor, "trust")[0])
         self.assertEqual([{"job_id": mid, "phase": "ready", "wake_attempts": 0}], jobs())
+        listed = self.gw.ok("GET", "/v1/worker/jobs", None, worker)["jobs"]
+        self.assertEqual([mid], [j["job_id"] for j in listed])
+        self.assertTrue(listed[0]["claimable"])
         status, job = self.gw.claim_job(worker, mid)
         self.assertEqual(200, status, job)
         self.assertEqual("IGNORED-WAKE-SECRET", job["untrusted_content"]["text"])
@@ -182,6 +187,42 @@ class IgnoredPendingCapacityTests(unittest.TestCase):
         status, retry = gw.send(cid, caller, kind="chat", text="retained request", op_key=key)
         self.assertEqual((200, first, True), (status, retry.get("message_id"), retry.get("duplicate")))
 
+    def test_accumulated_ignored_requests_do_not_crowd_the_binding_job_list(self):
+        gw = self.gateway(pending_per_bot=2, pending_per_contact=2)
+        bot = gw.bot("ignored-binding-capacity")
+        worker, _ = gw.native(bot)
+        _, caller, cid = self.sender(bot)
+        ignored = gw.chat(cid, caller, "IGNORED-ACCUMULATED-SECRET")
+        self.ignore(ignored)
+        # Seed an accumulated history without hundreds of HTTP send/ignore round trips.
+        # Ignored requests remain stored, so their count can exceed even the default
+        # 200-pending-per-bot limit while a new request and inbox job still fit.
+        count = 250
+        db = gw.db()
+        try:
+            template = dict(db.execute("SELECT * FROM messages WHERE id=?", (ignored,)).fetchone())
+            columns = list(template)
+            statement = "INSERT INTO messages (%s) VALUES (%s)" % (
+                ",".join(columns), ",".join("?" for _ in columns))
+            copies = [dict(template, id=C.new_id("msg"), op_key="c:ignored-%d" % i)
+                      for i in range(count - 1)]
+            with db:
+                db.executemany(statement, ([row[k] for k in columns] for row in copies))
+        finally:
+            db.close()
+        pending = gw.chat(cid, caller, "still waiting for review")
+        _, trusted, trusted_cid = self.sender(bot, trusted=True)
+        ready = gw.chat(trusted_cid, trusted, "please answer this")
+        listed = gw.ok("GET", "/v1/worker/jobs", None, worker)
+        self.assertEqual([pending, ready], [j["job_id"] for j in listed["jobs"]])
+        self.assertEqual([False, True], [j["claimable"] for j in listed["jobs"]])
+        self.assertNotIn("IGNORED-ACCUMULATED-SECRET", json.dumps(listed))
+        self.assertEqual(count, gw.sql("SELECT COUNT(*) AS n FROM messages WHERE bot_id=? AND review_in='ignored'",
+                                       (bot,))[0]["n"])
+        status, job = gw.claim_job(worker, ready)
+        self.assertEqual(200, status, job)
+        self.assertEqual("please answer this", job["untrusted_content"]["text"])
+
     def test_ignored_attachments_still_count_toward_retained_byte_limit(self):
         gw = self.gateway(pending_per_contact=1, attachment_retained_bytes_per_caller=6)
         bot = gw.bot("ignored-attachment-capacity", policy={
@@ -218,6 +259,11 @@ class IgnoredPendingCapacityTests(unittest.TestCase):
         self.ignore(mid)
         gw.ok("POST", "/v1/owner/messages/%s/review" % mid,
               {"action": "approve_inbound", "request_hash": request["request_hash"]}, gw.owner_token)
+        worker, _ = gw.native(bot)
+        jobs = gw.ok("GET", "/v1/worker/jobs", None, worker)["jobs"]
+        self.assertEqual([mid], [j["job_id"] for j in jobs])
+        self.assertTrue(jobs[0]["claimable"])
+        self.assertEqual(200, gw.claim_job(worker, mid)[0])
         other = gw.bot("ignored-admitted-other")
         _, other_caller, other_cid = self.sender(other)
         self.assert_send_error(other_cid, other_caller, (503, "mailbox_full"))

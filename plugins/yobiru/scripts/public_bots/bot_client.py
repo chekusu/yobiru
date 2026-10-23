@@ -3113,10 +3113,16 @@ def friend_send(st, a):
         text = ", ".join(f["name"] for f in files)
     if not text:
         die("nothing to send: give --text, --text-file or --attach")
-    agent, _ = agent_home(st, link["agent_home"], base, me, link.get("allow_owner_credential_here"))
+    agent, wtoken = agent_home(st, link["agent_home"], base, me, link.get("allow_owner_credential_here"))
     held = sorted(((lease.get("job") or {}).get("created_at") or "", mid)
                   for mid, lease in agent.load("leases.json")["leases"].items()
                   if lease.get("contact_bot") == alias and lease.get("bot_id") == me)
+    if not a.new_message and len({at for at, _ in held}) < len(held):
+        # Timestamps have second precision and IDs are random. The gateway's list preserves receipt order,
+        # including for leases saved by older clients. Keep absent leases for the existing reply retry path:
+        # a completed reply may have lost its response and still need an idempotent finish.
+        order = {job["job_id"]: i for i, job in enumerate(call(base, "GET", "/v1/worker/jobs", None, wtoken)["jobs"])}
+        held.sort(key=lambda item: (item[0], order.get(item[1], -1), item[1]))
     for i, (_, jid) in enumerate([] if a.new_message else held):
         ns = argparse.Namespace(job_cmd="reply", bot=me, job=jid, text=text, text_file=None, attach=None,
                                 attachments=files, gateway=base,
