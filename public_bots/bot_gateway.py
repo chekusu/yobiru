@@ -333,6 +333,18 @@ CREATE TABLE IF NOT EXISTS blobs (key TEXT PRIMARY KEY, bytes INTEGER NOT NULL, 
 PROFILE_TABLE = ("CREATE TABLE IF NOT EXISTS bot_profiles (bot_id TEXT PRIMARY KEY, links TEXT NOT NULL DEFAULT '[]', "
                  "avatar BLOB, avatar_type TEXT, avatar_sha256 TEXT, updated_ts INTEGER NOT NULL)")
 
+# Additive authorization state, initialized empty on upgrade. Old inbound-only trust never creates an inbox
+# acceptance, and an old lease without a recorded reply policy always requires review. Keep durable permissions
+# separate from audit receipts, which can expire. The fence binds a policy to exactly one claim.
+INBOX_TABLES = (
+    "CREATE TABLE IF NOT EXISTS inbox_acceptances (bot_id TEXT NOT NULL, actor_id TEXT NOT NULL, "
+    "trust_decision TEXT NOT NULL, PRIMARY KEY (bot_id, actor_id))",
+    "CREATE TABLE IF NOT EXISTS job_reply_policies (message_id TEXT PRIMARY KEY, fence INTEGER NOT NULL, "
+    "direct_reply INTEGER NOT NULL)",
+    "CREATE TRIGGER IF NOT EXISTS delete_job_reply_policy AFTER DELETE ON messages BEGIN "
+    "DELETE FROM job_reply_policies WHERE message_id=OLD.id; END",
+)
+
 # schema 1 -> 2: new columns with defaults, the follow graph and binding checks. Run as single statements
 # inside one IMMEDIATE transaction (never executescript, which commits on its own).
 MIGRATION_1_2 = [
@@ -566,6 +578,8 @@ class Store(object):
         db = open_db(self.path)
         try:
             db.execute(PROFILE_TABLE)
+            for statement in INBOX_TABLES:
+                db.execute(statement)
         finally:
             db.close()
 
@@ -1231,6 +1245,13 @@ def relation_of(db, bot_id, pid):
     return "friend" if follows_active(db, bot_id, pid) else "follower"
 
 
+def inbox_accepted(db, contact):
+    """An explicit acceptance of direct replies, distinct from legacy inbound-only preapproval."""
+    return contact is not None and bool(contact["preapproved"]) and db.execute(
+        "SELECT 1 FROM inbox_acceptances WHERE bot_id=? AND actor_id=? AND trust_decision=?",
+        (contact["bot_id"], contact["actor_id"], contact["trust_decision"])).fetchone() is not None
+
+
 def in_inbox(db, bot, pid, contact=None):
     """Whether `pid` is in the bot's inbox right now, as in X's direct messages: the bot follows `pid` (whether or not
     `pid` follows back), or the owner accepted `pid` from message requests (trust), and the contact is active. Chat
@@ -1241,8 +1262,19 @@ def in_inbox(db, bot, pid, contact=None):
     contact = contact if contact is not None else contact_row(db, bot["id"], pid)
     if contact is None or contact["status"] != "active":
         return False
-    return bool(contact["preapproved"]) or (pid.startswith("bot_") and pid != bot["id"] and
-                                            follows_active(db, bot["id"], pid))
+    return inbox_accepted(db, contact) or (pid.startswith("bot_") and pid != bot["id"] and
+                                           follows_active(db, bot["id"], pid))
+
+
+def direct_reply_allowed(db, msg, bot, contact=None):
+    """A claimed job can only keep or narrow its reply permission, never gain it after exposing its body."""
+    if msg["route"] != "agent" or not in_inbox(db, bot, msg["actor_id"], contact):
+        return False
+    if msg["state"] == "queued":
+        return True                       # the next claim will record the policy it gives the host
+    policy = db.execute("SELECT direct_reply FROM job_reply_policies WHERE message_id=? AND fence=?",
+                        (msg["id"], msg["fence"])).fetchone()
+    return policy is not None and bool(policy["direct_reply"])
 
 
 def policy_owner(bot):
@@ -1368,7 +1400,7 @@ def quarantine_expired(db, now):
                       "lease_expires<=?", (now,)).fetchall()
     for m in rows:
         bot = db.execute("SELECT * FROM bots WHERE id=?", (m["bot_id"],)).fetchone()
-        if bot is not None and in_inbox(db, bot, m["actor_id"]):
+        if bot is not None and direct_reply_allowed(db, m, bot):
             db.execute("UPDATE messages SET state='completed', code='read', result=NULL, finished_ts=?, " + CLEAR_WORK +
                        " WHERE id=? AND state='started'", (int(now), m["id"]))
     quarantine_where(db, "lease_expired", "state='started' AND lease_expires<=?", (now,))
@@ -1720,6 +1752,7 @@ def contact_owner_view(db, row, bot):
             "grants_provenance": "explicit_owner_grant", "ceiling": contact_ceiling(row),
             "effective_capabilities": effective_caps(policy_of(bot), row, relation),
             "inbound_preapproved": bool(row["preapproved"]), "approved": row["level"] == "friend",
+            "in_inbox": in_inbox(db, bot, pid, row),
             "request": row["request_state"], "request_note": row["request_note"],
             "request_note_trust": "untrusted_external", "requested_at": ts_iso(row["requested_ts"]),
             "decided_at": ts_iso(row["decided_ts"]), "epoch": row["epoch"], "generation": row["generation"],
@@ -1824,7 +1857,7 @@ def job_view(db, cfg, msg, bot, contact, body=None):
     owner admits a job (or trusts its sender) nothing about its attachments is shown, not even a count."""
     info = principal_info(db, msg["actor_id"])
     content = json.loads(msg["content"])
-    direct = msg["route"] == "agent" and in_inbox(db, bot, msg["actor_id"], contact)
+    direct = direct_reply_allowed(db, msg, bot, contact)
     v = {"job_id": msg["id"], "message_id": msg["id"], "conversation_id": msg["conversation_id"],
          "bot_id": msg["bot_id"], "kind": msg["kind"], "state": msg["state"], "code": msg["code"],
          "from": {"principal_id": msg["actor_id"], "kind": info["kind"], "handle": info["handle"],
@@ -2979,14 +3012,14 @@ class Api(object):
         return 200, out
 
     def trust_decision(self, db, r, bot, pid, action, before):
-        """Trusting a sender admits its chat and notices without a per-message review, so it is a decision with a
-        receipt, written in this same transaction. Idempotent on the current state: trusting a trusted sender returns
-        its trust decision only while that decision belongs to the contact's current generation and epoch, never a
-        stale one; untrusting a sender that is not trusted records nothing."""
+        """Accepting a sender permits direct replies as well as inbound admission. Legacy inbound-only trust needs
+        a new explicit acceptance. Permission and receipt are written together; repeated acceptance is idempotent
+        while the receipt belongs to the contact's current generation and epoch."""
         now, contact = r.now, contact_row(db, bot["id"], pid)
         gated = ("UPDATE messages SET %s WHERE bot_id=? AND actor_id=? AND author='caller' AND route IN "
                  "('agent','notice') AND state IN ('queued','stored') AND started_ts IS NULL AND agent_ack_ts IS NULL")
         if contact is None or not contact["preapproved"]:
+            db.execute("DELETE FROM inbox_acceptances WHERE bot_id=? AND actor_id=?", (bot["id"], pid))
             if contact is not None and contact["trust_decision"]:
                 db.execute("UPDATE contacts SET trust_decision=NULL WHERE bot_id=? AND actor_id=?", (bot["id"], pid))
             if action != "untrust" or not before["preapproved"]:
@@ -3000,12 +3033,14 @@ class Api(object):
             return None
         cur = db.execute("SELECT * FROM decisions WHERE id=?", (contact["trust_decision"],)).fetchone() \
             if contact["trust_decision"] else None
-        if before["preapproved"] and cur is not None and cur["generation"] == contact["generation"] and \
+        if inbox_accepted(db, contact) and cur is not None and cur["generation"] == contact["generation"] and \
                 cur["contact_epoch"] == contact["epoch"]:
             return cur
         dec = record_decision(db, self.cfg, r.subject, bot, contact, "trust_sender",
-                              "trust_sender:%s" % C.new_id("dec"), now)
+                              "trust_sender:%s" % C.new_id("dec"), now, scope={"reply": "direct"})
         db.execute("UPDATE contacts SET trust_decision=? WHERE bot_id=? AND actor_id=?", (dec["id"], bot["id"], pid))
+        db.execute("INSERT OR REPLACE INTO inbox_acceptances(bot_id, actor_id, trust_decision) VALUES(?,?,?)",
+                   (bot["id"], pid, dec["id"]))
         db.execute(gated % "admitted_ts=COALESCE(admitted_ts, ?), admission_decision=COALESCE(admission_decision, ?)",
                    (int(now), dec["id"], bot["id"], pid))
         return dec
@@ -3946,7 +3981,7 @@ class Api(object):
                         msg["id"]))
             msg = db.execute("SELECT * FROM messages WHERE id=?", (msg["id"],)).fetchone()
             contact = contact_row(db, bot["id"], msg["actor_id"])
-            if in_inbox(db, bot, msg["actor_id"], contact) and block_reason(db, msg, bot=bot) is None:
+            if direct_reply_allowed(db, msg, bot, contact) and block_reason(db, msg, bot=bot) is None:
                 dec = record_decision(db, self.cfg, policy_owner(bot), bot, contact, "friend_direct_reply",
                                       "friend_direct_reply:%s:%s" % (msg["id"], sha(draft)), r.now,
                                       conversation_id=msg["conversation_id"], message_id=msg["id"],
@@ -3982,10 +4017,10 @@ class Api(object):
             return bad
         if msg["state"] != "started":
             raise Fail(409, "not_started", "report start before a final outcome")
-        if not in_inbox(db, bot, msg["actor_id"]):
+        if not direct_reply_allowed(db, msg, bot):
             return 409, {"ok": False, "error": "not_in_inbox",
-                         "detail": "only a message from someone in the owner's inbox (followed or accepted) can be "
-                                   "marked read without a reply; reply, decline or fail this one"}
+                         "detail": "only a message claimed with direct reply permission from someone still in the "
+                                   "owner's inbox can be marked read; reply, decline or fail this one"}
         db.execute("UPDATE messages SET state='completed', code='read', result=NULL, finished_ts=?, "
                    "final_lease_hash=?, " + CLEAR_WORK + " WHERE id=?", (int(r.now), lease_hash, msg["id"]))
         return 200, {"ok": True, "message_id": msg["id"], "state": "completed", "code": "read", "duplicate": False}
@@ -4167,6 +4202,8 @@ class Api(object):
             note_wake(db, worker["id"], now, now, msg["wake_intent_ts"], msg["wake_seen_before_ts"], msg["wake_route"],
                       self.limits["quiet_wake_seconds"])
         msg = db.execute("SELECT * FROM messages WHERE id=?", (msg["id"],)).fetchone()
+        db.execute("INSERT OR REPLACE INTO job_reply_policies(message_id, fence, direct_reply) VALUES(?,?,?)",
+                   (msg["id"], msg["fence"], int(direct)))
         ticket = self.issue_ticket(db, msg, bot, expires)
         extra = {"lease": {"lease_id": lease_id, "fence": msg["fence"], "expires_at": C.iso(expires)}}
         if direct:                        # someone in the inbox may have sent several: all can be read now
@@ -4307,10 +4344,13 @@ class Api(object):
         worker, now = r.subject, r.now
         bot = db.execute("SELECT * FROM bots WHERE id=?", (worker["bot_id"],)).fetchone()
         expire_due(db, now)
+        # Restoring ignored requests can exceed the normal pending limit. Stream
+        # candidates so completed wake attempts do not hide later due jobs, and
+        # apply the response limit only after eligibility checks.
         rows = db.execute("SELECT m.* FROM messages m JOIN contacts c ON c.bot_id=m.bot_id AND c.actor_id=m.actor_id "
                           "WHERE m.bot_id=? AND m.author='caller' AND m.route='agent' AND m.state='queued' "
                           "AND (m.review_in IS NULL OR m.review_in!='ignored' OR c.preapproved=1) "
-                          "ORDER BY m.created_ts, m.rowid LIMIT 200", (bot["id"],)).fetchall()
+                          "ORDER BY m.created_ts, m.rowid", (bot["id"],))
         jobs = []
         for m in rows:
             if block_reason(db, m, bot=bot):
@@ -4320,6 +4360,8 @@ class Api(object):
                 continue                  # an earlier turn of this conversation goes first: waking now is futile
             if self.wake_due(m, phase, now):
                 jobs.append({"job_id": m["id"], "phase": phase, "wake_attempts": m["wake_seq"]})
+                if len(jobs) == 200:
+                    break
         checks = db.execute("SELECT * FROM checks WHERE worker_id=? AND answered_ts IS NULL AND expires_ts>? AND "
                             "wake_state='none'", (worker["id"], int(now))).fetchall()
         return 200, {"ok": True, "bot_id": bot["id"], "handle": "@" + bot["handle"], "jobs": jobs,
@@ -5310,6 +5352,8 @@ def cmd_init(home, a):
     try:
         db.executescript(SCHEMA)
         db.execute(PROFILE_TABLE)
+        for statement in INBOX_TABLES:
+            db.execute(statement)
         db.execute("BEGIN IMMEDIATE")
         db.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,))
         db.execute("INSERT INTO meta(key, value) VALUES('created_at', ?)", (C.iso(now),))

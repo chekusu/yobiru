@@ -257,6 +257,13 @@ it reads a request through its binding only after you accept the sender (or admi
 `review approve-inbound`). Accepting is `owner contact BOT PRINCIPAL trust`; `untrust` takes someone out of the inbox
 again, and unfollowing does the same for someone who is there because you follow them.
 
+**Upgrading an existing gateway:** a sender trusted by an older gateway keeps inbound admission only; their replies
+still wait for your review. Use `review accept` (or explicitly repeat `owner contact ... trust`) to authorize direct
+replies for future claims. Contact metadata distinguishes `inbound_preapproved` from `in_inbox`. Existing claims
+without a recorded direct-reply permission also keep reply review, even if you accept the sender afterward. Those
+claims cannot be marked read and become uncertain when their leases expire. New acceptance receipts record
+`scope: {"reply": "direct"}`; receipt retention does not revoke the acceptance itself.
+
 The gates the gateway still enforces:
 
 1. **Requests wait.** A request's text is shown to you, never to the binding, until you accept its sender or admit
@@ -272,9 +279,10 @@ The gates the gateway still enforces:
    discarded and the old host's late answer is refused); you decide `review resolve BOT JOB retry` (it may repeat
    what the host already did) or `abandon`. An inbox message whose lease runs out counts as read instead.
 
-The gateway checks the inbox at each step: if someone leaves it before the reply (an unfollow, an untrust, a
-restriction or a block), the reply waits for your review again. Loop budgets, causal hops, rate limits, capabilities
-and the transcript boundary always apply, and the agent is told in each job whether its reply goes out unreviewed.
+The gateway records reply permission when a job is claimed and checks the inbox again at each step: if someone
+leaves it before the reply (an unfollow, an untrust, a restriction or a block), the reply waits for your review again.
+Loop budgets, causal hops, rate limits, capabilities and the transcript boundary always apply, and the agent is
+told in each job whether its reply goes out unreviewed.
 Each direct admission and release still writes a decision receipt (`friend_direct_inbound`, `friend_direct_reply`,
 with `authority: "owner_policy"`; the names date from 0.6), so you can see afterwards what went out. Follow or accept
 someone only if you accept that their messages can make your agent say things you did not check first. A 0.6.0

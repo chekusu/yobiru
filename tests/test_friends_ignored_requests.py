@@ -250,6 +250,58 @@ class IgnoredPendingCapacityTests(unittest.TestCase):
         self.assertTrue(next(job for job in jobs if job["job_id"] == mid)["claimable"])
         self.assert_send_error(cid, caller, (429, "too_many_pending"))
 
+    def test_restored_ignored_backlog_wakes_past_accepted_and_uncertain_attempts(self):
+        gw = self.gateway()
+        bot = gw.bot("ignored-wake-backlog")
+        actor, caller, first_cid = self.sender(bot)
+        worker, wid = gw.native(bot)
+        connector = gw.ok("POST", "/v1/owner/bots/%s/workers/%s/connector" % (bot, wid), {},
+                          gw.owner_token)["token"]
+        cids = [first_cid] + [gw.conversation(bot, caller) for _ in range(2)]
+        # Retained ignored requests can accumulate beyond the 200-pending limit.
+        # Seed 67 per conversation to stay within the default 100-turn limit,
+        # avoiding hours of rate-limited sends while preserving the stored state.
+        for cid in cids:
+            mid = gw.chat(cid, caller, "RESTORED-REQUEST-SECRET")
+            self.ignore(mid)
+            db = gw.db()
+            try:
+                template = dict(db.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone())
+                columns = list(template)
+                statement = "INSERT INTO messages (%s) VALUES (%s)" % (
+                    ",".join(columns), ",".join("?" for _ in columns))
+                copies = [dict(template, id=C.new_id("msg"), op_key="c:retained-%d" % i)
+                          for i in range(66)]
+                with db:
+                    db.executemany(statement, ([row[k] for k in columns] for row in copies))
+                    db.execute("UPDATE conversations SET turns=67 WHERE id=?", (cid,))
+            finally:
+                db.close()
+        mids = [row["id"] for row in gw.sql("SELECT id FROM messages WHERE bot_id=? "
+                                           "ORDER BY created_ts, rowid", (bot,))]
+        self.assertEqual(201, len(mids))
+        listed = lambda: gw.ok("GET", "/v1/connector/jobs", None, connector)["jobs"]
+        self.assertEqual([], listed())
+        self.assertEqual(200, gw.contact(bot, actor, "trust")[0])
+        jobs = gw.ok("GET", "/v1/worker/jobs", None, worker)["jobs"]
+        self.assertEqual(201, sum(job["claimable"] for job in jobs))
+        self.assertEqual(mids[:200], [job["job_id"] for job in listed()])
+        for i, mid in enumerate(mids[:200]):
+            path = "/v1/connector/messages/%s/wake" % mid
+            wake_id = "restored-wake-%03d" % i
+            gw.ok("POST", path, {"step": "intent", "wake_id": wake_id, "phase": "ready"}, connector)
+            gw.ok("POST", path, {"step": "result", "wake_id": wake_id,
+                                  "outcome": "accepted" if i % 2 else "uncertain"}, connector)
+        # Earlier accepted/uncertain wakes stay queued without being retried, but
+        # must not hide the last request's first wake behind the response limit.
+        expected = [{"job_id": mids[-1], "phase": "ready", "wake_attempts": 0}]
+        self.assertEqual(expected, listed())
+        self.assertEqual(expected, listed())
+        status, job = gw.claim_job(worker, mids[-1])
+        self.assertEqual(200, status, job)
+        self.assertEqual("RESTORED-REQUEST-SECRET", job["untrusted_content"]["text"])
+        self.assertEqual([], listed())
+
     def test_admitting_an_ignored_request_counts_toward_global_capacity_again(self):
         gw = self.gateway(pending_total=1)
         bot = gw.bot("ignored-admitted-capacity")
