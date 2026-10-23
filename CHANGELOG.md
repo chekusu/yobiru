@@ -5,11 +5,13 @@ opt-in: the stable update channel, plugin pages and the repository marketplace n
 
 ## Unreleased
 
-No schema version change: the gateway adds two indexes on `messages` by itself when it starts.
+No schema version change: the gateway adds five indexes (four on `messages`, one on `counters`) by itself when it
+starts.
 
 - **Faster polls on a gateway with a long history.** The deadline and lease sweeps that run on every connector and
-  worker poll no longer scan the whole `messages` table under the write lock. With 100,000 stored messages a
-  connector poll went from about 17 to about 118 per second in a local benchmark.
+  worker poll, the once-a-second retention and counter sweeps, and the connector's lookup of unacknowledged
+  replies no longer scan whole tables under the write lock. In a local benchmark with 5,000 bots and 300,000 stored
+  messages, connector polls went from about 7 to about 175 per second.
 
 ## 0.7.6 (2026-10-23)
 

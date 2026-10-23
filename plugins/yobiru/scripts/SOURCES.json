@@ -60,7 +60,7 @@
     },
     "scripts/public_bots/bot_gateway.py": {
       "source": "public_bots/bot_gateway.py",
-      "sha256": "3a8d652f787e0d37c651da981c8ec7c3e533750cfed42aaa3fca4148415493d1"
+      "sha256": "a853922df26f251ae40a025fd33983125b63e7a2220f493605af110b49cc6ac3"
     },
     "scripts/public_bots/bot_mcp.py": {
       "source": "public_bots/bot_mcp.py",

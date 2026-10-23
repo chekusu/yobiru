@@ -355,10 +355,16 @@ INBOX_TABLES = (
     "DELETE FROM job_reply_policies WHERE message_id=OLD.id; END",
 )
 
-# The deadline and lease sweeps run inside the write lock on every poll: without these they scan all messages.
+# The deadline and lease sweeps run inside the write lock on every poll, and maintenance runs the retention and
+# counter sweeps every second: without these each one scans its whole table while every caller waits.
 SWEEP_INDEXES = (
     "CREATE INDEX IF NOT EXISTS messages_deadline ON messages(state, deadline_ts)",
     "CREATE INDEX IF NOT EXISTS messages_lease ON messages(state, lease_expires)",
+    "CREATE INDEX IF NOT EXISTS messages_finished ON messages(finished_ts) WHERE finished_ts IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS counters_expiry ON counters(expires_ts)",
+    # pending_replies on every connector poll: only the replies the caller has not acknowledged yet
+    "CREATE INDEX IF NOT EXISTS messages_unacked_replies ON messages(actor_id, finished_ts) "
+    "WHERE caller_ack_ts IS NULL AND result IS NOT NULL",
 )
 
 # schema 1 -> 2: new columns with defaults, the follow graph and binding checks. Run as single statements
