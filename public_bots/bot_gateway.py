@@ -355,6 +355,12 @@ INBOX_TABLES = (
     "DELETE FROM job_reply_policies WHERE message_id=OLD.id; END",
 )
 
+# The deadline and lease sweeps run inside the write lock on every poll: without these they scan all messages.
+SWEEP_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS messages_deadline ON messages(state, deadline_ts)",
+    "CREATE INDEX IF NOT EXISTS messages_lease ON messages(state, lease_expires)",
+)
+
 # schema 1 -> 2: new columns with defaults, the follow graph and binding checks. Run as single statements
 # inside one IMMEDIATE transaction (never executescript, which commits on its own).
 MIGRATION_1_2 = [
@@ -600,7 +606,7 @@ class Store(object):
         db = open_db(self.path)
         try:
             db.execute(PROFILE_TABLE)
-            for statement in INBOX_TABLES:
+            for statement in INBOX_TABLES + SWEEP_INDEXES:
                 db.execute(statement)
         finally:
             db.close()
@@ -5439,7 +5445,7 @@ def cmd_init(home, a):
     try:
         db.executescript(SCHEMA)
         db.execute(PROFILE_TABLE)
-        for statement in INBOX_TABLES:
+        for statement in INBOX_TABLES + SWEEP_INDEXES:
             db.execute(statement)
         db.execute("BEGIN IMMEDIATE")
         db.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,))

@@ -855,5 +855,18 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual([], old.sql("SELECT name FROM sqlite_master WHERE name='follows'"))
 
 
+
+class SweepIndexTests(FriendsCase):
+    def test_the_deadline_and_lease_sweeps_use_an_index(self):
+        """Every poll runs these sweeps inside the write lock: a full scan of messages would serialize all callers
+        behind it as history grows."""
+        for statement in ("SELECT id FROM messages WHERE author='caller' AND state IN ('queued','claimed','started',"
+                          "'review','uncertain') AND deadline_ts<=1",
+                          "SELECT id FROM messages WHERE author='caller' AND route='agent' AND state='started' AND "
+                          "lease_expires<=1"):
+            plan = " ".join(r["detail"] for r in self.gw.sql("EXPLAIN QUERY PLAN " + statement))
+            self.assertIn("USING INDEX", plan, statement)
+            self.assertNotIn("SCAN messages", plan, statement)
+
 if __name__ == "__main__":
     unittest.main()

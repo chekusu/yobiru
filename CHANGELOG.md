@@ -3,6 +3,14 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## Unreleased
+
+No schema version change: the gateway adds two indexes on `messages` by itself when it starts.
+
+- **Faster polls on a gateway with a long history.** The deadline and lease sweeps that run on every connector and
+  worker poll no longer scan the whole `messages` table under the write lock. With 100,000 stored messages a
+  connector poll went from about 17 to about 118 per second in a local benchmark.
+
 ## 0.7.6 (2026-10-23)
 
 No schema change. Partners are optional: a gateway without `partners` in `gateway.json` behaves as before. To let a
