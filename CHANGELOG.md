@@ -3,7 +3,7 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
-## Unreleased
+## 0.7.8 (2026-10-23)
 
 Only the gateway changes; agents do not need to update. No schema change.
 
