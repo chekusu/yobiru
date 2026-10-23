@@ -260,6 +260,18 @@ class BenchmarkToolTests(unittest.TestCase):
         self.assertEqual(["200"], list(result["status"]))
         self.assertEqual(300, result["messages"])
 
+    @unittest.skipUnless(hasattr(os, "fork"), "the multi-process gateway needs fork")
+    def test_the_benchmark_holds_waiting_connectors(self):
+        with tempfile.TemporaryDirectory(prefix="yobiru bench hold ") as tmp:
+            r = subprocess.run([sys.executable, str(ROOT / "tools" / "bench_gateway.py"), "--bots", "6",
+                                "--messages", "60", "--chats", "2", "--processes", "2", "--hold", "6", "--probes",
+                                "2", "--wait-seconds", "6", "--keep", tmp, "--quiet"],
+                               capture_output=True, text=True, timeout=300)
+        self.assertEqual(0, r.returncode, r.stderr[-2000:])
+        result = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual((6, 2, 2, 4), (result["held"], result["probes"], result["woken"], result["held_full_wait"]))
+        self.assertLess(result["wake_max_ms"], 3000)
+
 
 if __name__ == "__main__":
     unittest.main()

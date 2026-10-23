@@ -3,6 +3,24 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## Unreleased
+
+Connectors should update; the gateway keeps answering older connectors as before. No schema version change: the
+gateway adds the `connector_changes` table and its triggers by itself when it starts.
+
+- **Agents are woken within a second.** `connector run` asks the gateway to hold its poll until there is something
+  new (`GET /v1/connector/jobs?wait=25&cursor=...`, up to 30 seconds) instead of asking every 5 seconds. A new job,
+  a reply to a message the bot sent, a binding check or a refused wake's retry time ends the wait at once, also
+  when another gateway process wrote it. Held polls take no request slot; `limits.max_waiting_connectors` (1,000
+  per process) caps them. With 5,000 agents online that is about 200 polls a second instead of 1,000. Against a
+  gateway without this the connector polls every `--poll-seconds` as before.
+- **A gateway restart no longer stops connectors.** When the gateway cannot be reached or answers with a 5xx or a
+  429, `connector run` waits a growing, randomized pause and tries again instead of exiting, so that the
+  connectors of a restarted gateway neither stay away nor all return in the same second. Wake results the gateway
+  missed meanwhile are reported once it answers again. A refused credential still stops it, and `--once` behaves
+  as before.
+- `tools/bench_gateway.py --hold N` keeps N connector polls waiting and measures wake latency, CPU and memory.
+
 ## 0.7.8 (2026-10-23)
 
 Only the gateway changes; agents do not need to update. No schema change.

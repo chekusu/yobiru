@@ -366,6 +366,14 @@ sh Y --home CONNECTOR_HOME public connector config BOT_ID --webhook-url-file url
 sh Y --home CONNECTOR_HOME public connector run BOT_ID
 ```
 
+`connector run` asks the gateway to hold each poll until there is something new, for up to `--wait-seconds` (25
+by default, 0 to 30), so your agent is woken within about a second of a message instead of at the next poll. A
+gateway that does not offer this answers at once, and the connector then polls it every `--poll-seconds` (5). If
+the gateway cannot be reached or answers with a 5xx or a 429 (a restart, an overload), the connector waits a
+growing, randomized pause (about 1 second at first, at most a minute) and tries again instead of exiting, and
+reports the wake results the gateway missed once it answers again; a refused credential still stops it. `--once`,
+for a scheduled routine, polls once and exits as before.
+
 Before each wake the connector records an intent at the gateway (and in a local ledger), then the result. Only a
 failure before anything was sent counts as `refused` and is retried after a backoff. A 2xx is `accepted`; any other
 answer (a 5xx or a 429 can follow work the host already queued), a timeout, or a command that ran and exited non-zero
@@ -712,6 +720,20 @@ poll among them) run in parallel without the write lock; writes still go one at 
 Needs fork (Linux, macOS); an older gateway refuses the `processes` key, so add it after upgrading.
 `tools/bench_gateway.py` in the source tree measures a gateway on your machine with synthetic bots and history.
 
+### Connectors that wait
+
+Each connector listing carries a `cursor`. A poll that sends it back, `GET /v1/connector/jobs?wait=N&cursor=C` (N
+up to 30 seconds), is held until the listing differs (a new job, a reply to what the bot sent, a binding check, the
+retry time of a refused wake) or N seconds pass, and then answers with the current listing. Writes record which
+bots they concern in the `connector_changes` table, and every gateway process looks at it five times a second while
+it holds polls, so a change written by any process ends the wait. A held poll uses no request slot and no database
+connection: `limits.max_waiting_connectors` (1000 by default) caps them per request process, and a poll beyond it
+is answered at once. Each held poll keeps a thread and a connection open, about 150 KB of memory in the gateway;
+in a local test, 3,000 held polls on three processes used about 500 MB and a tenth of a core, and the chats sent to
+them ended their waits within 0.2 seconds. A reverse proxy in front of the gateway must let a request run for more
+than 30 seconds (nginx's default `proxy_read_timeout` is 60) and needs two connections for each held poll (nginx
+`worker_connections`). `tools/bench_gateway.py --hold N` measures this on your machine.
+
 ### Large bodies in a blob store
 
 By default every message body lives in `gateway.sqlite3`, attachments included. With `GW/blobs.json` (0600) a body
@@ -828,7 +850,7 @@ can instead take `sealed` (an envelope from `bot_e2e.py`), with attachments as `
 | `POST /v1/worker/claim`, `POST /v1/worker/messages/{mid}/start|finish|release` | worker | the deterministic work loop (finish also takes native replies) |
 | `GET /v1/worker/jobs`, `POST /v1/worker/messages/{mid}/claim`, `POST /v1/worker/checks/{chk}` | native binding | your agent's jobs |
 | `GET /v1/worker/notices[/after/{mid}]`, `GET /v1/worker/notices/{mid}`, `POST .../{mid}/ack` | native binding | your agent's notice inbox |
-| `GET /v1/connector/jobs`, `POST /v1/connector/messages/{mid}/wake`, `POST /v1/connector/checks/{chk}/wake` | connector | the wake ledger |
+| `GET /v1/connector/jobs[?wait=N&cursor=C]`, `POST /v1/connector/messages/{mid}/wake`, `POST /v1/connector/checks/{chk}/wake` | connector | the wake ledger; a poll that waits for a change |
 | `POST /v1/capability/redeem` | verifier | calendar slots or one resource for one started job |
 
 `GET /v1/owner/bots/{id}/reviews` keeps the complete legacy metadata list for existing clients. New clients request
