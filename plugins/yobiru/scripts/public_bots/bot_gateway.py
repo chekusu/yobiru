@@ -360,6 +360,8 @@ INBOX_TABLES = (
 SWEEP_INDEXES = (
     "CREATE INDEX IF NOT EXISTS messages_deadline ON messages(state, deadline_ts)",
     "CREATE INDEX IF NOT EXISTS messages_lease ON messages(state, lease_expires)",
+    # Keep release_draft's history count local to its conversation instead of using a global state index.
+    "CREATE INDEX IF NOT EXISTS messages_conversation_state ON messages(conversation_id, state)",
     "CREATE INDEX IF NOT EXISTS messages_finished ON messages(finished_ts) WHERE finished_ts IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS counters_expiry ON counters(expires_ts)",
     # pending_replies on every connector poll: only the replies the caller has not acknowledged yet
