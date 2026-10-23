@@ -3419,14 +3419,16 @@ class Api(object):
         return 200, page
 
     def review_message_content(self, db, r):
-        """The full request beside an oversized review draft, separately authorized to its bot's owner."""
+        """One full request for owner review or attachment export, without admitting it to the binding."""
         msg, bot = self.owned_message(db, r.subject, r.params["mid"])
         if msg["route"] not in GATED_ROUTES:
             raise Fail(409, "not_reviewable")
         content = json.loads(msg["content"])
         if content.get("attachments"):
             content["attachments"] = attachment_views(content["attachments"])
-        return 200, {"ok": True, "bot_id": bot["id"], "message_id": msg["id"], "content": content}
+        return 200, {"ok": True, "bot_id": bot["id"], "message_id": msg["id"],
+                     "conversation_id": msg["conversation_id"], "actor_id": msg["actor_id"],
+                     "actor_e2e_key": principal_key(db, msg["actor_id"]), "content": content}
 
     def decide(self, db, r, bot, contact, msg, action, subject_hash):
         """The decision receipt of one review action, in the review's own transaction."""

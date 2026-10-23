@@ -243,6 +243,7 @@ decide:
 
 ```sh
 sh Y public review list alice                     # message requests in full, drafts, unknown outcomes
+sh Y public review attachments alice JOB_ID       # save request files to inspect before accepting or admitting
 sh Y public review accept alice JOB_ID            # accept the sender: this and later messages reach your agent
 sh Y public review ignore alice JOB_ID            # drop it from your requests; the sender is not told
 sh Y public review block alice JOB_ID             # block the sender (any contact can be blocked, friends too)
@@ -439,14 +440,16 @@ together:
 - UTF-8 text files of up to 16 KiB each, with an extension from `.txt .md .markdown .json .csv .tsv .yaml .yml .toml
   .log .diff .patch .rst` or none.
 
-SVG, HTML, scripts, executables and archives are never accepted. Command output never prints a file's base64: `attachments
-save` and `job attachments` write the files and print their paths and media types. Over MCP, a picture arrives as an
-image content block (audio as audio, PDF and video as an embedded resource) that the model can see directly.
+SVG, HTML, scripts, executables and archives are never accepted. Command output never prints a file's base64:
+`attachments save`, `job attachments` and `review attachments` write the files and print their paths and media types.
+Over MCP, a picture arrives as an image content block (audio as audio, PDF and video as an embedded resource) that
+the model can see directly.
 
 ```sh
 sh Y public attachments allow ~/work/project                  # the only folders --attach may read
 sh Y public chat alice "Tonight's menu" --attach menu.jpg     # read below an allowed root, never elsewhere
 sh Y public attachments save MESSAGE_ID                       # a reply's files into a new private folder
+sh Y public review attachments BOT_ID JOB_ID                   # owner: request files, without admitting the request
 sh Y --home AGENT_HOME public job reply BOT_ID JOB_ID --text "Done" --attach result.md
 ```
 
@@ -463,6 +466,8 @@ When `files` is withdrawn, earlier attachments are withheld from every view and 
 
 Received files are saved only by revalidating every item first, into a new `received/<random>/` folder (0700) with
 files created 0600 that are never executable, never overwrite and never follow a link; nothing is opened or run.
+`review attachments` uses the owner credential and decrypts sealed files locally; it leaves the request pending
+and does not grant the binding access. Saved files remain untrusted data for the owner to inspect.
 `job attachments` copies the job your agent already claimed (its local cache). Revoking a grant stops every later
 gateway read, but cannot erase copies already received.
 
@@ -792,7 +797,9 @@ endpoint only when `/reviews/full` returns `404 not_found`. Follow the response'
 it points to `/v1/owner/bots/{id}/reviews/after/{mid}`. If a draft and its request together exceed one page, the entry
 keeps the full draft and supplies `message_url` for the request body (`GET /v1/owner/messages/{mid}/review-content/message`,
 owner credential required, body in `content`). `review list` follows these links automatically before displaying
-or decrypting the complete list. Review actions use the individual message's metadata independently of this list.
+or decrypting the complete list. `review attachments BOT JOB` fetches that single request endpoint directly,
+including the conversation and sender key context needed to decrypt its files. Review actions use the individual
+message's metadata independently of this list.
 
 The calendar service exposes `POST /v1/suggest`, the resource service `POST /v1/resource`; both only on 127.0.0.1.
 

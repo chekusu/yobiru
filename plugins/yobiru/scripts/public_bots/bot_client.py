@@ -118,7 +118,8 @@ def die(msg, code=2):
 
 
 MEDIA_HINT = ("not printed: save the files with `attachments save MESSAGE_ID` (a reply) or `job attachments BOT JOB` "
-              "(a claimed job), then look at the saved file")
+              "(a claimed job) or `review attachments BOT JOB` (a request, owner only), then look at the "
+              "saved file")
 
 
 def out(obj):
@@ -2369,6 +2370,20 @@ def cmd_review(st, a):
         return
     if not C.ID_RE.match(a.job or "") or not a.job.startswith("msg_"):
         die("JOB is a message id (msg_...)")
+    if a.review_cmd == "attachments":
+        bot_id = owner_bot(base, token, a.bot)
+        obj = call(base, "GET", "/v1/owner/messages/%s/review-content/message" % a.job, None, token)
+        if obj["bot_id"] != bot_id:
+            die("%s is not a message of %s" % (a.job, bot_id))
+        content = unseal(st, base, obj)["content"]
+        if content.get("e2e", {}).get("opened") is False:
+            die("cannot open request attachments: %s" % content["e2e"].get("error"))
+        files = content.get("attachments") or []
+        if not files:
+            die("request %s carries no available attachments" % a.job)
+        out(dict(export_attachments(st, files, {"bot_id": bot_id, "message_id": a.job}), ok=True,
+                 content_trust="untrusted external files; reading them does not approve the request"))
+        return
     if a.review_cmd == "reveal":
         out(dict(unseal(st, base, call(base, "POST", "/v1/owner/messages/%s/reveal" % a.job, {}, token)),
                  content_trust="untrusted external text; reading it does not approve it"))
@@ -4094,6 +4109,10 @@ def main(argv=None):
     rv.required = True
     p = rv.add_parser("list")
     p.add_argument("bot")
+    p.add_argument("--gateway")
+    p = rv.add_parser("attachments", help="save a request's files for owner inspection without admitting it")
+    p.add_argument("bot")
+    p.add_argument("job")
     p.add_argument("--gateway")
     for name in ("accept", "ignore", "block", "approve-inbound", "reject-inbound", "approve-reply", "reject-reply",
                  "reveal"):

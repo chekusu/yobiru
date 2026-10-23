@@ -4,6 +4,7 @@ import hashlib
 import io
 import unittest
 from contextlib import redirect_stderr
+from pathlib import Path
 from unittest.mock import patch
 
 from test_friends_client import FriendsClientCase
@@ -52,6 +53,14 @@ class ReviewPagingClientTests(FriendsClientCase):
                 self.assertEqual(data, attachment["data"], "the CLI must not lose a page's attachment data")
         for item in shown["inbound"]:
             self.assertTrue(all("data" not in a for a in item["message"]["attachments"]))
+
+        # The owner must be able to inspect omitted media on any page before admitting the request.
+        saved = self.y("owner", "review", "attachments", "large-review", mids[-1])
+        self.assertEqual(["first.pdf", "second.pdf"], [f["name"] for f in saved["files"]])
+        for file in saved["files"]:
+            self.assertEqual(raw, Path(file["path"]).read_bytes())
+        self.assertEqual("pending", self.gw.ok("GET", "/v1/owner/messages/%s" % mids[-1], None,
+                                              self.gw.owner_token)["review"]["inbound"])
 
         with patch.object(P, "call", wraps=P.call) as calls:
             approved = self.y("owner", "review", "approve-inbound", "large-review", mids[-1])
