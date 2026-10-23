@@ -2293,7 +2293,8 @@ def cmd_verifier(st, a):
              note="for the private capability service only; it is not stored in the client credentials"))
 
 
-def owner_message_context(base, token, bot_id, mid):
+def owner_message_context(base, token, bot_id, mid, retry_state=None):
+    legacy = False
     try:
         _, obj = C.api_ok(base, "GET", "/v1/owner/messages/%s" % mid, None, token)
     except C.ApiError as e:
@@ -2304,15 +2305,28 @@ def owner_message_context(base, token, bot_id, mid):
         reviews = owner_reviews(base, token, bot_id)
         item = next((x for key in ("inbound", "replies", "uncertain") for x in reviews[key]
                      if x["job_id"] == mid), None)
+        # A declined message leaves the legacy queue. Retain only its metadata before sending a decline,
+        # so a retry (including a lost response) can still verify the bot and seal the note for the caller.
+        # One private file per gateway/bot/message avoids a bounded queue or shared cache size limit.
+        cache_name = "review-context/%s.json" % hashlib.sha256(
+            json.dumps([base, bot_id, mid]).encode("utf-8")).hexdigest()
         if item is None:
-            fail(e)
-        sender = item.get("from") or {}
-        obj = {"bot_id": reviews["bot_id"], "message_id": mid, "actor_id": sender.get("principal_id"),
-               "actor_e2e_key": sender.get("e2e_key"), "request_hash": item.get("request_hash")}
+            cached = retry_state.load(cache_name, {"v": 1}) if retry_state is not None else {}
+            obj = cached.get("context")
+            if cached.get("gateway") != base or not obj or obj.get("message_id") != mid:
+                fail(e)
+        else:
+            sender = item.get("from") or {}
+            obj = {"bot_id": reviews["bot_id"], "message_id": mid, "actor_id": sender.get("principal_id"),
+                   "actor_e2e_key": sender.get("e2e_key"), "request_hash": item.get("request_hash")}
+            legacy = True
     except ValueError as e:
         die(str(e))
     if obj["bot_id"] != bot_id:
         die("%s is not a message of %s" % (mid, bot_id))
+    if legacy and retry_state is not None:
+        C.ensure_private_dir(retry_state.dir / "review-context")
+        C.write_private_json(retry_state.path(cache_name), {"v": 1, "gateway": base, "context": obj})
     return obj
 
 
@@ -2426,7 +2440,7 @@ def cmd_review(st, a):
 def owner_decline(st, base, token, bot_id, mid, text):
     """An owner's decline note, sealed for the caller when both sides have keys (the gateway stores it as the
     message's result)."""
-    context = owner_message_context(base, token, bot_id, mid)
+    context = owner_message_context(base, token, bot_id, mid, retry_state=st)
     return seal_from_bot(st, base, bot_id, context["actor_id"], "reply", mid, text,
                          caller_key=context.get("actor_e2e_key"), seed_parts=("decline", text))
 

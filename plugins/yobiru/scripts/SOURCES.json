@@ -48,7 +48,7 @@
     },
     "scripts/public_bots/bot_client.py": {
       "source": "public_bots/bot_client.py",
-      "sha256": "1b2414257a8160484df673a2998f7d38fd0af474e4651aa9c32455f2acd2a2a2"
+      "sha256": "6228f53e492e9939bc84f0ca4901f313134a6e4e55fe0a065c372dcb967122db"
     },
     "scripts/public_bots/bot_common.py": {
       "source": "public_bots/bot_common.py",

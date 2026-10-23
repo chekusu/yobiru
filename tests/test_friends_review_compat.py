@@ -5,18 +5,22 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
-from test_friends_client import FriendsClientCase, cli
+from test_friends_client import FriendsClientCase, TOKEN_PATTERN, cli
 from test_friends_e2e import E2ECase
-from support.public_harness import PUBLIC, plain_env
+from support.public_harness import FriendsGateway, PUBLIC, plain_env
 from fixtures.review_client_pr33_base import cmd_review as base_cmd_review
 
 import bot_gateway as G
 
 import bot_client as P
+
+BASE_COMMIT = "0154a9375d9b7a2d3da70b8ebf074eeb12cf5cb1"
 
 
 def legacy_review_api():
@@ -59,24 +63,122 @@ class LegacyReviewTests(FriendsClientCase):
         _, mid = self.request()
         with legacy_review_api():
             result = self.y("owner", "review", "reject-inbound", "alice", mid, "--text", "Synthetic decline")
+            repeated = self.y("owner", "review", "reject-inbound", "alice", mid, "--text", "Synthetic decline")
         self.assertEqual("declined", result["state"])
+        self.assertFalse(result["duplicate"])
+        self.assertEqual(dict(result, duplicate=True), repeated)
         self.assertEqual("Synthetic decline", self.y("caller", "status", mid)["result"]["text"])
+        contexts = list((self.homes["owner"] / "public" / "review-context").glob("*.json"))
+        self.assertEqual(1, len(contexts))
+        self.assertEqual(0, contexts[0].stat().st_mode & 0o077)
+        saved = contexts[0].read_text()
+        for text in ("Synthetic request", "Synthetic decline"):
+            self.assertNotIn(text, saved)
+        self.assertIsNone(TOKEN_PATTERN.search(saved))
         self.assert_no_credentials_printed()
+
+    def test_decline_retries_after_successful_response_is_lost(self):
+        _, mid = self.request()
+        with legacy_review_api():
+            api_call = P.C.api_call
+
+            def lose_response(base, method, path, *args, **kwargs):
+                result = api_call(base, method, path, *args, **kwargs)
+                if method == "POST" and path == "/v1/owner/messages/%s/review" % mid:
+                    self.assertEqual(200, result[0])
+                    raise P.C.ApiError(None, "unreachable")
+                return result
+
+            with patch.object(P.C, "api_call", side_effect=lose_response):
+                failed = self.y("owner", "review", "reject-inbound", "alice", mid,
+                                "--text", "Synthetic decline", expect=2)
+            self.assertEqual("unreachable", failed["error"])
+            self.assertEqual([], self.y("owner", "review", "list", "alice")["inbound"])
+            repeated = self.y("owner", "review", "reject-inbound", "alice", mid,
+                              "--text", "Synthetic decline")
+        self.assertTrue(repeated["duplicate"])
+        self.assertEqual("Synthetic decline", self.y("caller", "status", mid)["result"]["text"])
+
+    def test_reject_reply_retry_keeps_original_decline(self):
+        bot, mid = self.request()
+        with legacy_review_api():
+            self.y("owner", "review", "approve-inbound", "alice", mid)
+            self.y("host", "job", "claim", bot, mid)
+            self.y("host", "job", "reply", bot, mid, "--text", "Synthetic draft")
+            result = self.y("owner", "review", "reject-reply", "alice", mid, "--text", "Synthetic decline")
+            self.assertEqual([], self.y("owner", "review", "list", "alice")["replies"])
+            repeated = self.y("owner", "review", "reject-reply", "alice", mid, "--text", "Changed decline")
+        self.assertFalse(result["duplicate"])
+        self.assertEqual(dict(result, duplicate=True), repeated)
+        self.assertEqual("Synthetic decline", self.y("caller", "status", mid)["result"]["text"])
 
     def test_fallback_does_not_apply_review_to_another_bot(self):
         _, mid = self.request()
         self.y("owner", "bot", "create", "--handle", "other", "--name", "Synthetic other bot")
-        for action, options in (("approve-inbound", ()), ("reject-inbound", ("--text", "Wrong bot decline"))):
-            with self.subTest(action=action), legacy_review_api() as calls:
-                code, _, _ = cli(self.homes["owner"], "review", action, "other", mid, *options)
-                self.assertEqual(2, code)
-                self.assertFalse(any(c.args[1] == "POST" for c in calls.call_args_list))
-        self.assertEqual([mid], [x["job_id"] for x in self.y("owner", "review", "list", "alice")["inbound"]])
+        for state in ("pending", "declined"):
+            for action, options in (("approve-inbound", ()), ("reject-inbound", ("--text", "Wrong bot decline"))):
+                with self.subTest(action=action, state=state), legacy_review_api() as calls:
+                    code, _, _ = cli(self.homes["owner"], "review", action, "other", mid, *options)
+                    self.assertEqual(2, code)
+                    self.assertFalse(any(c.args[1] == "POST" for c in calls.call_args_list))
+            if state == "pending":
+                self.assertEqual([mid], [x["job_id"] for x in self.y("owner", "review", "list", "alice")["inbound"]])
+                with legacy_review_api():
+                    self.y("owner", "review", "reject-inbound", "alice", mid, "--text", "Synthetic decline")
+
+
+class BaseGatewayDeclineTests(unittest.TestCase):
+    def test_decline_retries_with_exact_base_gateway_across_client_processes(self):
+        with tempfile.TemporaryDirectory(prefix="yobiru legacy decline ") as directory:
+            root = Path(directory)
+            legacy = root / "base-gateway"
+            legacy.mkdir()
+            for name in ("bot_gateway.py", "bot_common.py", "bot_e2e.py", "bot_mcp.py", "bot_blobs.py",
+                         "bot_profile.py"):
+                try:
+                    source = subprocess.run(["git", "show", BASE_COMMIT + ":public_bots/" + name],
+                                            cwd=PUBLIC.parent, capture_output=True, check=True).stdout
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    self.skipTest("the public PR base commit is unavailable (for example, a source archive)")
+                (legacy / name).write_bytes(source)
+            gw = FriendsGateway(root, prefix=[sys.executable, str(legacy / "bot_gateway.py")]).start()
+            try:
+                def client(home, *args):
+                    result = subprocess.run([sys.executable, str(PUBLIC / "bot_client.py"),
+                                             "--home", str(home), *args], env=plain_env(root),
+                                            capture_output=True, text=True, timeout=30)
+                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                    return json.loads(result.stdout)
+
+                owner = root / "owner"
+                client(owner, "owner", "login", gw.url, "--token-file", str(gw.home / "owner.token"))
+                for sealed in (False, True):
+                    with self.subTest(sealed=sealed):
+                        handle = "sealed-decline" if sealed else "plain-decline"
+                        if sealed:
+                            bot = client(owner, "bot", "create", "--handle", handle,
+                                         "--name", "Synthetic bot")["bot_id"]
+                            client(owner, "bot", "publish", handle)
+                            client(owner, "bot", "edit", handle, "--require-e2e", "on")
+                        else:
+                            bot = gw.bot(handle)
+                        gw.native(bot)
+                        caller = root / handle
+                        client(caller, "connect", gw.url + "/@" + handle, "--name", "Synthetic caller")
+                        mid = client(caller, "chat", handle, "Synthetic request")["message_id"]
+                        args = ("review", "reject-inbound", handle, mid, "--text", "Synthetic decline")
+                        first = client(owner, *args)
+                        repeated = client(owner, *args)
+                        self.assertFalse(first["duplicate"])
+                        self.assertEqual(dict(first, duplicate=True), repeated)
+                        self.assertEqual("Synthetic decline", client(caller, "status", mid)["result"]["text"])
+            finally:
+                gw.stop()
 
 
 class BaseClientReviewTests(FriendsClientCase):
     """Old owner commands still see and act on every request after a gateway-only upgrade."""
-    base_commit = "0154a9375d9b7a2d3da70b8ebf074eeb12cf5cb1"
+    base_commit = BASE_COMMIT
 
     def large_requests(self):
         bot = self.owner_bot("legacy-review")
@@ -143,10 +245,19 @@ class LegacySealedReviewTests(E2ECase):
         self.bot_with_host(files=False)
         self.y("caller", "connect", "%s/@%s" % (self.gw.url, self.handle), "--name", "Sealed caller")
         mid = self.y("caller", "chat", self.handle, "Synthetic sealed request")["message_id"]
-        with legacy_review_api():
+        with legacy_review_api() as calls:
             result = self.y("owner", "review", "reject-inbound", self.handle, mid,
                             "--text", "Synthetic sealed decline")
+            repeated = self.y("owner", "review", "reject-inbound", self.handle, mid,
+                              "--text", "Synthetic sealed decline")
         self.assertEqual("declined", result["state"])
+        self.assertEqual(dict(result, duplicate=True), repeated)
+        declines = [c.args[3] for c in calls.call_args_list if c.args[1] == "POST"
+                    and c.args[2] == "/v1/owner/messages/%s/review" % mid]
+        self.assertEqual(2, len(declines))
+        for body in declines:
+            self.assertNotIn("text", body)
+            self.assertIn("sealed", body)
         self.assert_opaque(self.stored(mid), "Synthetic sealed request", "Synthetic sealed decline")
         self.assertEqual("Synthetic sealed decline", self.y("caller", "status", mid)["result"]["text"])
 
