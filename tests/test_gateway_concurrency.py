@@ -5,6 +5,8 @@ of writing outside it. The connector poll, which every online agent repeats ever
 `processes` above 1, request processes share one listening socket, one more process runs the maintenance sweeps, and
 the first process replaces a child that exits and stops them all on SIGTERM.
 """
+import asyncio
+import importlib.util
 import json
 import os
 import signal
@@ -247,6 +249,88 @@ class ProcessesSettingTests(unittest.TestCase):
 
 
 class BenchmarkToolTests(unittest.TestCase):
+    def held_result(self, response, *, send_status=202, early=False, poll_seconds=0):
+        spec = importlib.util.spec_from_file_location("bench_gateway_under_test", ROOT / "tools" / "bench_gateway.py")
+        bench = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bench)
+        clock = [100.0]
+        real_sleep = asyncio.sleep
+
+        async def run():
+            delivered = asyncio.Event()
+
+            async def http(port, method, path, token=None, body=None, timeout=60):
+                if path == "/v1/connector/jobs":
+                    return 200, {"ok": True, "cursor": "a" * 32, "jobs": [], "checks": [], "replies": []}
+                if path.startswith("/v1/connector/jobs?"):
+                    if not early:
+                        await delivered.wait()
+                    clock[0] += poll_seconds
+                    if isinstance(response, Exception):
+                        raise response
+                    return response
+                if path == "/v1/actors":
+                    return 201, {"token": "synthetic-visitor"}
+                if path == "/v1/bots/bot_probe/conversations":
+                    return 201, {"conversation_id": "conv_probe"}
+                self.assertEqual("/v1/conversations/conv_probe/messages", path)
+                delivered.set()
+                await real_sleep(0)  # The held response can arrive before the sender receives its receipt.
+                clock[0] += 0.1
+                return send_status, {"ok": send_status == 202, "message_id": "msg_probe"}
+
+            async def sleep(delay):
+                clock[0] += delay
+                await real_sleep(0)
+
+            with mock.patch.object(bench, "http", side_effect=http), \
+                    mock.patch.object(bench, "gateway_usage", return_value=(0, 0)), \
+                    mock.patch.object(bench.time, "monotonic", side_effect=lambda: clock[0]), \
+                    mock.patch.object(bench.asyncio, "sleep", side_effect=sleep):
+                return await bench.hold(0, 0, [{"bot_id": "bot_probe", "connector": "synthetic-connector"}], 1,
+                                        wait=6)
+        return asyncio.run(run())
+
+    def test_failed_held_polls_are_not_successful_wakes(self):
+        for response, status in (((503, {"ok": False, "error": "busy"}), "503"),
+                                 (OSError("synthetic connection failure"), "-1")):
+            with self.subTest(status=status):
+                result = self.held_result(response, early=True)
+                self.assertEqual({status: 1}, result["status"])
+                self.assertEqual(0, result["woken"])
+                self.assertIsNone(result["wake_p50_ms"])
+                self.assertIsNone(result["wake_max_ms"])
+                self.assertEqual(0, self.held_result(response, poll_seconds=6)["held_full_wait"])
+
+    def test_malformed_or_unchanged_listings_are_not_successful_wakes(self):
+        listing = {"ok": True, "cursor": "b" * 32, "jobs": [{"job_id": "msg_probe"}],
+                   "checks": [], "replies": []}
+        for obj in ({}, [], dict(listing, cursor=None), dict(listing, cursor="bad"),
+                    dict(listing, jobs=None), dict(listing, jobs=[None]), dict(listing, ok=False),
+                    dict(listing, cursor="a" * 32)):
+            with self.subTest(obj=obj):
+                result = self.held_result((200, obj))
+                self.assertEqual(0, result["woken"])
+                self.assertIsNone(result["wake_max_ms"])
+                unchanged = isinstance(obj, dict) and obj.get("cursor") == "a" * 32
+                self.assertEqual(0 if unchanged else 1, result["invalid_listings"])
+                self.assertEqual(1 if unchanged else 0,
+                                 self.held_result((200, obj), poll_seconds=6)["held_full_wait"])
+
+    def test_a_wake_requires_the_successfully_sent_probe_job(self):
+        listing = {"ok": True, "cursor": "b" * 32, "jobs": [{"job_id": "msg_probe"}],
+                   "checks": [], "replies": []}
+        for response, status in (((200, dict(listing, jobs=[{"job_id": "msg_other"}])), 202),
+                                 ((200, listing), 503)):
+            with self.subTest(response=response, send_status=status):
+                result = self.held_result(response, send_status=status)
+                self.assertEqual(0, result["woken"])
+                self.assertEqual({str(status): 1}, result["probe_status"])
+        result = self.held_result((200, listing))
+        self.assertEqual(1, result["woken"])
+        self.assertGreaterEqual(result["wake_p50_ms"], 0)
+        self.assertGreaterEqual(result["wake_max_ms"], 0)
+
     @unittest.skipUnless(hasattr(os, "fork"), "the multi-process gateway needs fork")
     def test_the_benchmark_runs_against_a_multi_process_gateway(self):
         with tempfile.TemporaryDirectory(prefix="yobiru bench ") as tmp:
@@ -259,6 +343,18 @@ class BenchmarkToolTests(unittest.TestCase):
         self.assertGreater(result["ok_per_second"], 0)
         self.assertEqual(["200"], list(result["status"]))
         self.assertEqual(300, result["messages"])
+
+    @unittest.skipUnless(hasattr(os, "fork"), "the multi-process gateway needs fork")
+    def test_the_benchmark_holds_waiting_connectors(self):
+        with tempfile.TemporaryDirectory(prefix="yobiru bench hold ") as tmp:
+            r = subprocess.run([sys.executable, str(ROOT / "tools" / "bench_gateway.py"), "--bots", "6",
+                                "--messages", "60", "--chats", "2", "--processes", "2", "--hold", "6", "--probes",
+                                "2", "--wait-seconds", "6", "--keep", tmp, "--quiet"],
+                               capture_output=True, text=True, timeout=300)
+        self.assertEqual(0, r.returncode, r.stderr[-2000:])
+        result = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual((6, 2, 2, 4), (result["held"], result["probes"], result["woken"], result["held_full_wait"]))
+        self.assertLess(result["wake_max_ms"], 3000)
 
 
 if __name__ == "__main__":

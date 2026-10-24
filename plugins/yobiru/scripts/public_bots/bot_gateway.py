@@ -85,6 +85,7 @@ LIMIT_DEFAULTS = {
     "max_text_chars": 4000,                     # caller message text and owner replies
     "read_timeout_seconds": 10,                 # total time to send request line, headers and body
     "max_concurrent_requests": 32,              # further connections get 503 at once
+    "max_waiting_connectors": 1000,             # connector polls held for a change, per process; more answer at once
     "enroll_per_hour": 60,                      # new caller identities on this gateway (Sybil backstop)
     "enroll_per_hour_per_ip": 10,
     "max_actors": 10000,
@@ -372,6 +373,37 @@ SWEEP_INDEXES = (
     "WHERE caller_ack_ts IS NULL AND result IS NOT NULL",
 )
 
+
+def bump_change(expr):
+    return ("INSERT OR REPLACE INTO connector_changes(bot_id, seq) SELECT %s, (SELECT COALESCE(MAX(seq), 0) + 1 "
+            "FROM connector_changes) WHERE %s IS NOT NULL; " % (expr, expr))
+
+
+def change_trigger(name, event, *exprs):
+    return "CREATE TRIGGER IF NOT EXISTS %s AFTER %s BEGIN %sEND" % (name, event, "".join(map(bump_change, exprs)))
+
+
+# A connector poll can wait for its listing to change. Every write that can change a bot's listing (its own work,
+# replies to what it sent, its contacts and follows, a binding check for one of its workers, the bot itself) moves
+# that bot's row here to the next sequence number, in the writing transaction, so every gateway process sees it.
+# Additive like the tables above: an older gateway ignores the table and its triggers keep it current.
+CHANGE_TABLES = (
+    "CREATE TABLE IF NOT EXISTS connector_changes (bot_id TEXT PRIMARY KEY, seq INTEGER NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS connector_changes_seq ON connector_changes(seq)",
+    change_trigger("connector_change_message_new", "INSERT ON messages", "NEW.bot_id", "NEW.actor_id"),
+    change_trigger("connector_change_message", "UPDATE ON messages", "NEW.bot_id", "NEW.actor_id"),
+    change_trigger("connector_change_contact_new", "INSERT ON contacts", "NEW.bot_id", "NEW.actor_id"),
+    change_trigger("connector_change_contact", "UPDATE ON contacts", "NEW.bot_id", "NEW.actor_id"),
+    change_trigger("connector_change_follow_new", "INSERT ON follows", "NEW.src", "NEW.dst"),
+    change_trigger("connector_change_follow", "UPDATE ON follows", "NEW.src", "NEW.dst"),
+    change_trigger("connector_change_inbox", "INSERT ON inbox_acceptances", "NEW.bot_id"),
+    change_trigger("connector_change_check_new", "INSERT ON checks",
+                   "(SELECT bot_id FROM workers WHERE id=NEW.worker_id)"),
+    change_trigger("connector_change_check", "UPDATE ON checks",
+                   "(SELECT bot_id FROM workers WHERE id=NEW.worker_id)"),
+    change_trigger("connector_change_bot", "UPDATE ON bots", "NEW.id"),
+)
+
 # schema 1 -> 2: new columns with defaults, the follow graph and binding checks. Run as single statements
 # inside one IMMEDIATE transaction (never executescript, which commits on its own).
 MIGRATION_1_2 = [
@@ -622,7 +654,7 @@ class Store(object):
         db = open_db(self.path)
         try:
             db.execute(PROFILE_TABLE)
-            for statement in INBOX_TABLES + SWEEP_INDEXES:
+            for statement in INBOX_TABLES + SWEEP_INDEXES + CHANGE_TABLES:
                 db.execute(statement)
         finally:
             db.close()
@@ -2149,6 +2181,7 @@ class Api(object):
     def __init__(self, store):
         self.store, self.cfg, self.limits = store, store.cfg, store.limits
         self.enrollment = store.cfg["enrollment"]
+        self.changes = ChangeWatcher(store)
 
     def body(self, db, obj, now):
         return stored_body(db, getattr(self.store, "blobs", None), self.limits, obj, now)
@@ -4517,10 +4550,14 @@ class Api(object):
     def wake_due(self, msg, phase, now):
         if msg["wake_phase"] != phase or msg["wake_state"] == "none":
             return True
+        retry = self.wake_retry_ts(msg)
+        return retry is not None and now >= retry   # intent without result, uncertain or accepted: never automatic
+
+    def wake_retry_ts(self, msg):
+        """When a refused wake may be tried again, or None if it never is automatically."""
         if msg["wake_state"] == "refused" and msg["wake_seq"] < self.limits["wake_attempts"]:
-            wait = self.limits["wake_retry_seconds"] * (2 ** max(0, msg["wake_seq"] - 1))
-            return now >= (msg["wake_ts"] or 0) + wait
-        return False                      # intent without result, uncertain or accepted: never automatic
+            return (msg["wake_ts"] or 0) + self.limits["wake_retry_seconds"] * (2 ** max(0, msg["wake_seq"] - 1))
+        return None
 
     def job_phase(self, db, msg, bot):
         return "ready" if inbound_status(msg, contact_row(db, bot["id"], msg["actor_id"])) != "pending" else "review"
@@ -4536,7 +4573,9 @@ class Api(object):
                           "WHERE m.bot_id=? AND m.author='caller' AND m.route='agent' AND m.state='queued' "
                           "AND (m.review_in IS NULL OR m.review_in!='ignored' OR c.preapproved=1) "
                           "ORDER BY m.created_ts, m.rowid", (bot["id"],))
-        jobs = []
+        # Read first, so that a change committed after the listing below wakes a poll that waits on it.
+        seq = change_seq(db, bot["id"])
+        jobs, retry = [], None
         for m in rows:
             # Checked here, not in the query: a deadline condition there would steer SQLite to the global
             # deadline index instead of this bot's own work.
@@ -4549,10 +4588,17 @@ class Api(object):
                 jobs.append({"job_id": m["id"], "phase": phase, "wake_attempts": m["wake_seq"]})
                 if len(jobs) == 200:
                     break
-        checks = db.execute("SELECT * FROM checks WHERE worker_id=? AND answered_ts IS NULL AND expires_ts>? AND "
-                            "wake_state='none'", (worker["id"], int(now))).fetchall()
-        return 200, {"ok": True, "bot_id": bot["id"], "handle": "@" + bot["handle"], "jobs": jobs,
-                     "checks": [{"check_id": c["id"]} for c in checks], "replies": self.pending_replies(db, bot, now)}
+            elif m["wake_phase"] == phase and self.wake_retry_ts(m) is not None:
+                retry = self.wake_retry_ts(m) if retry is None else min(retry, self.wake_retry_ts(m))
+        checks = db.execute("SELECT id FROM checks WHERE worker_id=? AND answered_ts IS NULL AND expires_ts>? AND "
+                            "wake_state='none' ORDER BY id", (worker["id"], int(now))).fetchall()
+        listing = {"jobs": jobs, "checks": [{"check_id": c["id"]} for c in checks],
+                   "replies": self.pending_replies(db, bot, now)}
+        # The cursor names this listing: a poll that sends it back with `wait` is held until the listing differs
+        # (a change wakes it, a refused wake's retry time ends the wait) or the wait is over.
+        cursor = hashlib.sha256(canonical(listing).encode("ascii")).hexdigest()[:32]
+        r.change = (bot["id"], seq, retry)
+        return 200, dict({"ok": True, "bot_id": bot["id"], "handle": "@" + bot["handle"], "cursor": cursor}, **listing)
 
     def pending_replies(self, db, bot, now):
         """Final responses to messages this bot sent as a caller that it has not acknowledged yet, so that its
@@ -4790,6 +4836,86 @@ ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
 
 class Request(object):
     pass
+
+
+CONNECTOR_WAIT_MAX = 30         # seconds a connector poll may wait for its listing to change
+WATCH_SECONDS = 0.2             # how often a process with waiting polls looks for changes
+
+
+def change_seq(db, bot_id):
+    row = db.execute("SELECT seq FROM connector_changes WHERE bot_id=?", (bot_id,)).fetchone()
+    return row["seq"] if row else 0
+
+
+def wait_params(query):
+    """`wait` (seconds, 0-30) and `cursor` (from the previous listing) of a connector poll."""
+    try:
+        q = urllib.parse.parse_qs(query, keep_blank_values=True, strict_parsing=True) if query else {}
+    except ValueError:
+        raise Fail(400, "query_not_supported")
+    if set(q) - {"wait", "cursor"} or any(len(v) != 1 for v in q.values()):
+        raise Fail(400, "query_not_supported")
+    wait, cursor = q.get("wait", ["0"])[0], q.get("cursor", [None])[0]
+    if not re.match(r"^[0-9]{1,2}$", wait) or int(wait) > CONNECTOR_WAIT_MAX or \
+            (cursor is not None and not re.match(r"^[0-9a-f]{32}$", cursor)):
+        raise Fail(400, "invalid_wait", "wait: 0-%d seconds; cursor: the cursor of the previous listing"
+                   % CONNECTOR_WAIT_MAX)
+    return int(wait), cursor
+
+
+class ChangeWatcher(object):
+    """Connector polls that wait for a change sleep here without a request slot or a database connection. One
+    thread per process reads the rows of connector_changes that moved since its last look and wakes the polls
+    waiting on those bots; the triggers fill the table in every process's writes, so it sees them all."""
+
+    def __init__(self, store):
+        self.store, self.lock, self.waiting, self.thread = store, threading.Lock(), {}, None
+        self.someone = threading.Event()
+
+    def wait(self, bot_id, seen, timeout):
+        """True once the bot's change sequence passes `seen`, False after `timeout` seconds without a change."""
+        ev = threading.Event()
+        with self.lock:
+            self.waiting.setdefault(bot_id, set()).add(ev)
+            if self.thread is None:
+                self.thread = threading.Thread(target=self.run, args=(self.last_seq(),), daemon=True)
+                self.thread.start()
+            self.someone.set()
+        try:
+            # A change committed between the listing and this registration was before the watcher's next look.
+            if self.store.attempt(lambda db: change_seq(db, bot_id)) > seen:
+                return True
+            return ev.wait(timeout)
+        finally:
+            with self.lock:
+                left = self.waiting.get(bot_id)
+                left.discard(ev)
+                if not left:
+                    del self.waiting[bot_id]
+
+    def last_seq(self):
+        return self.store.attempt(lambda db: db.execute("SELECT COALESCE(MAX(seq), 0) FROM connector_changes")
+                                  .fetchone()[0])
+
+    def run(self, last):
+        while True:
+            with self.lock:
+                if not self.waiting:
+                    self.someone.clear()
+            self.someone.wait()
+            time.sleep(WATCH_SECONDS)
+            try:
+                rows = self.store.attempt(lambda db: db.execute(
+                    "SELECT bot_id, seq FROM connector_changes WHERE seq>? ORDER BY seq", (last,)).fetchall())
+            except Exception as e:          # the waiting polls still end at their deadline
+                log("change watch failed:", type(e).__name__)
+                continue
+            if rows:
+                last = rows[-1]["seq"]
+            with self.lock:
+                for row in rows:
+                    for ev in self.waiting.get(row["bot_id"], ()):
+                        ev.set()
 
 
 MCP_KINDS = ("actor", "source", "worker")
@@ -5175,7 +5301,7 @@ def make_handler(api):
                 share = SHARE_RE.match(path) if self.command == "GET" else None
                 if share is not None:
                     path, self._html = self.share_mode(share, url)
-                elif url.query or url.fragment:
+                elif url.fragment or (url.query and (self.command, path) != ("GET", "/v1/connector/jobs")):
                     raise Fail(400, "query_not_supported")
                 if path == "/mcp":
                     return self.dispatch_mcp()
@@ -5193,6 +5319,7 @@ def make_handler(api):
                 self._route = name
                 req = Request()
                 req.params, req.now, req.client_ip = m.groupdict(), C.now_ts(), client_ip(self, cfg)
+                req.wait, req.cursor = wait_params(url.query) if name == "connector_jobs" else (0, None)
                 auth = self.headers.get("Authorization") or ""
                 req.token = auth[7:].strip() or None if auth.startswith("Bearer ") else None
                 if auth and req.token is None:
@@ -5227,7 +5354,10 @@ def make_handler(api):
                     return getattr(api, name)(db, req)
                 # A GET reads first: most of them never write (the connector poll above all), and one that does
                 # runs again under the write lock. A worker credential records its last use, so it writes anyway.
-                status, obj = api.store.attempt(handle, write=self.command != "GET" or "worker" in (kinds or ()))
+                write = self.command != "GET" or "worker" in (kinds or ())
+                status, obj = api.store.attempt(handle, write=write)
+                if req.wait and status == 200 and req.cursor == obj.get("cursor"):
+                    status, obj = self.wait_for_change(req, handle, status, obj)
                 if name == "share_card" and self._html:
                     card = {k: v for k, v in obj.items() if k != "ok"}
                     return self.reply_page(status, lambda nonce: P.render_profile(card, self._html, url.path, nonce),
@@ -5261,6 +5391,38 @@ def make_handler(api):
                     self.reply(500, {"ok": False, "error": "server_error"})
                 except OSError:
                     pass
+
+        def wait_for_change(self, req, handle, status, obj):
+            """Hold a connector poll whose listing is the one it already has: without its request slot while it
+            sleeps, and with a fresh read of the listing after each change, until the listing differs or the
+            wait is over. A process whose waiting places are all taken answers at once."""
+            srv, end = self.server, time.monotonic() + req.wait
+            if not srv.park():
+                return status, obj
+            try:
+                handled = None
+                while True:
+                    bot_id, seen, retry = req.change
+                    if retry is not None and handled is not None and retry <= handled:
+                        retry = None        # read again at that time already: only a change or the end now
+                    left = end - time.monotonic()
+                    if left <= 0:
+                        return status, obj
+                    if retry is not None:
+                        left = min(left, max(0.0, retry - time.time() + 0.05))
+                    if not api.changes.wait(bot_id, seen, left):
+                        if time.monotonic() >= end:
+                            return status, obj
+                        handled = retry
+                    srv.resume()
+                    try:
+                        status, obj = api.store.attempt(handle)
+                    finally:
+                        srv.pause()
+                    if status != 200 or obj.get("cursor") != req.cursor:
+                        return status, obj
+            finally:
+                srv.unpark()
 
         def share_mode(self, share, url):
             """A share link answers JSON (the card) unless the caller prefers HTML: `/@ref.json` and `?format=json`
@@ -5421,11 +5583,29 @@ class BoundedServer(ThreadingHTTPServer):
     # socketserver's default backlog is 5: a burst of new connections beyond it waits for a SYN retry (a second)
     request_queue_size = 1024
 
-    def __init__(self, address, handler, slots, family):
+    def __init__(self, address, handler, slots, family, waiting=0):
         self.address_family = family
         self._slots = threading.BoundedSemaphore(slots)
+        self._waiting = threading.BoundedSemaphore(waiting) if waiting else None
         self.shared, self._slot = False, False
         ThreadingHTTPServer.__init__(self, address, handler)
+
+    # A waiting connector poll gives its request slot back while it sleeps and takes one again to answer.
+    def park(self):
+        if self._waiting is None or not self._waiting.acquire(blocking=False):
+            return False
+        self._slots.release()
+        return True
+
+    def unpark(self):
+        self._slots.acquire()
+        self._waiting.release()
+
+    def pause(self):
+        self._slots.release()
+
+    def resume(self):
+        self._slots.acquire()
 
     def get_request(self):
         self._slot = self._slots.acquire(blocking=False) or \
@@ -5665,7 +5845,7 @@ def cmd_init(home, a):
     try:
         db.executescript(SCHEMA)
         db.execute(PROFILE_TABLE)
-        for statement in INBOX_TABLES + SWEEP_INDEXES:
+        for statement in INBOX_TABLES + SWEEP_INDEXES + CHANGE_TABLES:
             db.execute(statement)
         db.execute("BEGIN IMMEDIATE")
         db.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,))
@@ -5853,7 +6033,8 @@ def cmd_serve(home, a):
         die("more than one gateway process needs fork (Linux, macOS or another POSIX system)", 2)
     family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
     api = Api(store)
-    srv = BoundedServer((bind, port), make_handler(api), cfg["limits"]["max_concurrent_requests"], family)
+    srv = BoundedServer((bind, port), make_handler(api), cfg["limits"]["max_concurrent_requests"], family,
+                        cfg["limits"]["max_waiting_connectors"])
     actual = srv.server_address[1]
     host = "[%s]" % bind if ip.version == 6 else bind
     if not ip.is_loopback:

@@ -35,6 +35,7 @@ import hashlib
 import io
 import json
 import os
+import random
 import re
 import secrets
 import sqlite3
@@ -235,10 +236,10 @@ def call(base, method, path, body=None, token=None, accept=(200, 201, 202)):
         die(str(e))
 
 
-def request(base, method, path, body, token):
+def request(base, method, path, body, token, timeout=15.0):
     """Calls whose 4xx answers are expected outcomes (fenced, cancelled, expired, review), not crashes."""
     try:
-        status, obj = C.api_call(base, method, path, body, token)
+        status, obj = C.api_call(base, method, path, body, token, timeout=timeout)
     except C.ApiError as e:
         return {"ok": False, "error": e.code, "detail": e.detail, "http_status": e.status}
     except ValueError as e:
@@ -3296,6 +3297,8 @@ def cmd_connector(st, a):
         st.update("connectors.json", save)
         out({"ok": True, "bot_id": a.bot, "wake": {k: v for k, v in entry.items() if k != "secret"}})
         return
+    if not 0 <= a.wait_seconds <= 30:
+        die("--wait-seconds must be 0-30", 2)
     creds = st.creds()
     base = gateway_with(creds, "connector", a.gateway, a.bot)
     pool = (creds["gateways"].get(base) or {}).get("connectors") or {}
@@ -3380,46 +3383,81 @@ def connector_run(st, a, base, bot_id, conn, route):
         return ("/v1/connector/checks/%s/wake" if kind == "binding_check" else "/v1/connector/messages/%s/wake") % ref
 
     def settle(key, entry):
+        """True once the gateway has the result (or no longer knows the wake); until then it stays in the ledger."""
         res = request(base, "POST", path_for(entry["kind"], entry["ref"]),
                       {"step": "result", "wake_id": entry["wake_id"], "outcome": entry["outcome"],
                        "detail": entry.get("detail")}, token)
         if res.get("ok") or res.get("http_status") in (404, 409):
             ledger_put(key, None)
-        return res
+            return True
+        return False
 
-    # recover what an earlier process left behind
-    for key, entry in list(st.load(ledger_name)["wakes"].items()):
-        if not key.startswith(bot_id + ":") or entry["kind"] == "reply":
-            continue                            # a reply wake is a local never-again marker, nothing to settle
-        if entry["step"] == "planned":
-            res = request(base, "POST", path_for(entry["kind"], entry["ref"]),
-                          {"step": "intent", "wake_id": entry["wake_id"], "phase": entry.get("phase")}, token)
-            if not res.get("ok"):
-                ledger_put(key, None)           # never recorded: nothing was woken
-                continue
-            if not res.get("duplicate"):
-                ledger_put(key, None)           # recorded now, and nothing was woken: report it as refused
-                request(base, "POST", path_for(entry["kind"], entry["ref"]),
-                        {"step": "result", "wake_id": entry["wake_id"], "outcome": "refused",
-                         "detail": "connector restarted before waking"}, token)
-                report["recovered"].append({"ref": entry["ref"], "outcome": "refused"})
-                continue
-            entry.update(step="woken", outcome="uncertain", detail="connector restarted after recording intent")
-        elif entry["step"] == "intended":
-            entry.update(step="woken", outcome="uncertain", detail="connector restarted during the wake")
-        settle(key, entry)
-        report["recovered"].append({"ref": entry["ref"], "outcome": entry["outcome"]})
-    idle_since = time.monotonic()
+    def recover():
+        """Settle leftover wakes; return True while any still need the gateway to accept their result."""
+        pending = False
+        for key, entry in list(st.load(ledger_name)["wakes"].items()):
+            if not key.startswith(bot_id + ":") or entry["kind"] == "reply":
+                continue                        # a reply wake is a local never-again marker, nothing to settle
+            if entry["step"] == "planned":
+                res = request(base, "POST", path_for(entry["kind"], entry["ref"]),
+                              {"step": "intent", "wake_id": entry["wake_id"], "phase": entry.get("phase")}, token)
+                if not res.get("ok"):
+                    if transient(res):
+                        pending = True          # the intent may already be recorded; retry the same wake id
+                    else:
+                        ledger_put(key, None)   # the gateway no longer accepts this intent
+                    continue
+                if not res.get("duplicate"):
+                    entry.update(step="woken", outcome="refused", detail="connector restarted before waking")
+                else:
+                    entry.update(step="woken", outcome="uncertain", detail="connector restarted after recording intent")
+            elif entry["step"] == "intended":
+                entry.update(step="woken", outcome="uncertain", detail="connector restarted during the wake")
+            ledger_put(key, entry)               # keep the recovered outcome across another outage or restart
+            pending = not settle(key, entry) or pending
+            report["recovered"].append({"ref": entry["ref"], "outcome": entry["outcome"]})
+        return pending
+
+    unsettled = recover()
+    idle_since, cursor, failures = time.monotonic(), None, 0
+    wait = 0 if a.once else a.wait_seconds
     while True:
-        listing = request(base, "GET", "/v1/connector/jobs", None, token)
+        # A gateway that names its listing with a cursor holds the next poll until the listing changes, so the
+        # agent is woken within a second instead of at the next poll (older gateways answer without a cursor).
+        held = wait
+        if a.idle_exit is not None:
+            held = min(held, int(max(1, a.idle_exit - (time.monotonic() - idle_since))))
+        path = "/v1/connector/jobs" + ("?wait=%d&cursor=%s" % (held, cursor) if held and cursor else "")
+        asked = time.monotonic()
+        listing = request(base, "GET", path, None, token, timeout=held + 15)
         if not listing.get("ok"):
-            out(dict(listing, step="list"))
-            sys.exit(2)
+            if cursor and listing.get("error") == "query_not_supported":
+                wait, cursor = 0, None          # an older gateway answers at this address now: poll it
+                continue
+            if a.once or not transient(listing):
+                out(dict(listing, step="list"))
+                sys.exit(2)
+            if held and listing.get("http_status") == 504:
+                wait //= 2                      # a proxy in front of the gateway cuts long requests: wait less
+            # The gateway restarts or is overloaded: try again later, at a random point so that its connectors
+            # do not all come back in the same second.
+            failures += 1
+            delay = retry_delay(failures)
+            print("yobiru public connector: gateway %s (%s); trying again in %.0f s" % (
+                listing.get("error"), listing.get("http_status") or "no answer", delay), file=sys.stderr, flush=True)
+            time.sleep(delay)
+            continue
+        if failures or unsettled:
+            unsettled = recover()               # keep retrying until the gateway takes every missed result
+        failures = 0
+        sent, cursor, skipped = cursor, listing.get("cursor"), len(report["skipped"])
         todo = [("binding_check", c["check_id"], None) for c in listing.get("checks", [])]
         todo += [("job", j["job_id"], j["phase"]) for j in listing.get("jobs", [])
                  if j["phase"] == "ready" or route.get("wake_on_review", True)]
         for kind, ref, phase in todo:
             key = "%s:%s" % (bot_id, ref)
+            if unsettled and key in st.load(ledger_name)["wakes"]:
+                continue                        # finish recovering the original wake before replacing its record
             entry = {"kind": kind, "ref": ref, "phase": phase, "wake_id": new_op(), "step": "planned"}
             ledger_put(key, entry)
             res = request(base, "POST", path_for(kind, ref),
@@ -3433,7 +3471,7 @@ def connector_run(st, a, base, bot_id, conn, route):
             outcome, detail = perform_wake(route, wake_body(kind, base, bot_id, handle, ref, phase, entry["wake_id"]))
             entry.update(step="woken", outcome=outcome, detail=detail)
             ledger_put(key, entry)
-            settle(key, entry)
+            unsettled = not settle(key, entry) or unsettled
             report["woken"].append({"ref": ref, "kind": kind, "phase": phase, "outcome": outcome})
         replies = [r["message_id"] for r in listing.get("replies", [])] if route.get("wake_on_replies", True) else []
         led = st.load(ledger_name)["wakes"]
@@ -3459,8 +3497,22 @@ def connector_run(st, a, base, bot_id, conn, route):
             break
         if not todo and a.idle_exit is not None and time.monotonic() - idle_since >= a.idle_exit:
             break
+        if len(report["skipped"]) > skipped:
+            cursor = None                       # retry what the gateway refused at the next poll, not after a wait
+        elif wait and cursor and (cursor != sent or time.monotonic() - asked >= held / 2.0):
+            continue                            # the gateway waited, or the listing changed: ask again at once
         time.sleep(a.poll_seconds)
     out(dict(report, ok=True, bot_id=bot_id, route=route["type"]))
+
+
+def transient(res):
+    """A failure that a later attempt can get past: no answer, an overloaded or restarting gateway (5xx, 429)."""
+    status = res.get("http_status")
+    return status is None or status == 429 or status >= 500
+
+
+def retry_delay(failures):
+    return min(60.0, 2.0 ** min(failures - 1, 6) * random.uniform(0.5, 1.5))
 
 
 TRISTATE = {"yes": True, "no": False, "unknown": None}
@@ -4179,6 +4231,9 @@ def main(argv=None):
     p.add_argument("bot")
     p.add_argument("--once", action="store_true")
     p.add_argument("--poll-seconds", type=float, default=5.0)
+    p.add_argument("--wait-seconds", type=int, default=25,
+                   help="how long the gateway may hold a poll until there is something new (0-30; 0: poll every "
+                        "--poll-seconds)")
     p.add_argument("--idle-exit", type=float)
     p.add_argument("--gateway")
 
