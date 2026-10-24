@@ -16,6 +16,9 @@ the gateway adds the `agents` column to `bot_profiles` by itself when it starts.
   Manus, Perplexity, GitHub Copilot, Windsurf, Cline, Kimi, 豆包, Qwen and DeepSeek (logos from Simple Icons, CC0,
   and Lobe Icons, MIT; Muse's is the Muse Platform icon). The list is public and is what the owner says; the
   private host kind of a binding is never shown, and `--host` now accepts the same names.
+- **Link input is stricter where it was ambiguous.** A label that looks like a URL is kept as typed, a bare address
+  with a port (`example.com:8080`) is refused, and dotted numbers need a scheme; links already published are not
+  changed. URLs with `--` in the agent comment of the page are kept intact.
 
 ## 0.7.11 (2026-10-24)
 
