@@ -60,7 +60,7 @@ DEFAULT_HOME = "~/.yobiru-gateway"
 DEFAULT_PORT = 7780
 SCHEMA_VERSION = "7"
 CONFIG_KEYS = {"v", "bind", "port", "public_base_url", "allow_non_loopback_bind", "trust_forwarded_for", "limits",
-               "enrollment", "mcp", "partners", "processes"}
+               "enrollment", "mcp", "partners", "processes", "external_checkpoints"}
 MAX_PROCESSES = 64
 # The MCP endpoint: the same API for MCP clients, under the same credentials. Browsers never need it, so a request
 # that carries an Origin header is refused unless the operator lists that origin.
@@ -547,7 +547,7 @@ def load_config(home):
         limits[key] = value
     if not limits["min_deadline_seconds"] <= limits["default_deadline_seconds"] <= limits["max_deadline_seconds"]:
         raise ValueError("gateway.json: deadlines must satisfy min <= default <= max")
-    for key in ("allow_non_loopback_bind", "trust_forwarded_for"):
+    for key in ("allow_non_loopback_bind", "trust_forwarded_for", "external_checkpoints"):
         if not isinstance(cfg.get(key, False), bool):
             raise ValueError("gateway.json: %s must be true or false" % key)
     enrollment = dict(ENROLLMENT_DEFAULTS)
@@ -595,7 +595,7 @@ def load_config(home):
     return {"bind": bind, "port": port, "public_base_url": public, "limits": limits, "enrollment": enrollment,
             "allow_non_loopback_bind": cfg.get("allow_non_loopback_bind", False),
             "trust_forwarded_for": cfg.get("trust_forwarded_for", False), "mcp": mcp, "partners": partners,
-            "processes": processes}
+            "processes": processes, "external_checkpoints": cfg.get("external_checkpoints", False)}
 
 
 BODY_COLUMNS = ("content", "result", "draft")
@@ -641,6 +641,7 @@ def schema_version(path):
 class Store(object):
     def __init__(self, home, cfg):
         self.home, self.cfg, self.limits = Path(home), cfg, cfg["limits"]
+        self.external_checkpoints = cfg.get("external_checkpoints", False)
         self.path = self.home / "gateway.sqlite3"
         self.blobs = B.load(self.home)
         if not self.path.is_file():
@@ -682,7 +683,10 @@ class Store(object):
         with self._idle_lock:
             if self._idle:
                 return self._idle.pop()
-        return open_db(self.path, self.blobs, shared=True)
+        db = open_db(self.path, self.blobs, shared=True)
+        if self.external_checkpoints:
+            db.execute("PRAGMA wal_autocheckpoint=0")
+        return db
 
     def _give(self, db):
         with self._idle_lock:
@@ -5754,22 +5758,40 @@ def supervise(srv, store, count):
 
 
 WAL_RESET_BYTES = 8 << 20
+WAL_EXTERNAL_LIMIT_BYTES = 1 << 30
 
 
 def reset_wal(store):
     """With reads running all the time (connector polls, several processes) SQLite never finds a moment to start its
     write-ahead log over, and the log grows with every write. Once it passes WAL_RESET_BYTES, copy it back into the
-    database and truncate it. Writers wait for this (well under a second); readers are not stopped."""
+    database and truncate it. Writers wait for this (well under a second); readers are not stopped.
+    With `external_checkpoints` another process (Litestream) checkpoints: it holds a read transaction all the time, so
+    a truncating checkpoint here would hold writers for the whole busy timeout, every second. The gateway then steps
+    in only when the log passes WAL_EXTERNAL_LIMIT_BYTES, which means that process has stopped or fallen behind, and
+    does not wait for its readers."""
     try:
         size = os.path.getsize(str(store.path) + "-wal")
     except OSError:
         return
-    if size > WAL_RESET_BYTES:
-        db = store._take()
+    if size <= (WAL_EXTERNAL_LIMIT_BYTES if store.external_checkpoints else WAL_RESET_BYTES):
+        return
+    db = store._take()
+    try:
+        if not store.external_checkpoints:
+            db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            return
+        now = time.time()
+        if now - getattr(store, "wal_warned", 0) >= 3600:
+            store.wal_warned = now
+            log("WARNING: the write-ahead log is %d MB and external_checkpoints is on; is Litestream running?"
+                % (size >> 20))
+        db.execute("PRAGMA busy_timeout=0")
         try:
             db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
         finally:
-            store._give(db)
+            db.execute("PRAGMA busy_timeout=15000")
+    finally:
+        store._give(db)
 
 
 def maintenance(store):
@@ -6008,6 +6030,35 @@ def cmd_owner(home, a):
     return 0
 
 
+FD_RESERVE = 64                 # a process's database connections, blob store, log and listening socket
+
+
+def fit_open_files(slots, waiting):
+    """Every request and every held connector poll keeps a socket open. Raise the soft limit on open files to cover
+    them (request processes inherit it); where the hard limit is lower, hold fewer polls rather than fail to accept
+    connections. -> how many polls each process may hold."""
+    try:
+        import resource
+    except ImportError:                 # Windows: no such limit
+        return waiting
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    need = slots + waiting + FD_RESERVE
+    if soft == resource.RLIM_INFINITY or soft >= need:
+        return waiting
+    target = need if hard == resource.RLIM_INFINITY else min(need, hard)
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        soft = target
+    except (ValueError, OSError):       # macOS refuses more than its own maximum
+        pass
+    if soft >= need:
+        return waiting
+    fit = max(0, soft - slots - FD_RESERVE)
+    log("WARNING: the open file limit (%d) leaves room for %d held connector polls per process, not %d; raise it "
+        "(systemd LimitNOFILE, ulimit -n)" % (soft, fit, waiting))
+    return fit
+
+
 def cmd_serve(home, a):
     os.umask(0o077)
     try:
@@ -6033,8 +6084,9 @@ def cmd_serve(home, a):
         die("more than one gateway process needs fork (Linux, macOS or another POSIX system)", 2)
     family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
     api = Api(store)
-    srv = BoundedServer((bind, port), make_handler(api), cfg["limits"]["max_concurrent_requests"], family,
-                        cfg["limits"]["max_waiting_connectors"])
+    slots = cfg["limits"]["max_concurrent_requests"]
+    srv = BoundedServer((bind, port), make_handler(api), slots, family,
+                        fit_open_files(slots, cfg["limits"]["max_waiting_connectors"]))
     actual = srv.server_address[1]
     host = "[%s]" % bind if ip.version == 6 else bind
     if not ip.is_loopback:

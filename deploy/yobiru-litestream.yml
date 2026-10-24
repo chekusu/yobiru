@@ -1,0 +1,16 @@
+# Litestream configuration for the official gateway, installed as /etc/yobiru-litestream.yml (root, 0644). The
+# replica lives under its own prefix in the blob store's bucket: the gateway only ever deletes blob keys it wrote
+# itself, and the bucket's 35-day expiry never reaches these files, which Litestream replaces within 8 days.
+dbs:
+  - path: /srv/yobiru-gateway/gw/gateway.sqlite3
+    replica:
+      type: s3
+      endpoint: ${YOBIRU_R2_ENDPOINT}
+      bucket: yobiru-gateway-files
+      path: litestream/gateway
+      region: auto
+      # At most 5 seconds of writes can be lost, for at most one upload every 5 seconds (R2 includes 1M a month).
+      sync-interval: 5s
+snapshot:
+  interval: 24h
+  retention: 168h

@@ -254,6 +254,36 @@ class ChangeTriggerTests(unittest.TestCase):
                 db.close()
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "reads the gateway's limits from /proc")
+class OpenFileLimitTests(unittest.TestCase):
+    """Every held poll keeps a socket open. With the usual soft limit of 1,024 open files, 1,000 held polls and the
+    request slots would leave the gateway unable to accept connections: it raises its soft limit to fit them, and
+    holds fewer polls (with a warning) where the hard limit is lower."""
+
+    def serve(self, ulimit):
+        tmp = tempfile.TemporaryDirectory(prefix="yobiru open files ")
+        self.addCleanup(tmp.cleanup)
+        prefix = ["sh", "-c", 'ulimit %s && exec "$0" "$@"' % ulimit, sys.executable, str(PUBLIC / "bot_gateway.py")]
+        gw = FriendsGateway(Path(tmp.name), prefix=prefix)
+        gw.start()
+        self.addCleanup(gw.stop)
+        limits = Path("/proc/%d/limits" % gw.service.proc.pid).read_text()
+        soft = [line.split()[3] for line in limits.splitlines() if line.startswith("Max open files")][0]
+        return gw, int(soft)
+
+    def test_the_soft_limit_is_raised_to_fit_the_held_polls(self):
+        gw, soft = self.serve("-Sn 256")
+        self.assertEqual(32 + 1000 + G.FD_RESERVE, soft)
+        self.assertNotIn("open file limit", gw.service.log_path.read_text())
+
+    def test_a_low_hard_limit_holds_fewer_polls_and_says_so(self):
+        gw, soft = self.serve("-n 200")
+        self.assertEqual(200, soft)
+        self.assertTrue(wait_until(lambda: "open file limit" in gw.service.log_path.read_text()))
+        self.assertIn("room for %d held connector polls per process, not 1000" % (200 - 32 - G.FD_RESERVE),
+                      gw.service.log_path.read_text())
+
+
 def host_command(log):
     return [sys.executable, "-c", "import sys; open(sys.argv[1], 'a').write(sys.argv[2] + '\\n')", str(log),
             "{job_id}"]
