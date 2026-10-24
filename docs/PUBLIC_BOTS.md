@@ -163,7 +163,11 @@ for an email address containing `=`, or `Mail=mailto:me@example.com` for a label
 `alice=work@example.com` and `Mail=me@example.com` are ambiguous and refused; add `mailto:` to make the
 intended recipient explicit. Text that could be either a website or email, such as
 `alice.smith/notes@example.com` or `example.com/page?email=alice@example.com`, also requires an explicit
-`mailto:` or `https://` scheme. Unambiguous bare website URLs keep `=` in their paths and queries. The page reads the service
+`mailto:` or `https://` scheme. Unambiguous bare website URLs keep `=` in their paths and queries. A URL-shaped
+label without a query or fragment, such as `docs.example.com/guide=https://docs.example.com/new-guide`,
+still labels that destination; use `https://` at the start to include that entire text in a URL instead.
+Bare URLs with ports require `https://`. Dotted numbers such as `202.555.0123` require `tel:` to dial,
+or `https://` for a numeric website host. The page reads the service
 from each URL's host (the longest match of a host list in `public_bots/bot_links.py`: X, Instagram, TikTok, 抖音,
 YouTube, 小红书, 微博, LINE, KakaoTalk, LinkedIn, GitHub and about a hundred more) and draws its monochrome mark, never chosen by the
 label; other hosts get a globe, `mailto:` an envelope, `tel:` a phone. Under the label it shows where the link
