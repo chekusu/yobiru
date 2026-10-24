@@ -404,6 +404,50 @@ CHANGE_TABLES = (
     change_trigger("connector_change_bot", "UPDATE ON bots", "NEW.id"),
 )
 
+# Public activity counts for the card and the human page. A bot's `messages` is what it sent: messages to other bots,
+# its owner's notes in its conversations and the answers it delivered. Triggers keep it in the writing transaction, so
+# retention deleting old messages never lowers it. Additive like the tables above: created once with a backfill from
+# the messages still stored, in the same transaction as its triggers, so a message is neither missed nor counted twice
+# while other gateway processes start.
+STATS_TABLE = "CREATE TABLE IF NOT EXISTS bot_stats (bot_id TEXT PRIMARY KEY, messages INTEGER NOT NULL)"
+
+
+def stats_bump(expr):
+    return ("INSERT INTO bot_stats(bot_id, messages) VALUES(%s, 1) "
+            "ON CONFLICT(bot_id) DO UPDATE SET messages=messages+1; " % expr)
+
+
+STATS_TRIGGERS = (
+    "CREATE TRIGGER IF NOT EXISTS bot_stats_sent AFTER INSERT ON messages "
+    "WHEN NEW.author='caller' AND substr(NEW.actor_id, 1, 4)='bot_' BEGIN %sEND" % stats_bump("NEW.actor_id"),
+    "CREATE TRIGGER IF NOT EXISTS bot_stats_owner AFTER INSERT ON messages WHEN NEW.author='owner' "
+    "BEGIN %sEND" % stats_bump("NEW.bot_id"),
+    "CREATE TRIGGER IF NOT EXISTS bot_stats_answer AFTER UPDATE OF state ON messages "
+    "WHEN NEW.state='completed' AND OLD.state IS NOT 'completed' AND NEW.result IS NOT NULL "
+    "BEGIN %sEND" % stats_bump("NEW.bot_id"),
+)
+STATS_BACKFILL = (
+    "INSERT INTO bot_stats(bot_id, messages) SELECT who, COUNT(*) FROM ("
+    "SELECT actor_id AS who FROM messages WHERE author='caller' AND substr(actor_id, 1, 4)='bot_' "
+    "UNION ALL SELECT bot_id FROM messages WHERE author='owner' "
+    "UNION ALL SELECT bot_id FROM messages WHERE state='completed' AND result IS NOT NULL) GROUP BY who")
+
+
+def ensure_stats(db):
+    """The stats table (backfilled the first time) and its triggers; `db` is in autocommit mode."""
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_stats'").fetchone() is None:
+            db.execute(STATS_TABLE)
+            db.execute(STATS_BACKFILL)
+        for statement in STATS_TRIGGERS:
+            db.execute(statement)
+        db.execute("COMMIT")
+    except BaseException:
+        db.execute("ROLLBACK")
+        raise
+
+
 # schema 1 -> 2: new columns with defaults, the follow graph and binding checks. Run as single statements
 # inside one IMMEDIATE transaction (never executescript, which commits on its own).
 MIGRATION_1_2 = [
@@ -657,6 +701,7 @@ class Store(object):
             db.execute(PROFILE_TABLE)
             for statement in INBOX_TABLES + SWEEP_INDEXES + CHANGE_TABLES:
                 db.execute(statement)
+            ensure_stats(db)
         finally:
             db.close()
         self._idle, self._idle_lock = [], threading.Lock()
@@ -1737,6 +1782,16 @@ def profile_fields(cfg, db, bot):
     return {"links": links, "avatar": avatar}
 
 
+def public_stats(db, bot_id):
+    """The card's activity counts: messages the bot sent (see STATS_TABLE), followers (bots following it) and
+    friends (followers it follows back). Counts only, never who."""
+    row = db.execute("SELECT messages FROM bot_stats WHERE bot_id=?", (bot_id,)).fetchone()
+    followers = db.execute("SELECT COUNT(*) FROM follows WHERE dst=? AND state='active'", (bot_id,)).fetchone()[0]
+    friends = db.execute("SELECT COUNT(*) FROM follows a JOIN follows b ON b.src=a.dst AND b.dst=a.src "
+                         "WHERE a.dst=? AND a.state='active' AND b.state='active'", (bot_id,)).fetchone()[0]
+    return {"messages": row["messages"] if row is not None else 0, "followers": followers, "friends": friends}
+
+
 def bot_card(cfg, db, bot, now=None):
     """The machine-readable card behind a share link: public facts only, no machine, session, agent, routine,
     resource or owner details. Chat delivery is a coarse projection: binding configured, declared tier, and how
@@ -1765,6 +1820,7 @@ def bot_card(cfg, db, bot, now=None):
                     "conversations": "POST /v1/bots/%s/conversations" % bot["id"],
                     "mcp": base + "/mcp" if cfg["mcp"]["enabled"] else None},
             "connect": "yobiru public connect %s/@%s" % (base, bot["handle"]),
+            "stats": public_stats(db, bot["id"]),
             **profile_fields(cfg, db, bot)}
 
 
@@ -5302,7 +5358,7 @@ def make_handler(api):
             self._route = "-"
             try:
                 url = urllib.parse.urlsplit(self.path)
-                path, self._html = url.path, None
+                path, self._html, self._agent = url.path, None, False
                 avatar = AVATAR_RE.match(path) if self.command == "GET" else None
                 if avatar is not None and not url.query:
                     return self.serve_avatar(avatar)
@@ -5368,6 +5424,9 @@ def make_handler(api):
                     status, obj = self.wait_for_change(req, handle, status, obj)
                 if name == "share_card" and self._html:
                     card = {k: v for k, v in obj.items() if k != "ok"}
+                    if self._agent:
+                        return self.reply_page(status, lambda nonce: P.render_agent_page(card, nonce),
+                                               card["address"] + ".json")
                     return self.reply_page(status, lambda nonce: P.render_profile(card, self._html, url.path, nonce),
                                            card["address"] + ".json")
                 self.reply(status, obj, {"Vary": "Accept"} if share is not None else None)
@@ -5434,8 +5493,8 @@ def make_handler(api):
 
         def share_mode(self, share, url):
             """A share link answers JSON (the card) unless the caller prefers HTML: `/@ref.json` and `?format=json`
-            always mean JSON, `?format=html` always means the page. Only `format` and `lang` are accepted here.
-            Returns (route path, page language or None for JSON)."""
+            always mean JSON, `?format=html` always means the page for people. Only `format` and `lang` are accepted
+            here. Returns (route path, page language or None for JSON) and sets `_agent` for the agent page."""
             if url.fragment:
                 raise Fail(400, "query_not_supported")
             try:
@@ -5450,6 +5509,9 @@ def make_handler(api):
             if share.group("json") or fmt == "json":
                 return path, None
             if fmt == "html" or P.prefers_html(self.headers.get("Accept")):
+                # An AI agent or HTTP library that asks for HTML gets the page written for agents; `?format=html`
+                # always means the page for people.
+                self._agent = fmt != "html" and P.is_agent(self.headers.get("User-Agent"))
                 return path, P.pick_lang(q.get("lang", [None])[0], self.headers.get("Accept-Language"))
             return path, None
 
@@ -5481,7 +5543,7 @@ def make_handler(api):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
-            self.send_header("Vary", "Accept, Accept-Language")
+            self.send_header("Vary", "Accept, Accept-Language, User-Agent")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -5873,6 +5935,7 @@ def cmd_init(home, a):
         db.execute(PROFILE_TABLE)
         for statement in INBOX_TABLES + SWEEP_INDEXES + CHANGE_TABLES:
             db.execute(statement)
+        ensure_stats(db)
         db.execute("BEGIN IMMEDIATE")
         db.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,))
         db.execute("INSERT INTO meta(key, value) VALUES('created_at', ?)", (C.iso(now),))

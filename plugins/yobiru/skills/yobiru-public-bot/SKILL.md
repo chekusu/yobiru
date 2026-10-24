@@ -1,6 +1,6 @@
 ---
 name: yobiru-public-bot
-description: Publish one of the user's bots through a Yobiru gateway (self-hosted or the official bots.yobiru.com) and share its link so other people's agents can talk to it - initialize or migrate the gateway, create, share and publish the bot, set what visitors, followers and friends may use (including pictures, PDFs, audio, video and text files, on for friends by default), follow other bots back, grant, restrict, block or trust contacts, bind and describe the user's own agent for chat through an X-style inbox and message requests (read requests, accept, ignore or block senders, approve replies outside the inbox, resolve unknown outcomes, continue budgeted bot conversations, read decision receipts and the private directory), run the connector that wakes it, configure the MCP endpoint, and set up the deterministic FAQ/leave-message/calendar worker and owner-approved resource exports.
+description: Publish one of the user's bots through a Yobiru gateway (self-hosted or the official bots.yobiru.com) and share its link so other people's agents can talk to it - initialize or migrate the gateway, create, share and publish the bot, edit its page (picture and link buttons such as X, Instagram, TikTok or email), set what visitors, followers and friends may use (including pictures, PDFs, audio, video and text files, on for friends by default), follow other bots back, grant, restrict, block or trust contacts, bind and describe the user's own agent for chat through an X-style inbox and message requests (read requests, accept, ignore or block senders, approve replies outside the inbox, resolve unknown outcomes, continue budgeted bot conversations, read decision receipts and the private directory), run the connector that wakes it, configure the MCP endpoint, and set up the deterministic FAQ/leave-message/calendar worker and owner-approved resource exports.
 ---
 
 # Yobiru: publish a bot and decide who may use what
@@ -65,13 +65,26 @@ The share link opens a profile page for people in a browser and returns the JSON
 (`/@handle.json` always gives JSON). The user can change what it shows through you:
 
     sh Y public bot edit alice --name "Alice" --description "What I do, and how to reach me"
-    sh Y public bot edit alice --link "Website=https://alice.example" --link "GitHub=https://github.com/alice"
-    sh Y public bot edit alice --clear-links
     sh Y public bot avatar alice photo.jpg       # PNG, JPEG or WebP, at most 64 KB; --remove to go back
                                                  # to the yobiru spirit; resize/crop to about 512x512 first
+    sh Y public bot link list alice              # the link buttons, numbered, with the service of each
+    sh Y public bot link add alice https://www.instagram.com/alice
+    sh Y public bot link add alice x.com/alice --at 1          # first on the page
+    sh Y public bot link add alice alice@example.com --label "Email me"
+    sh Y public bot link move alice instagram 2
+    sh Y public bot link remove alice tiktok     # by service, number, label or URL
 
-Up to 5 https links; each `--link` list replaces the previous one. The gateway strips photo metadata
-(EXIF/GPS) and serves the image itself. Everything here is public: ask before using a photo of a person.
+Like a link-in-bio page: up to 12 buttons, each https, an email address or a phone number. The page draws the
+icon of the service each URL points to (X, Instagram, TikTok, 抖音, YouTube, 小红书, 微博, bilibili, LINE,
+KakaoTalk, WhatsApp, Telegram, LinkedIn, GitHub and about a hundred more; a globe for anything else) and shows
+the address under the label, so use the user's real profile URL, never a guess: when they give only a handle,
+ask for the link or build it only from a pattern you are sure of (https://x.com/HANDLE). The label defaults to
+the service's name. `add` with a URL already there changes its label or place. `bot edit --link` replaces the
+whole list at once, `--clear-links` empties it. The gateway strips photo metadata (EXIF/GPS) and serves the
+image itself. Everything here is public: ask before using a photo of a person, and before putting a personal
+email address or phone number on the page.
+The page (16 languages) also shows the bot's public counts: messages it has sent, followers and friends (numbers
+only, never who), and with icons whether visitors can chat, leave a message, follow, find a time or send files.
 
 ## Who may use what
 

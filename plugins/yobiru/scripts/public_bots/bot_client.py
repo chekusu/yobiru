@@ -17,8 +17,8 @@ Roles (each with its own credential; see docs/PUBLIC_BOTS.md):
              decisions, verify, attachments allow|disallow|roots|save, mcp (a local stdio MCP server),
              friend list|avatar|link|unlink|sync|send (one contact bot per friend in the owner's own host)
   owner      owner login|bots|directory|contacts|contact|followers|following|conversations|conversation|reply|
-             continue|decisions|decision|delete-conversation, bot create|show|share|edit|publish|unpublish|source|
-             sources|source-revoke, worker bind|revoke, connector bind, binding show|check|describe,
+             continue|decisions|decision|delete-conversation, bot create|show|share|edit|link|avatar|publish|unpublish|
+             source|sources|source-revoke, worker bind|revoke, connector bind, binding show|check|describe,
              verifier bind, review ...
   native     job list|claim|show|heartbeat|reply|fail|resource|attachments|notices|notice|notice-ack|check-in|
              setup (the owner's own agent, through the bot's native binding credential; replies are drafts the
@@ -52,6 +52,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 import bot_common as C  # noqa: E402
 import bot_e2e as E  # noqa: E402
+import bot_links as L  # noqa: E402
 import bot_mcp as M  # noqa: E402
 
 STATE_DIR = "public"
@@ -2185,12 +2186,88 @@ def register_source(st, base, token, bot_id, handle, label):
     return {"bot_id": bot_id, "credential_id": obj["credential_id"], "stored": True}
 
 
+def link_item(url, label=None):
+    """{label, url} from a link as people type it (an https URL, x.com/me, me@example.com, +81 90 1234 5678); the
+    label defaults to the service's name (X, Instagram, 小红书), the address or the number."""
+    try:
+        url = L.normalize(url)
+    except ValueError as e:
+        die(str(e).replace("links: ", "link: "))
+    return {"label": (label or "").strip() or L.default_label(url), "url": url}
+
+
 def link_arg(value):
-    """'Label=https://...' from --link."""
+    """'Label=URL' or a bare URL from --link."""
+    value = value.strip()
     label, sep, url = value.partition("=")
-    if not sep or not label.strip() or not url.startswith("https://"):
-        die("--link: use 'Label=https://example.com/...'")
-    return {"label": label.strip(), "url": url.strip()}
+    if not sep or "://" in label or label.lower().startswith(("mailto:", "tel:")):
+        label, url = "", value
+    else:
+        try:
+            bare = L.normalize(value)
+        except ValueError:
+            bare = None
+        if bare and bare.startswith("mailto:"):
+            die("--link: ambiguous email with '='; use mailto:alice=work@example.com for an address "
+                "or Mail=mailto:me@example.com for a labeled link")
+        # Even an invalid bare host/path must not be split into a different destination.
+        if re.match(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:[/?#]|\Z)", value):
+            label, url = "", value
+    if not url.strip():
+        die("--link: use 'Label=https://example.com/...' or just the URL")
+    return link_item(url, label)
+
+
+def link_view(links):
+    return [{"n": i + 1, "label": item["label"], "url": item["url"], "platform": L.platform_of(item["url"])}
+            for i, item in enumerate(links)]
+
+
+def link_index(links, which):
+    """The position of one link: its number in `bot link list`, its URL, its label or its service (x, 小红书)."""
+    which = (which or "").strip()
+    if which.isdigit() and 1 <= int(which) <= len(links):
+        return int(which) - 1
+    try:
+        url = L.normalize(which)
+    except ValueError:
+        url = None
+    for test in (lambda item: item["url"] == url, lambda item: item["label"].lower() == which.lower(),
+                 lambda item: L.platform_of(item["url"]) == L.platform_named(which)):
+        hits = [i for i, item in enumerate(links) if test(item)]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            die("%r matches %d links (%s); give its number or URL instead" % (
+                which, len(hits), ", ".join("%d %s" % (i + 1, links[i]["url"]) for i in hits)))
+    die("no link %r on this bot's page; see: yobiru public bot link list BOT" % which)
+
+
+def cmd_bot_link(base, token, bot_id, a):
+    """The link buttons on the bot's page, one at a time: the full list is read, changed here and written back."""
+    bot = call(base, "GET", "/v1/owner/bots/%s" % bot_id, None, token)
+    links = [{"label": item["label"], "url": item["url"]} for item in bot.get("links") or []]
+    if a.link_cmd == "list":
+        out({"ok": True, "bot": bot["handle"], "page": bot["address"], "links": link_view(links)})
+        return
+    if a.link_cmd == "add":
+        item = link_item(a.url, a.label)
+        same = [i for i, old in enumerate(links) if old["url"] == item["url"]]
+        if same:
+            old = links.pop(same[0])
+            item["label"] = (a.label or "").strip() or old["label"]
+            at = same[0] if a.at is None else a.at - 1
+        else:
+            at = len(links) if a.at is None else a.at - 1
+        links.insert(max(0, min(at, len(links))), item)
+    elif a.link_cmd == "remove":
+        links.pop(link_index(links, a.which))
+    elif a.link_cmd == "move":
+        item = links.pop(link_index(links, a.which))
+        links.insert(max(0, min(a.to - 1, len(links))), item)
+    obj = call(base, "PATCH", "/v1/owner/bots/%s" % bot_id, {"links": links}, token)
+    out({"ok": True, "bot": obj.get("handle", bot["handle"]), "page": obj.get("address", bot["address"]),
+         "links": link_view(obj.get("links", links))})
 
 
 def cmd_bot(st, a):
@@ -2206,7 +2283,9 @@ def cmd_bot(st, a):
         out(obj)
         return
     bot_id = owner_bot(base, token, a.bot)
-    if a.bot_cmd == "show":
+    if a.bot_cmd == "link":
+        cmd_bot_link(base, token, bot_id, a)
+    elif a.bot_cmd == "show":
         out(call(base, "GET", "/v1/owner/bots/%s" % bot_id, None, token))
     elif a.bot_cmd == "share":
         bot = call(base, "GET", "/v1/owner/bots/%s" % bot_id, None, token)
@@ -4081,9 +4160,34 @@ def main(argv=None):
     p.add_argument("--contact-requests", choices=("on", "off"))
     p.add_argument("--require-e2e", choices=("on", "off"),
                    help="refuse messages that are not end-to-end encrypted (MCP clients without a key cannot write)")
-    p.add_argument("--link", action="append", metavar="LABEL=URL",
-                   help="a link button on the bot's page (https, up to 5; replaces the current list)")
+    p.add_argument("--link", action="append", metavar="[LABEL=]URL",
+                   help="a link button on the bot's page (https, mailto: or tel:, up to 12; replaces the whole list; "
+                        "use mailto: for email addresses containing '=' or labeled email links; "
+                        "use https:// or mailto: when text could be either a website or email; "
+                        "`bot link` changes one at a time)")
     p.add_argument("--clear-links", action="store_true", help="remove every link from the bot's page")
+    p.add_argument("--gateway")
+    p = bs.add_parser("link", help="the link buttons on the bot's page (X, Instagram, 小红书, email...): list, add, "
+                                   "remove or move one; each gets its service's icon")
+    ls = p.add_subparsers(dest="link_cmd")
+    ls.required = True
+    p = ls.add_parser("list")
+    p.add_argument("bot")
+    p.add_argument("--gateway")
+    p = ls.add_parser("add", help="add a link (or change the label or place of one already there)")
+    p.add_argument("bot")
+    p.add_argument("url", help="https://x.com/me, x.com/me, me@example.com or +81 90 1234 5678")
+    p.add_argument("--label", help="the text on the button (default: the service's name, X, Instagram, 小红书...)")
+    p.add_argument("--at", type=int, help="its place, from 1 (default: last)")
+    p.add_argument("--gateway")
+    p = ls.add_parser("remove")
+    p.add_argument("bot")
+    p.add_argument("which", help="its number in `bot link list`, its URL, its label or its service (x, instagram)")
+    p.add_argument("--gateway")
+    p = ls.add_parser("move")
+    p.add_argument("bot")
+    p.add_argument("which", help="its number, URL, label or service")
+    p.add_argument("to", type=int, help="the new place, from 1")
     p.add_argument("--gateway")
     p = bs.add_parser("avatar", help="set the picture on the bot's page (PNG, JPEG or WebP, at most 64 KB) or --remove")
     p.add_argument("bot")

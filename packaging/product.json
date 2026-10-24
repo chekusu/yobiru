@@ -2,7 +2,7 @@
   "id": "yobiru",
   "displayName": "Yobiru",
   "nativeName": "ヨビル",
-  "version": "0.7.10",
+  "version": "0.7.11",
   "publisher": "Chekusu",
   "repository": "https://github.com/chekusu/yobiru",
   "license": "MIT",
@@ -78,12 +78,14 @@
       "public_bots/bot_blobs.py": "scripts/public_bots/bot_blobs.py",
       "public_bots/bot_common.py": "scripts/public_bots/bot_common.py",
       "public_bots/bot_e2e.py": "scripts/public_bots/bot_e2e.py",
+      "public_bots/bot_links.py": "scripts/public_bots/bot_links.py",
       "public_bots/bot_gateway.py": "scripts/public_bots/bot_gateway.py",
       "public_bots/bot_client.py": "scripts/public_bots/bot_client.py",
       "public_bots/bot_calendar.py": "scripts/public_bots/bot_calendar.py",
       "public_bots/bot_resources.py": "scripts/public_bots/bot_resources.py",
       "public_bots/bot_mcp.py": "scripts/public_bots/bot_mcp.py",
       "public_bots/bot_profile.py": "scripts/public_bots/bot_profile.py",
+      "public_bots/bot_profile_i18n.py": "scripts/public_bots/bot_profile_i18n.py",
       "docs/PUBLIC_BOTS.md": "docs/PUBLIC_BOTS.md"
     },
     "license": {

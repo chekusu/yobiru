@@ -170,8 +170,9 @@ class AdministrationTests(GatewayCase):
         self.assertEqual({"ok", "type", "card_version", "issuer", "bot_id", "handle", "address", "id_address",
                           "display_name", "description", "capabilities", "capabilities_note", "accepts_visitors",
                           "accepts_followers", "accepts_contact_requests", "chat", "e2e", "identity", "api",
-                          "connect", "links", "avatar"},
+                          "connect", "stats", "links", "avatar"},
                          set(card))
+        self.assertEqual({"messages": 0, "followers": 0, "friends": 0}, card["stats"], "counts only, never who")
         self.assertTrue(card["address"].endswith("/@" + self.handle()))
         self.assertEqual(card, self.gw.ok("GET", "/@" + self.handle()), "the share link serves the same card")
         self.assertEqual(card, self.gw.ok("GET", "/@" + bot_id))
@@ -249,11 +250,13 @@ class ProfilePageTests(GatewayCase):
         self.assertEqual(200, status)
         self.assertTrue(hdrs["content-type"].startswith("text/html"))
         text = body.decode("utf-8")
-        self.assertIn('<html lang="zh-CN">', text)
+        self.assertIn('<html lang="zh-CN" dir="ltr">', text)
         self.assertIn("Synthetic " + h, text)
         self.assertIn('rel="alternate" type="application/json" href="%s.json"' % card["address"], text)
         self.assertIn("%s.json" % card["address"], hdrs["link"])
-        self.assertIn("yobiru public connect " + card["address"], text)
+        comment = text.split("<!--", 1)[1].split("-->", 1)[0]
+        self.assertIn("yobiru public connect " + card["address"], comment, "agents find the steps in a comment")
+        self.assertNotIn("yobiru public connect", text.split("</head>", 1)[1].replace(comment, ""))
         self.assertNotIn("<script>alert", text, "the description is escaped")
         self.assertIn("Hi &lt;script&gt;alert(1)&lt;/script&gt; &amp; welcome", text)
         embedded = text.split('<script type="application/json" id="yobiru-card">', 1)[1].split("</script>", 1)[0]
@@ -262,9 +265,9 @@ class ProfilePageTests(GatewayCase):
         self.assertEqual(2, text.count('nonce="%s"' % nonce), "only the page's own style and script run")
         self.assertIn("frame-ancestors 'none'", hdrs["content-security-policy"])
 
-        self.assertIn('<html lang="ja">', page(self.gw, "/@%s?lang=ja" % h, BROWSER)[2].decode("utf-8"))
-        self.assertIn('<html lang="en">', page(self.gw, "/@" + h, {"Accept": "text/html"})[2].decode("utf-8"))
-        self.assertIn('<html lang="en">', page(self.gw, "/@%s?format=html&lang=en" % h)[2].decode("utf-8"))
+        self.assertIn('<html lang="ja" dir="ltr">', page(self.gw, "/@%s?lang=ja" % h, BROWSER)[2].decode("utf-8"))
+        self.assertIn('<html lang="en" dir="ltr">', page(self.gw, "/@" + h, {"Accept": "text/html"})[2].decode())
+        self.assertIn('<html lang="en" dir="ltr">', page(self.gw, "/@%s?format=html&lang=en" % h)[2].decode())
         self.assertTrue(page(self.gw, "/@" + bot_id, BROWSER)[1]["content-type"].startswith("text/html"))
 
     def test_missing_bots_and_odd_queries(self):
@@ -290,7 +293,9 @@ class ProfilePageTests(GatewayCase):
         self.assertEqual(links, self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"links": links}, owner)["links"])
         for bad in ([{"label": "x", "url": "http://example.com"}], [{"label": "x", "url": "javascript:alert(1)"}],
                     [{"label": "x", "url": "https://user:pw@example.com"}], [{"label": "", "url": "https://a.example"}],
-                    [{"label": "x", "url": "https://a.example", "more": 1}], [links[0]] * 6, "https://a.example"):
+                    [{"label": "x", "url": "https://a.example", "more": 1}], [links[0]] * 13, "https://a.example",
+                    [{"label": "x", "url": "mailto:a@example.com?subject=hi"}], [{"label": "x", "url": "tel:12"}],
+                    [{"label": "x", "url": "mailto:a@example.com,b@example.com"}]):
             status, obj = self.gw.call("PATCH", "/v1/owner/bots/%s" % bot_id, {"links": bad}, owner)
             self.assertEqual((400, "invalid_links"), (status, obj.get("error")), bad)
         self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"], "a refused edit changes nothing")
@@ -310,7 +315,8 @@ class ProfilePageTests(GatewayCase):
         self.assertEqual(404, page(self.gw, "/@%s/avatar/%s" % (bot_id, "0" * 16))[0])
         text = page(self.gw, "/@" + h, BROWSER)[2].decode("utf-8")
         self.assertIn('<img class="avatar" src="%s"' % card["avatar"], text)
-        self.assertIn('href="https://github.com/x" rel="noopener nofollow ugc me">GitHub</a>', text)
+        self.assertIn('href="https://github.com/x" rel="noopener nofollow ugc me" data-platform="github">', text)
+        self.assertIn('<bdi class="lb">GitHub</bdi>', text)
 
         for bad in (b"<svg xmlns='http://www.w3.org/2000/svg'/>", b"GIF89a" + b"\x00" * 40, png(8, 8),
                     png(64, 64) + b"\x00" * 70000, b"\x89PNG\r\n\x1a\n"):
@@ -349,6 +355,168 @@ class ProfilePageTests(GatewayCase):
         card = self.gw.ok("GET", "/@" + h)
         self.assertEqual(([], None), (card["links"], card["avatar"]))
         self.assertNotEqual(0, cli(home, "bot", "edit", "@" + h, "--link", "nope")[0])
+        code, out, err = cli(home, "bot", "edit", "@" + h, "--link", "https://www.youtube.com/watch?v=abc",
+                             "--link", "Mail=mailto:me@example.com")
+        self.assertEqual(0, code, err)
+        self.assertEqual([("YouTube", "https://www.youtube.com/watch?v=abc"), ("Mail", "mailto:me@example.com")],
+                         [(l["label"], l["url"]) for l in out["links"]], "a bare URL keeps its query")
+
+    def test_cli_keeps_equals_in_bare_web_destinations(self):
+        from support.public_harness import cli
+        h = self.handle()
+        self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        for value, expected in (("example.com/page?ref=friend.example", "https://example.com/page?ref=friend.example"),
+                                ("www.youtube.com/watch?v=abc", "https://www.youtube.com/watch?v=abc"),
+                                ("example.com/path=friend.example", "https://example.com/path=friend.example"),
+                                ("example.com?ref=friend.example", "https://example.com?ref=friend.example"),
+                                ("example.com#ref=friend.example", "https://example.com#ref=friend.example"),
+                                ("example.com/page?ref=https://friend.example",
+                                 "https://example.com/page?ref=https://friend.example"),
+                                ("https://example.com/page?email=alice@example.com",
+                                 "https://example.com/page?email=alice@example.com"),
+                                ("Profile=https://example.com/page?ref=friend.example",
+                                 "https://example.com/page?ref=friend.example"),
+                                ("Profile=example.com/page?ref=friend.example",
+                                 "https://example.com/page?ref=friend.example")):
+            with self.subTest(value=value):
+                code, out, err = cli(home, "bot", "edit", "@" + h, "--link", value)
+                self.assertEqual(0, code, err)
+                self.assertEqual([expected], [link["url"] for link in out["links"]])
+                self.assertEqual(out["links"], self.gw.ok("GET", "/@" + h)["links"])
+        links = self.gw.ok("GET", "/@" + h)["links"]
+        code, _, _ = cli(home, "bot", "edit", "@" + h, "--link", "example.com/invalid path=friend.example")
+        self.assertNotEqual(0, code)
+        self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"], "an invalid bare URL is not reinterpreted")
+
+    def test_cli_requires_unambiguous_equals_in_email_links(self):
+        from support.public_harness import cli
+        h = self.handle()
+        self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        code, out, err = cli(home, "bot", "edit", "@" + h, "--link", "mailto:alice=work@example.com",
+                             "--link", "Mail=mailto:me@example.com", "--link", "mailto:alice.smith/notes@example.com")
+        self.assertEqual(0, code, err)
+        links = [{"label": "alice=work@example.com", "url": "mailto:alice=work@example.com"},
+                 {"label": "Mail", "url": "mailto:me@example.com"},
+                 {"label": "alice.smith/notes@example.com", "url": "mailto:alice.smith/notes@example.com"}]
+        self.assertEqual(links, out["links"])
+        self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"])
+        for value in ("alice=work@example.com", "Mail=me@example.com", "alice.smith/notes@example.com",
+                      "example.com/page?email=alice@example.com"):
+            with self.subTest(value=value):
+                code, _, err = cli(home, "bot", "edit", "@" + h, "--link", value)
+                self.assertNotEqual(0, code, "ambiguous email links must not change the destination")
+                self.assertIn("ambiguous", err)
+                self.assertIn("mailto:", err)
+                self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"])
+
+    def test_cli_generated_link_labels_fit_gateway_limit(self):
+        from support.public_harness import cli
+        h = self.handle()
+        self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        email40, email41 = "a" * 28 + "@example.com", "a" * 29 + "@example.com"
+        host40, host41 = "a" * 28 + ".example.com", "a" * 29 + ".example.com"
+        for value, url, label in ((email40, "mailto:" + email40, email40),
+                                  (email41, "mailto:" + email41, "Email"),
+                                  (host40 + "/profile", "https://" + host40 + "/profile", host40),
+                                  (host41 + "/profile", "https://" + host41 + "/profile", "Website")):
+            for args in (("link", "add", "@" + h, value), ("edit", "@" + h, "--link", value)):
+                with self.subTest(value=value, command=args[0]):
+                    code, out, err = cli(home, "bot", *args)
+                    self.assertEqual(0, code, err)
+                    links = [{"label": item["label"], "url": item["url"]} for item in out["links"]]
+                    self.assertEqual({"label": label, "url": url}, links[-1])
+                    self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"])
+
+    def test_cli_explicit_link_labels_keep_gateway_limit(self):
+        from support.public_harness import cli
+        h = self.handle()
+        self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        address = "a" * 29 + "@example.com"
+        for length in (40, 41):
+            label = "L" * length
+            for args in (("link", "add", "@" + h, address, "--label", label),
+                         ("edit", "@" + h, "--link", label + "=mailto:" + address)):
+                with self.subTest(length=length, command=args[0]):
+                    code, out, err = cli(home, "bot", *args)
+                    if length == 40:
+                        self.assertEqual(0, code, err)
+                        self.assertEqual(label, out["links"][0]["label"])
+                    else:
+                        self.assertNotEqual(0, code, "explicit labels must not be silently shortened")
+                        self.assertEqual("invalid_links", out["error"])
+                    self.assertEqual([{"label": "L" * 40, "url": "mailto:" + address}],
+                                     self.gw.ok("GET", "/@" + h)["links"])
+
+    def test_cli_rejects_tel_parameters_without_changing_links(self):
+        from support.public_harness import cli
+        h = self.handle()
+        bot_id = self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        links = [{"label": "Website", "url": "https://example.com/profile"}]
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"links": links}, self.gw.owner_token)
+        for value in ("tel:+1-555-123-4567;ext=89", "tel:5550123;phone-context=+1-212"):
+            for args in (("link", "add", "@" + h, value), ("edit", "@" + h, "--link", value)):
+                with self.subTest(value=value, command=args[0]):
+                    code, _, err = cli(home, "bot", *args)
+                    self.assertNotEqual(0, code, "unsupported tel parameters must not become subscriber digits")
+                    self.assertIn("tel:", err)
+                    self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"])
+        value = "tel:+1 (555) 123-4567"
+        for args in (("link", "add", "@" + h, value), ("edit", "@" + h, "--link", value)):
+            code, out, err = cli(home, "bot", *args)
+            self.assertEqual(0, code, err)
+            self.assertEqual("tel:+1-555-123-4567", out["links"][-1]["url"])
+            self.assertEqual("tel:+1-555-123-4567", self.gw.ok("GET", "/@" + h)["links"][-1]["url"])
+
+    def test_cli_changes_one_link_at_a_time(self):
+        from support.public_harness import cli
+        h = self.handle()
+        self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        seen = lambda out: [(l["n"], l["label"], l["url"], l["platform"]) for l in out["links"]]  # noqa: E731
+        for args in (("x.com/me",), ("https://www.instagram.com/me", "--label", "IG"), ("+81 90 1234 5678",),
+                     ("me@example.com", "--at", "1")):
+            code, out, err = cli(home, "bot", "link", "add", "@" + h, *args)
+            self.assertEqual(0, code, err)
+        self.assertEqual([(1, "me@example.com", "mailto:me@example.com", "email"),
+                          (2, "X", "https://x.com/me", "x"), (3, "IG", "https://www.instagram.com/me", "instagram"),
+                          (4, "+81-90-1234-5678", "tel:+81-90-1234-5678", "phone")], seen(out))
+        code, out, err = cli(home, "bot", "link", "add", "@" + h, "https://x.com/me", "--label", "X (Twitter)")
+        self.assertEqual((0, ["me@example.com", "X (Twitter)", "IG", "+81-90-1234-5678"]),
+                         (code, [l["label"] for l in out["links"]]), "the same URL again changes it, not a copy")
+        code, out, err = cli(home, "bot", "link", "move", "@" + h, "instagram", "1")
+        self.assertEqual((0, "IG"), (code, out["links"][0]["label"]), err)
+        code, out, err = cli(home, "bot", "link", "remove", "@" + h, "twitter")
+        self.assertEqual(0, code, err)
+        code, out, err = cli(home, "bot", "link", "remove", "@" + h, "3")
+        self.assertEqual(0, code, err)
+        code, out, err = cli(home, "bot", "link", "list", "@" + h)
+        self.assertEqual((0, ["https://www.instagram.com/me", "mailto:me@example.com"]),
+                         (code, [l["url"] for l in out["links"]]), err)
+        self.assertEqual(["https://www.instagram.com/me", "mailto:me@example.com"],
+                         [l["url"] for l in self.gw.ok("GET", "/@" + h)["links"]], "the public card changed")
+        cli(home, "bot", "link", "add", "@" + h, "https://instagram.com/second", "--label", "IG 2")
+        code, _, err = cli(home, "bot", "link", "remove", "@" + h, "instagram")
+        self.assertNotEqual(0, code)
+        self.assertIn("matches 2 links", err)
+        for bad in (("add", "@" + h, "javascript:alert(1)"), ("add", "@" + h, "@me"), ("remove", "@" + h, "tiktok")):
+            self.assertNotEqual(0, cli(home, "bot", "link", *bad)[0], bad)
 
     def test_share_links_from_the_page_still_parse(self):
         for link in ("https://gw.example/@guoyu.json", "https://gw.example/@guoyu?lang=zh",
