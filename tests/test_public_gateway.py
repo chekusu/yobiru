@@ -595,7 +595,7 @@ class ProfilePageTests(GatewayCase):
                                 str(self.gw.home / "owner.token"))[0])
         code, out, err = cli(home, "bot", "edit", "@" + h, "--agents", "Grok Bot, claude code，Codex、grok")
         self.assertEqual((0, ["grok", "claude_code", "codex"]), (code, [a["id"] for a in out["agents"]]), err)
-        self.assertEqual(["Grok", "Claude Code", "Codex"], [a["name"] for a in self.gw.ok("GET", "/@" + h)["agents"]])
+        self.assertEqual(["Grok Bot", "Claude Code", "Codex"], [a["name"] for a in self.gw.ok("GET", "/@" + h)["agents"]])
         code, _, err = cli(home, "bot", "edit", "@" + h, "--agents", "Grok, Skynet")
         self.assertNotEqual(0, code)
         self.assertIn("unknown agent 'Skynet'", err)

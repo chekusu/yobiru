@@ -2224,7 +2224,7 @@ def link_arg(value):
 
 
 def agents_arg(value):
-    """Agent ids from --agents: names as people say them ("Grok, Claude Code, 豆包"), in order, each once; an empty
+    """Agent ids from --agents: names as people say them ("Grok Bot, Claude Code, 豆包"), in order, each once; an empty
     value clears the list."""
     ids = []
     for name in re.split(r"[,，、;]+", value or ""):
@@ -4192,7 +4192,7 @@ def main(argv=None):
     p.add_argument("--clear-links", action="store_true", help="remove every link from the bot's page")
     p.add_argument("--agents", metavar="NAMES",
                    help="the personal agents the bot's page shows, with their logos, in order (the first is also "
-                        "on the picture): for example \"Grok, Claude Code, Codex\"; replaces the list, \"\" clears "
+                        "on the picture): for example \"Grok Bot, Claude Code, Codex\"; replaces the list, \"\" clears "
                         "it; public, so only with the user's yes")
     p.add_argument("--gateway")
     p = bs.add_parser("link", help="the link buttons on the bot's page (X, Instagram, 小红书, email...): list, add, "

@@ -417,18 +417,20 @@ class AgentTests(ProfilePageCase):
         owner = self.gw.ok("PATCH", path, {"agents": ["grok", "claude_code", "codex"]}, self.gw.owner_token)
         self.assertEqual(["grok", "claude_code", "codex"], [a["id"] for a in owner["agents"]])
         card = self.gw.ok("GET", "/@" + h)
-        self.assertEqual([{"id": "grok", "name": "Grok"}, {"id": "claude_code", "name": "Claude Code"},
+        self.assertEqual([{"id": "grok", "name": "Grok Bot"}, {"id": "claude_code", "name": "Claude Code"},
                           {"id": "codex", "name": "Codex"}], card["agents"])
         _, _, text = self.page("/@%s?lang=zh" % h)
+        view_box, _, (mark,), _ = A.mark("grok")
         badge = re.search(r'<a class="on ag" href="#agents" aria-label="([^"]+)" title="[^"]+"><svg class="b" '
-                          r'viewBox="0 0 24 24" fill-rule="evenodd" aria-hidden="true"><path d="([^"]+)"/>', text)
-        self.assertEqual(("已连接的 agent：Grok", A.mark("grok")[2][0]), badge.groups(), "the first agent is on the picture")
+                          r'viewBox="%s" fill-rule="evenodd" aria-hidden="true"><path d="([^"]+)"/>'
+                          % re.escape(view_box), text)
+        self.assertEqual(("已连接的 agent：Grok Bot", mark), badge.groups(), "the first agent is on the picture")
         self.assertEqual(["grok", "claude_code", "codex"], re.findall(r'<li data-agent="([a-z_]+)">', text))
         self.assertIn('<h2 id="agents-h">已连接的 agent</h2>', text)
         self.assertIn("Claude Code", visible(text))
         self.assertLess(text.index('id="agents"'), text.index('class="card connect"'))
         agent = self.page("/@" + h, user_agent=CLAUDE)[2]
-        self.assertIn("agents the owner shows (the owner&#x27;s statement): Grok, Claude Code, Codex", agent)
+        self.assertIn("agents the owner shows (the owner&#x27;s statement): Grok Bot, Claude Code, Codex", agent)
 
         self.gw.ok("PATCH", path, {"agents": []}, self.gw.owner_token)
         self.assertEqual([], self.gw.ok("GET", "/@" + h)["agents"])
@@ -470,7 +472,8 @@ class AgentTests(ProfilePageCase):
         self.assertEqual(A.IDS + ("other",), G.HOST_KINDS, "a binding's host kind and a shown agent share names")
         for aid in A.IDS:
             view_box, rule, paths, faint = A.mark(aid)
-            self.assertIn(view_box, ("0 0 24 24", "0 0 100 100"), aid)
+            self.assertIn(view_box, ("0 0 24 24", "0 0 100 100", "-9.94 -9.94 248.41 248.41"),
+                          aid)
             self.assertIn(rule, ("evenodd", "nonzero"), aid)
             self.assertTrue(paths, aid)
             for d in paths:

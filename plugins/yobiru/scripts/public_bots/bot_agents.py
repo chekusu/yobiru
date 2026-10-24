@@ -5,9 +5,10 @@ its mark, the first one also on the picture. The list is what the owner says, li
 check it, and the private host kind of a native binding is never copied into it.
 
 The marks are monochrome product logos from Simple Icons (CC0 1.0, https://simpleicons.org) and Lobe Icons (MIT,
-https://github.com/lobehub/lobe-icons, notice below); Muse's is the Muse Platform icon (platform.muse.ai), as
-pinku.chat draws it. Each mark belongs to its owner; it only says which product an owner uses. Pure functions only
-(stdlib): used by the gateway (checks, the page) and the client (names people type).
+https://github.com/lobehub/lobe-icons, notice below); Grok Bot's is the mark on its own page (x.ai/bot), and Muse's
+the Muse Platform icon (platform.muse.ai), as pinku.chat draws it. Each mark belongs to its owner; it only says which
+product an owner uses. Pure functions only (stdlib): used by the gateway (checks, the page) and the client (names
+people type).
 """
 import re
 
@@ -16,7 +17,7 @@ MAX_AGENTS = 8
 # (id, name, other names people use for it). The names are the products' own; `named` ignores case, spaces, hyphens
 # and underscores, so "Claude Code", "claude-code" and "claude_code" are one agent.
 AGENTS = (
-    ("grok", "Grok", "grok bot, xai, grok agent"),
+    ("grok", "Grok Bot", "grok, xai, grok agent"),
     ("muse", "Muse", "meta muse, meta"),
     ("claude", "Claude", "anthropic, claude ai, claude app"),
     ("claude_code", "Claude Code", "claude cli"),
@@ -74,9 +75,11 @@ def mark(aid):
 
 
 # ---------------------------------------------------------------- product marks (filled, drawn in the text colour)
-# Muse: the Muse Platform icon (platform.muse.ai), from pinku.chat's landing page. Simple Icons 16.35.0, CC0 1.0:
+# Grok Bot: the mark of https://x.ai/bot (inline SVG of 2026-10-24: a head and two eyes, the eyes drawn there in the
+# background colour; joined here into one even-odd path, so the eyes are cut out). Muse: the Muse Platform icon
+# (platform.muse.ai), from pinku.chat's landing page. Simple Icons 16.35.0, CC0 1.0:
 # claude, claude_code, gemini, cursor, opencode, perplexity, copilot, windsurf, cline, kimi, qwen, deepseek. Lobe Icons
-# (@lobehub/icons-static-svg 1.98.0): grok, chatgpt, codex, openclaw, hermes, manus, doubao, under this notice:
+# (@lobehub/icons-static-svg 1.98.0): chatgpt, codex, openclaw, hermes, manus, doubao, under this notice:
 #   MIT License. Copyright (c) 2023 LobeHub.
 #   Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 #   documentation files (the "Software"), to deal in the Software without restriction, including without limitation
@@ -89,14 +92,31 @@ def mark(aid):
 #   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
 #   CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 #   IN THE SOFTWARE.
-_VIEWBOX = {"muse": "0 0 100 100"}
+_VIEWBOX = {"grok": "-9.94 -9.94 248.41 248.41", "muse": "0 0 100 100"}
 _MARKS = {
-    "grok": ("evenodd", ("M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954"
-        "-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42"
-        "l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16."
-        "723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1"
-        "A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1."
-        "199 1.259-1.682 1.925l7.62-6.815",), ()),
+    "grok": ("evenodd", ("M228.54 114.27L228.3 106.8L227.56 99.36L226.35 91.98L224.65 84.7L222.48 77.54L219.84 70.54L2"
+        "16.76 63.73L213.23 57.14L209.28 50.79L204.93 44.71L200.18 38.93L195.07 33.47L189.61 28.36L183.83 23.61L177.7"
+        "6 19.26L171.41 15.31L164.81 11.78L158 8.7L151 6.06L143.85 3.89L136.56 2.2L129.19 0.98L121.74 0.24L114.27 0L1"
+        "06.8 0.24L99.36 0.98L91.98 2.2L84.7 3.89L77.54 6.06L70.54 8.7L63.73 11.78L57.14 15.31L50.79 19.26L44.71 23.6"
+        "1L38.93 28.36L33.47 33.47L28.36 38.93L23.61 44.71L19.26 50.79L15.31 57.14L11.78 63.73L8.7 70.54L6.06 77.54L3"
+        ".89 84.7L2.2 91.98L0.98 99.36L0.24 106.8L0 114.27L0.24 121.74L0.98 129.19L2.2 136.56L3.89 143.85L6.06 151L8."
+        "7 158L11.78 164.81L15.31 171.41L19.26 177.76L23.61 183.83L28.36 189.61L33.47 195.07L38.93 200.18L44.71 204.9"
+        "3L50.79 209.28L57.14 213.23L63.73 216.76L70.54 219.84L77.54 222.48L84.7 224.65L91.98 226.35L99.36 227.56L106"
+        ".8 228.3L114.27 228.54L121.74 228.3L129.19 227.56L136.56 226.35L143.85 224.65L151 222.48L158 219.84L164.81 2"
+        "16.76L171.41 213.23L177.76 209.28L183.83 204.93L189.61 200.18L195.07 195.07L200.18 189.61L204.93 183.83L209."
+        "28 177.76L213.23 171.41L216.76 164.81L219.84 158L222.48 151L224.65 143.85L226.35 136.56L227.56 129.19L228.3 "
+        "121.74ZM117.27 48.29L120.55 48.54L123.71 49.36L126.68 50.73L129.27 52.71L131.35 55.19L133.04 57.99L134.50 60"
+        ".90L135.93 63.83L137.35 66.77L138.75 69.70L140.14 72.65L141.49 75.62L142.81 78.60L144.09 81.60L145.33 84.61L"
+        "146.51 87.65L147.37 90.80L147.52 94.05L146.87 97.26L145.41 100.21L143.25 102.69L140.54 104.57L137.47 105.77L"
+        "134.21 106.24L130.95 105.98L127.83 105.02L124.98 103.43L122.53 101.27L120.59 98.66L119.08 95.78L117.80 92.79"
+        "L116.55 89.77L115.26 86.77L113.95 83.80L112.60 80.82L111.24 77.87L109.85 74.92L108.43 71.98L106.90 69.10L105"
+        ".43 66.20L104.26 63.16L103.83 59.93L104.36 56.70L105.83 53.77L108.06 51.34L110.86 49.63L114.00 48.62ZM163.02"
+        " 26.08L165.72 26.76L168.34 27.92L170.83 29.45L173.19 31.24L175.38 33.27L177.38 35.49L179.22 37.86L180.93 40."
+        "30L182.60 42.80L184.23 45.29L185.85 47.81L187.43 50.34L188.95 52.90L190.46 55.47L191.91 58.07L193.32 60.68L1"
+        "94.68 63.31L195.99 65.97L197.07 68.69L197.74 71.48L197.94 74.25L197.38 76.81L195.69 78.59L193.17 79.03L190.4"
+        "8 78.45L187.88 77.20L185.48 75.49L183.30 73.47L181.37 71.18L179.69 68.70L178.21 66.13L176.82 63.51L175.43 60"
+        ".87L174.01 58.26L172.56 55.67L171.07 53.10L169.53 50.54L167.97 48.00L166.36 45.48L164.72 42.98L163.04 40.51L"
+        "161.32 38.06L159.68 35.56L158.39 32.90L157.79 30.12L158.41 27.61L160.40 26.20Z",), ()),
     "muse": ("nonzero", ("M24.6257 16.1214C28.2365 16.1214 30.8187 18.9408 30.8187 23.3643C30.8185 27.7868 30.1055 31."
         "7765 28.9225 40.2466C28.0743 46.1813 26.62 55.2418 26.0132 59.0088C27.1782 56.7815 29.9074 51.5757 30.3914 5"
         "0.5982C36.1081 39.061 42.0657 28.7544 43.7826 26.0254C46.0594 22.382 48.062 20.9229 51.1597 20.9229C52.7685 "

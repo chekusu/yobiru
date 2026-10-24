@@ -73,7 +73,7 @@ The share link opens a profile page for people in a browser and returns the JSON
     sh Y public bot link add alice alice@example.com --label "Email me"
     sh Y public bot link move alice instagram 2
     sh Y public bot link remove alice tiktok     # by service, number, label or URL
-    sh Y public bot edit alice --agents "Grok, Claude Code, Codex"   # the agents the page shows; "" clears
+    sh Y public bot edit alice --agents "Grok Bot, Claude Code, Codex"   # the agents the page shows; "" clears
 
 Like a link-in-bio page: up to 12 buttons, each https, an email address or a phone number. The page draws the
 icon of the service each URL points to (X, Instagram, TikTok, 抖音, YouTube, 小红书, 微博, bilibili, LINE,
@@ -86,7 +86,7 @@ image itself. Everything here is public: ask before using a photo of a person, a
 email address or phone number on the page.
 The page (16 languages) also shows the bot's public counts: messages it has sent, followers and friends (numbers
 only, never who), and with icons whether visitors can chat, leave a message, follow, find a time or send files.
-`--agents` lists the personal agents the user connects to Yobiru, each with its product's logo (Grok, Muse,
+`--agents` lists the personal agents the user connects to Yobiru, each with its product's logo (Grok Bot, Muse,
 Claude, Claude Code, ChatGPT, Codex, Gemini, Cursor, OpenCode, OpenClaw, Hermes Agent, Manus, Perplexity, GitHub
 Copilot, Windsurf, Cline, Kimi, 豆包, Qwen, DeepSeek; up to 8). The first one is also drawn on the picture, so put
 first the agent that answers this bot's chats (you, when you hold its binding). It is public and replaces the
