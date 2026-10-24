@@ -4,7 +4,7 @@
   "files": {
     "scripts/tailmsg.py": {
       "source": "tailmsg.py",
-      "sha256": "0f0bb7ab72f9320fcb2411f8ae8cc01f9aa49ef23c7c94d9a134182d5b95ded5"
+      "sha256": "f30f416880f535e62c60a68cc8c164769c306c905b1b0739ee6b9031bc54df03"
     },
     "scripts/codex_bridge/CODEX_DISPATCHER.md": {
       "source": "CODEX_DISPATCHER.md",
@@ -36,7 +36,11 @@
     },
     "docs/PUBLIC_BOTS.md": {
       "source": "docs/PUBLIC_BOTS.md",
-      "sha256": "8a1196d108e6c066ca86c2d114df283b42135d2c0df0e571582a46094f8e5422"
+      "sha256": "587f1ede5148b1967b3c11b2a94e358779dd31a981599dc566f95c10366a49bf"
+    },
+    "scripts/public_bots/bot_agents.py": {
+      "source": "public_bots/bot_agents.py",
+      "sha256": "6372ebf90da38740d95fd747f6916f59bfeca2b6a4faea6c749e80c3081a12d1"
     },
     "scripts/public_bots/bot_blobs.py": {
       "source": "public_bots/bot_blobs.py",
@@ -48,7 +52,7 @@
     },
     "scripts/public_bots/bot_client.py": {
       "source": "public_bots/bot_client.py",
-      "sha256": "870664c437b50e38010c83bebca733adef1cd5768ed2bce3a0bf326a99ae36e2"
+      "sha256": "d0dd7b10d262ed0ff3386918df2182b3d564ecd3bd576d3a3bc742e483d118d6"
     },
     "scripts/public_bots/bot_common.py": {
       "source": "public_bots/bot_common.py",
@@ -60,11 +64,11 @@
     },
     "scripts/public_bots/bot_gateway.py": {
       "source": "public_bots/bot_gateway.py",
-      "sha256": "18b7385c7d4ecfd0cb576d405846673412ad47bf268428bf411c8dfa2103139c"
+      "sha256": "d91f9f5447f0f010ee775c7b94fb4160c3178c2efa583b40d0f8e9eee3955027"
     },
     "scripts/public_bots/bot_links.py": {
       "source": "public_bots/bot_links.py",
-      "sha256": "490fb80756dca0db6dbea75fe478bbdc2365d93dd3c9ead19e2f24013962c9ff"
+      "sha256": "2ce07106c7f6b4871d61ab8dee47b21c0476a80ca6a516731a3438f60fb014ea"
     },
     "scripts/public_bots/bot_mcp.py": {
       "source": "public_bots/bot_mcp.py",
@@ -72,11 +76,11 @@
     },
     "scripts/public_bots/bot_profile.py": {
       "source": "public_bots/bot_profile.py",
-      "sha256": "b10fb0706284a04f9bfb349c906cec99fffaf9882dc022409504589f0a581361"
+      "sha256": "36e7c929c13f05a7584946e4066d9f43939f950d58bc45b7be9860532e51abb0"
     },
     "scripts/public_bots/bot_profile_i18n.py": {
       "source": "public_bots/bot_profile_i18n.py",
-      "sha256": "570ad1c5343db7b1c58f7c10b7945e9b4fbc3093da5be719fe43551e000a3811"
+      "sha256": "10e3a2413d9482e224eb273a6928f95214b2a745e38a39ab18d429e71ca89c35"
     },
     "scripts/public_bots/bot_resources.py": {
       "source": "public_bots/bot_resources.py",

@@ -49,6 +49,7 @@ from pathlib import Path
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
+import bot_agents as A  # noqa: E402
 import bot_blobs as B  # noqa: E402
 import bot_common as C  # noqa: E402
 import bot_e2e as E  # noqa: E402
@@ -186,7 +187,7 @@ WORKER_CODES = ("no_answer", "budget_exhausted", "policy_denied", "invalid_query
 CONTACT_ACTIONS = ("grant", "restrict", "unrestrict", "block", "unblock", "remove", "mute", "unmute", "trust",
                    "untrust", "approve", "reject", "demote", "revoke", "restore")
 ADAPTERS = ("deterministic", "native")
-HOST_KINDS = ("codex", "claude_code", "cursor", "grok", "gemini", "opencode", "other")
+HOST_KINDS = A.IDS + ("other",)               # the agents a page can show, so one name means one product
 DELIVERY_TIERS = ("push", "turn", "pull", "unknown")
 EVIDENCE_KEYS = ("check_acknowledged_at", "wake_tested_at", "quiet_wake_correlated_at", "job_claimed_at",
                  "reply_tested_at", "multiturn_tested_at")
@@ -342,10 +343,28 @@ CREATE TABLE IF NOT EXISTS blobs (key TEXT PRIMARY KEY, bytes INTEGER NOT NULL, 
     created_ts INTEGER NOT NULL);
 """
 
-# The owner's presentation extras for the human page (links, avatar). An additive table outside the schema version: created
-# when missing at start, ignored by gateways that predate it, so neither a migration nor a rollback touches it.
+# The owner's presentation extras for the human page (links, avatar, the agents shown). An additive table outside the
+# schema version: created when missing at start, ignored by gateways that predate it, so neither a migration nor a
+# rollback touches it. Columns added later come with a default, so an older gateway's writes still work.
 PROFILE_TABLE = ("CREATE TABLE IF NOT EXISTS bot_profiles (bot_id TEXT PRIMARY KEY, links TEXT NOT NULL DEFAULT '[]', "
                  "avatar BLOB, avatar_type TEXT, avatar_sha256 TEXT, updated_ts INTEGER NOT NULL)")
+PROFILE_COLUMNS = (("agents", "TEXT NOT NULL DEFAULT '[]'"),)
+
+
+def ensure_profiles(db):
+    """The profile table with every column of PROFILE_COLUMNS; `db` is in autocommit mode. Checked and added in one
+    write transaction, so gateway processes starting together add a column once."""
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        db.execute(PROFILE_TABLE)
+        have = {row[1] for row in db.execute("PRAGMA table_info(bot_profiles)")}
+        for name, decl in PROFILE_COLUMNS:
+            if name not in have:
+                db.execute("ALTER TABLE bot_profiles ADD COLUMN %s %s" % (name, decl))
+        db.execute("COMMIT")
+    except BaseException:
+        db.execute("ROLLBACK")
+        raise
 
 # Additive authorization state, initialized empty on upgrade. Old inbound-only trust never creates an inbox
 # acceptance, and an old lease without a recorded reply policy always requires review. Keep durable permissions
@@ -698,7 +717,7 @@ class Store(object):
             raise ValueError("unsupported gateway database schema")
         db = open_db(self.path)
         try:
-            db.execute(PROFILE_TABLE)
+            ensure_profiles(db)
             for statement in INBOX_TABLES + SWEEP_INDEXES + CHANGE_TABLES:
                 db.execute(statement)
             ensure_stats(db)
@@ -1769,17 +1788,20 @@ def native_binding(db, bot_id):
 
 
 def bot_profile(db, bot_id):
-    return db.execute("SELECT links, avatar_sha256 FROM bot_profiles WHERE bot_id=?", (bot_id,)).fetchone()
+    return db.execute("SELECT links, avatar_sha256, agents FROM bot_profiles WHERE bot_id=?", (bot_id,)).fetchone()
 
 
 def profile_fields(cfg, db, bot):
-    """The owner's links and the avatar URL (versioned by content, so caches never show an old picture)."""
+    """The owner's links, the avatar URL (versioned by content, so caches never show an old picture) and the agents
+    the owner chose to show, by id and name (an id this version does not know is left out)."""
     row = bot_profile(db, bot["id"])
     links = json.loads(row["links"]) if row is not None else []
     avatar = None
     if row is not None and row["avatar_sha256"]:
         avatar = "%s/@%s/avatar/%s" % (cfg["public_base_url"], bot["id"], row["avatar_sha256"][:16])
-    return {"links": links, "avatar": avatar}
+    agents = [{"id": aid, "name": A.NAMES[aid]} for aid in (json.loads(row["agents"]) if row is not None else [])
+              if aid in A.NAMES]
+    return {"links": links, "avatar": avatar, "agents": agents}
 
 
 def public_stats(db, bot_id):
@@ -1793,9 +1815,9 @@ def public_stats(db, bot_id):
 
 
 def bot_card(cfg, db, bot, now=None):
-    """The machine-readable card behind a share link: public facts only, no machine, session, agent, routine,
+    """The machine-readable card behind a share link: public facts only, no machine, session, binding, routine,
     resource or owner details. Chat delivery is a coarse projection: binding configured, declared tier, and how
-    fresh the recorded wake evidence is."""
+    fresh the recorded wake evidence is. `agents` is only what the owner chose to show, never the binding's host."""
     pol, base = policy_of(bot), cfg["public_base_url"]
     enroll = cfg["enrollment"]
     agent = native_binding(db, bot["id"])
@@ -3065,7 +3087,7 @@ class Api(object):
 
     def bot_edit(self, db, r):
         bot, body, now = self.own_bot(db, r.subject, r.params["bid"]), r.body, r.now
-        fields(body, ("handle", "display_name", "description", "policy", "e2e_key", "links"))
+        fields(body, ("handle", "display_name", "description", "policy", "e2e_key", "links", "agents"))
         if not body:
             raise Fail(400, "missing_field", "nothing to change")
         e2e_key = e2e_key_field(body)
@@ -3081,6 +3103,14 @@ class Api(object):
             db.execute("INSERT INTO bot_profiles(bot_id, links, updated_ts) VALUES(?,?,?) ON CONFLICT(bot_id) DO "
                        "UPDATE SET links=excluded.links, updated_ts=excluded.updated_ts",
                        (bot["id"], canonical(links), int(now)))
+        if "agents" in body:
+            try:
+                agents = A.clean(body["agents"])
+            except ValueError as e:
+                raise Fail(400, "invalid_agents", str(e))
+            db.execute("INSERT INTO bot_profiles(bot_id, agents, updated_ts) VALUES(?,?,?) ON CONFLICT(bot_id) DO "
+                       "UPDATE SET agents=excluded.agents, updated_ts=excluded.updated_ts",
+                       (bot["id"], canonical(agents), int(now)))
         handle, name, desc, pol = bot["handle"], bot["display_name"], bot["description"], policy_of(bot)
         if "handle" in body:
             handle = handle_field(body["handle"])
@@ -5932,7 +5962,7 @@ def cmd_init(home, a):
     db = open_db(db_path)
     try:
         db.executescript(SCHEMA)
-        db.execute(PROFILE_TABLE)
+        ensure_profiles(db)
         for statement in INBOX_TABLES + SWEEP_INDEXES + CHANGE_TABLES:
             db.execute(statement)
         ensure_stats(db)

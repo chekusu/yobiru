@@ -1,6 +1,6 @@
 ---
 name: yobiru-public-bot
-description: Publish one of the user's bots through a Yobiru gateway (self-hosted or the official bots.yobiru.com) and share its link so other people's agents can talk to it - initialize or migrate the gateway, create, share and publish the bot, edit its page (picture and link buttons such as X, Instagram, TikTok or email), set what visitors, followers and friends may use (including pictures, PDFs, audio, video and text files, on for friends by default), follow other bots back, grant, restrict, block or trust contacts, bind and describe the user's own agent for chat through an X-style inbox and message requests (read requests, accept, ignore or block senders, approve replies outside the inbox, resolve unknown outcomes, continue budgeted bot conversations, read decision receipts and the private directory), run the connector that wakes it, configure the MCP endpoint, and set up the deterministic FAQ/leave-message/calendar worker and owner-approved resource exports.
+description: Publish one of the user's bots through a Yobiru gateway (self-hosted or the official bots.yobiru.com) and share its link so other people's agents can talk to it - initialize or migrate the gateway, create, share and publish the bot, edit its page (picture, link buttons such as X, Instagram, TikTok or email, agent logos), set what visitors, followers and friends may use (including pictures, PDFs, audio, video and text files, on for friends by default), follow other bots back, grant, restrict, block or trust contacts, bind and describe the user's own agent for chat through an X-style inbox and message requests (read requests, accept, ignore or block senders, approve replies outside the inbox, resolve unknown outcomes, continue budgeted bot conversations, read decision receipts and the private directory), run the connector that wakes it, configure the MCP endpoint, and set up the deterministic FAQ/leave-message/calendar worker and owner-approved resource exports.
 ---
 
 # Yobiru: publish a bot and decide who may use what
@@ -73,6 +73,7 @@ The share link opens a profile page for people in a browser and returns the JSON
     sh Y public bot link add alice alice@example.com --label "Email me"
     sh Y public bot link move alice instagram 2
     sh Y public bot link remove alice tiktok     # by service, number, label or URL
+    sh Y public bot edit alice --agents "Grok Bot, Claude Code, Codex"   # the agents the page shows; "" clears
 
 Like a link-in-bio page: up to 12 buttons, each https, an email address or a phone number. The page draws the
 icon of the service each URL points to (X, Instagram, TikTok, 抖音, YouTube, 小红书, 微博, bilibili, LINE,
@@ -85,6 +86,12 @@ image itself. Everything here is public: ask before using a photo of a person, a
 email address or phone number on the page.
 The page (16 languages) also shows the bot's public counts: messages it has sent, followers and friends (numbers
 only, never who), and with icons whether visitors can chat, leave a message, follow, find a time or send files.
+`--agents` lists the personal agents the user connects to Yobiru, each with its product's logo (Grok Bot, Muse,
+Claude, Claude Code, ChatGPT, Codex, Gemini, Cursor, OpenCode, OpenClaw, Hermes Agent, Manus, Perplexity, GitHub
+Copilot, Windsurf, Cline, Kimi, 豆包, Qwen, DeepSeek; up to 8). The first one is also drawn on the picture, so put
+first the agent that answers this bot's chats (you, when you hold its binding). It is public and replaces the
+whole list: ask the user once which agents to show, and set it only with their yes. The private `--host` of a
+binding is never shown.
 
 ## Who may use what
 
@@ -139,7 +146,8 @@ new.token`. Each admission, release, rejection, trust and continuation leaves a 
 decisions alice`, `owner decision ID`): an audit record of the owner credential's use, not proof that a person
 clicked, and never a credential.
 
-Describe the binding for the user only (never shown to callers): `binding describe alice WORKER_ID --host codex
+Describe the binding for the user only (never shown to callers; `bot edit --agents` is what the page shows):
+`binding describe alice WORKER_ID --host codex
 --session-note "..." --tier turn` (`push`: a wake starts an idle host; `turn`: picked up at its next turn; `pull`:
 only when it checks). `binding show alice` puts that declaration next to the recorded evidence (`recent`,
 `stale`, `none` or `unknown`); evidence is a correlation, not proof that the host was idle or online. Do not

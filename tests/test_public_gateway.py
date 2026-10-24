@@ -170,7 +170,7 @@ class AdministrationTests(GatewayCase):
         self.assertEqual({"ok", "type", "card_version", "issuer", "bot_id", "handle", "address", "id_address",
                           "display_name", "description", "capabilities", "capabilities_note", "accepts_visitors",
                           "accepts_followers", "accepts_contact_requests", "chat", "e2e", "identity", "api",
-                          "connect", "stats", "links", "avatar"},
+                          "connect", "stats", "links", "avatar", "agents"},
                          set(card))
         self.assertEqual({"messages": 0, "followers": 0, "friends": 0}, card["stats"], "counts only, never who")
         self.assertTrue(card["address"].endswith("/@" + self.handle()))
@@ -391,6 +391,74 @@ class ProfilePageTests(GatewayCase):
         self.assertNotEqual(0, code)
         self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"], "an invalid bare URL is not reinterpreted")
 
+    def test_cli_preserves_url_shaped_link_labels(self):
+        from support.public_harness import cli
+        h = self.handle()
+        self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        for label, url in (("docs.example.com/guide", "https://docs.example.com/new-guide"),
+                           ("docs.example.com", "https://docs.example.com/new-guide?ref=profile"),
+                           ("docs.example.com:8443/guide", "https://docs.example.com/new-guide"),
+                           ("docs.example.com/mail", "mailto:me@example.com"),
+                           ("docs.example.com/call", "tel:+1-202-555-0123")):
+            with self.subTest(label=label, url=url):
+                code, out, err = cli(home, "bot", "edit", "@" + h, "--link", label + "=" + url)
+                self.assertEqual(0, code, err)
+                expected = [{"label": label, "url": url}]
+                self.assertEqual(expected, out["links"])
+                self.assertEqual(expected, self.gw.ok("GET", "/@" + h)["links"])
+
+    def test_cli_rejects_bare_ports_without_retargeting_links(self):
+        from support.public_harness import cli
+        h = self.handle()
+        bot_id = self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        links = [{"label": "Website", "url": "https://example.com/profile"}]
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"links": links}, self.gw.owner_token)
+        for value in ("example.com:8443/path?next=friend.example", "example.com:8443/path=friend.example",
+                      "example.com:8443?next=friend.example", "example.com:8443#next=friend.example",
+                      "example.com:8443/path?next=https://friend.example"):
+            for args in (("link", "add", "@" + h, value), ("edit", "@" + h, "--link", value)):
+                with self.subTest(value=value, command=args[0]):
+                    code, _, _ = cli(home, "bot", *args)
+                    self.assertNotEqual(0, code, "an unsupported bare port must not select a new destination")
+                    self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"])
+        url = "https://example.com:8443/path?next=friend.example"
+        code, out, err = cli(home, "bot", "edit", "@" + h, "--link", url)
+        self.assertEqual(0, code, err)
+        self.assertEqual([url], [item["url"] for item in out["links"]])
+        self.assertEqual(out["links"], self.gw.ok("GET", "/@" + h)["links"])
+
+    def test_cli_dotted_numbers_require_schemes(self):
+        from support.public_harness import cli
+        h = self.handle()
+        bot_id = self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        links = [{"label": "Website", "url": "https://example.com/profile"}]
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"links": links}, self.gw.owner_token)
+        for value in ("202.555.0123", "192.168.0.1"):
+            for args in (("link", "add", "@" + h, value), ("edit", "@" + h, "--link", value)):
+                with self.subTest(value=value, command=args[0]):
+                    code, _, err = cli(home, "bot", *args)
+                    self.assertNotEqual(0, code)
+                    self.assertIn("ambiguous", err)
+                    self.assertIn("tel:", err)
+                    self.assertIn("https://", err)
+                    self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"])
+        for args in (("link", "add", "@" + h, "tel:202.555.0123"),
+                     ("edit", "@" + h, "--link", "tel:202.555.0123")):
+            with self.subTest(command=args[0]):
+                code, out, err = cli(home, "bot", *args)
+                self.assertEqual(0, code, err)
+                self.assertEqual("tel:202-555-0123", out["links"][-1]["url"])
+                self.assertEqual("tel:202-555-0123", self.gw.ok("GET", "/@" + h)["links"][-1]["url"])
+
     def test_cli_requires_unambiguous_equals_in_email_links(self):
         from support.public_harness import cli
         h = self.handle()
@@ -517,6 +585,23 @@ class ProfilePageTests(GatewayCase):
         self.assertIn("matches 2 links", err)
         for bad in (("add", "@" + h, "javascript:alert(1)"), ("add", "@" + h, "@me"), ("remove", "@" + h, "tiktok")):
             self.assertNotEqual(0, cli(home, "bot", "link", *bad)[0], bad)
+
+    def test_cli_sets_the_agents_the_page_shows(self):
+        from support.public_harness import cli
+        h = self.handle()
+        self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        code, out, err = cli(home, "bot", "edit", "@" + h, "--agents", "Grok Bot, claude code，Codex、grok")
+        self.assertEqual((0, ["grok", "claude_code", "codex"]), (code, [a["id"] for a in out["agents"]]), err)
+        self.assertEqual(["Grok Bot", "Claude Code", "Codex"], [a["name"] for a in self.gw.ok("GET", "/@" + h)["agents"]])
+        code, _, err = cli(home, "bot", "edit", "@" + h, "--agents", "Grok, Skynet")
+        self.assertNotEqual(0, code)
+        self.assertIn("unknown agent 'Skynet'", err)
+        self.assertEqual(3, len(self.gw.ok("GET", "/@" + h)["agents"]), "a refused edit changes nothing")
+        code, out, err = cli(home, "bot", "edit", "@" + h, "--agents", "")
+        self.assertEqual((0, []), (code, out["agents"]), err)
 
     def test_share_links_from_the_page_still_parse(self):
         for link in ("https://gw.example/@guoyu.json", "https://gw.example/@guoyu?lang=zh",

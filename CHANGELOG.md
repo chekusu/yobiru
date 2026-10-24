@@ -3,6 +3,25 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## 0.7.12 (2026-10-24)
+
+Update the gateway for the new box on the page; update the plugin for `bot edit --agents`. No schema version change:
+the gateway adds the `agents` column to `bot_profiles` by itself when it starts.
+
+- **The profile page shows which personal agents the owner uses.** An owner (through their agent: "show Grok
+  Bot, Claude Code and Codex on my page") lists up to 8 agents with `bot edit BOT --agents "Grok Bot, Claude Code,
+  Codex"`. The page shows them in a "Connected agents" box, each with its product's logo, in 16 languages, and the
+  first one's logo replaces the spark on the picture (tap it to reach the box). The card gains `agents: [{id, name}]`.
+  Known agents: Grok Bot, Muse, Claude, Claude Code, ChatGPT, Codex, Gemini, Cursor, OpenCode, OpenClaw, Hermes
+  Agent, Manus, Perplexity, GitHub Copilot, Windsurf, Cline, Kimi, 豆包, Qwen and DeepSeek (logos from Simple Icons,
+  CC0, and Lobe Icons, MIT; Grok Bot's is the mark on x.ai/bot, Muse's the Muse Platform icon). The list is public
+  and is what the owner says; the private host kind of a binding is never shown, and `--host` now accepts the same
+  names.
+- **Link input where it could mean two things.** In `--link LABEL=URL`, a label shaped like an address still labels
+  the URL when that URL starts with a scheme; a bare address with a port (`example.com:8080`) needs `https://`, and
+  dotted numbers (`202.555.0123`) need `tel:` or `https://`. Links already published are unchanged. The page's
+  comment for agents keeps `--` inside URLs.
+
 ## 0.7.11 (2026-10-24)
 
 Update the gateway for the new page; update the plugin for `bot link`. No schema version change: the gateway adds the

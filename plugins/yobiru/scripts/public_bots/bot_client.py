@@ -50,6 +50,7 @@ from pathlib import Path
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
+import bot_agents as A  # noqa: E402
 import bot_common as C  # noqa: E402
 import bot_e2e as E  # noqa: E402
 import bot_links as L  # noqa: E402
@@ -2210,12 +2211,33 @@ def link_arg(value):
         if bare and bare.startswith("mailto:"):
             die("--link: ambiguous email with '='; use mailto:alice=work@example.com for an address "
                 "or Mail=mailto:me@example.com for a labeled link")
-        # Even an invalid bare host/path must not be split into a different destination.
-        if re.match(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:[/?#]|\Z)", value):
-            label, url = "", value
+        if re.match(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:[:/?#]|\Z)", value):
+            # Preserve URL-shaped labels when the destination has an explicit scheme.
+            # A query/fragment assignment belongs to the bare URL instead; keep even
+            # unsupported inputs (such as bare ports) whole so validation can reject them.
+            explicit = url.strip().lower().startswith(("https://", "http://", "mailto:", "tel:"))
+            if not explicit or "?" in label or "#" in label:
+                label, url = "", value
     if not url.strip():
         die("--link: use 'Label=https://example.com/...' or just the URL")
     return link_item(url, label)
+
+
+def agents_arg(value):
+    """Agent ids from --agents: names as people say them ("Grok Bot, Claude Code, 豆包"), in order, each once; an empty
+    value clears the list."""
+    ids = []
+    for name in re.split(r"[,，、;]+", value or ""):
+        if not name.strip():
+            continue
+        aid = A.named(name)
+        if aid is None:
+            die("--agents: unknown agent %r; known: %s" % (name.strip(), ", ".join(A.NAMES[i] for i in A.IDS)))
+        if aid not in ids:
+            ids.append(aid)
+    if len(ids) > A.MAX_AGENTS:
+        die("--agents: at most %d agents" % A.MAX_AGENTS)
+    return ids
 
 
 def link_view(links):
@@ -2353,6 +2375,8 @@ def cmd_bot(st, a):
             body["policy"] = policy
         if a.clear_links or a.link:
             body["links"] = [link_arg(v) for v in a.link or []]
+        if a.agents is not None:
+            body["agents"] = agents_arg(a.agents)
         if not body:
             die("nothing to change")
         out(call(base, "PATCH", "/v1/owner/bots/%s" % bot_id, body, token))
@@ -3928,8 +3952,8 @@ def cmd_responder(st, a):
 
 # ---------------------------------------------------------------- CLI
 def add_binding_flags(p):
-    p.add_argument("--host", choices=("codex", "claude_code", "cursor", "grok", "gemini", "opencode", "other"),
-                   help="which kind of host answers (private to you)")
+    p.add_argument("--host", choices=A.IDS + ("other",),
+                   help="which kind of host answers (private to you; `bot edit --agents` is what the page shows)")
     p.add_argument("--session-note", help="your private note about the host session (never shown to callers)")
     p.add_argument("--tier", choices=("push", "turn", "pull", "unknown"),
                    help="declared delivery: push (a wake starts an idle host), turn, pull or unknown")
@@ -4166,6 +4190,10 @@ def main(argv=None):
                         "use https:// or mailto: when text could be either a website or email; "
                         "`bot link` changes one at a time)")
     p.add_argument("--clear-links", action="store_true", help="remove every link from the bot's page")
+    p.add_argument("--agents", metavar="NAMES",
+                   help="the personal agents the bot's page shows, with their logos, in order (the first is also "
+                        "on the picture): for example \"Grok Bot, Claude Code, Codex\"; replaces the list, \"\" clears "
+                        "it; public, so only with the user's yes")
     p.add_argument("--gateway")
     p = bs.add_parser("link", help="the link buttons on the bot's page (X, Instagram, 小红书, email...): list, add, "
                                    "remove or move one; each gets its service's icon")
