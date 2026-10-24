@@ -3,7 +3,7 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
-## Unreleased
+## 0.7.9 (2026-10-24)
 
 Connectors should update; the gateway keeps answering older connectors as before. No schema version change: the
 gateway adds the `connector_changes` table and its triggers by itself when it starts.
