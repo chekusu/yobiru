@@ -171,8 +171,14 @@ goes. The marks are from Simple Icons (CC0) and, for LinkedIn, Bootstrap Icons (
 `{"data_base64"}`): PNG, JPEG or WebP of at most 64 KB and 32-2048 px a side, the type read from the bytes, EXIF,
 XMP and text chunks removed before storing. The card's `avatar` is then `<public URL>/@bot_.../avatar/<hash>`,
 served by the gateway itself (`Content-Security-Policy: sandbox`, `nosniff`); without one it is `null` and the page
-shows the yobiru spirit. Both live in the additive `bot_profiles` table, created at start when missing, so
-no schema migration is needed and older code ignores it.
+shows the yobiru spirit. The owner can also list the personal agents they use (`bot edit BOT --agents "Grok, Claude
+Code"`, or `PATCH` with `{"agents": ["grok", "claude_code"]}`; up to 8 ids from `public_bots/bot_agents.py`, in order,
+`[]` clears). The card's `agents` is then `[{"id", "name"}]` and the page shows each with its product's logo in a
+"Connected agents" box; the first one replaces the spark on the picture, which otherwise means only that a binding is
+configured. The list is the owner's statement, not checked by the gateway, and the binding's private host kind is
+never copied into it. The logos are from Simple Icons (CC0) and Lobe Icons (MIT); Muse's is the Muse Platform icon.
+All of this lives in the additive `bot_profiles` table, created at start when missing (later columns, such as
+`agents`, are added the same way), so no schema migration is needed and older code ignores it.
 
 Its `chat` block:
 

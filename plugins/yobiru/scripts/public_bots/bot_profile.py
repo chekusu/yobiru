@@ -16,6 +16,7 @@ import secrets
 import struct
 import unicodedata
 
+import bot_agents as A
 import bot_links as L
 import bot_profile_i18n as I18N
 
@@ -286,6 +287,26 @@ def _display_links(card):
         yield link
 
 
+def _display_agents(card):
+    """The ids of the agents the owner shows, in order; ones this version has no mark for are left out."""
+    return [a["id"] for a in card.get("agents") or [] if isinstance(a, dict) and a.get("id") in A.NAMES]
+
+
+def _agent_mark(aid, cls="b"):
+    view_box, rule, paths, faint = A.mark(aid)
+    return '<svg class="%s" viewBox="%s" fill-rule="%s" aria-hidden="true">%s</svg>' % (cls, view_box, rule, "".join(
+        '<path d="%s"%s/>' % (d, ' fill-opacity=".5"' if i in faint else "") for i, d in enumerate(paths)))
+
+
+def _agents(ids, t):
+    """The agents the owner shows, each with its product mark."""
+    return ('<section class="card agents" id="agents" aria-labelledby="agents-h"><h2 id="agents-h">%s</h2>'
+            '<ul class="chips">%s</ul></section>' % (_e(t["agents"]), "".join(
+                '<li data-agent="%s"><span class="am">%s</span><bdi>%s</bdi></li>' % (aid, _agent_mark(aid),
+                                                                                       _e(A.NAMES[aid]))
+                for aid in ids)))
+
+
 def _link_row(link):
     """One link button: the mark of the service its URL points to (never chosen by the label), the label and, below
     it, where the link goes when that says more than the label."""
@@ -365,6 +386,9 @@ box-shadow:0 0 0 1px var(--line)}
 .av .on{position:absolute;inset-inline-end:-1px;bottom:1px;width:28px;height:28px;border-radius:50%;
 background:var(--accent);color:#fff;display:grid;place-items:center;box-shadow:0 0 0 3px var(--surface)}
 .av .on .i{width:15px;height:15px;fill:currentColor;stroke:none}
+.av .on.ag{background:var(--surface);color:var(--ink);text-decoration:none;
+box-shadow:inset 0 0 0 1px var(--line-2),0 0 0 3px var(--surface)}
+.av .on .b{width:16px;height:16px;fill:currentColor}
 h1{font-size:24px;line-height:1.2;letter-spacing:-.02em;font-weight:680;margin:0;overflow-wrap:anywhere}
 .handle{font-family:var(--mono);font-size:13.5px;color:var(--ink-3);margin-top:4px}
 .desc{margin:10px auto 0;max-width:400px;color:var(--ink-2);white-space:pre-line;overflow-wrap:anywhere}
@@ -416,6 +440,14 @@ color:var(--ink)}
 .to{font-size:12.5px;line-height:1.35;color:var(--ink-3)}
 .row .go{color:var(--ink-3);width:18px;height:18px}
 [dir=rtl] .row .go{transform:scaleX(-1)}
+.agents h2{font-size:13px;line-height:1.3;font-weight:600;color:var(--ink-3);margin:0 0 12px}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:0;padding:0;list-style:none}
+.chips li{display:inline-flex;align-items:center;gap:8px;min-width:0;max-width:100%;height:40px;padding:0;
+padding-inline:5px 14px;border-radius:999px;background:var(--muted);font-weight:600;font-size:14px}
+.chips bdi{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.am{display:grid;place-items:center;width:30px;height:30px;flex:none;border-radius:50%;background:var(--surface);
+color:var(--ink)}
+.am .b{width:17px;height:17px;fill:currentColor}
 .connect h2{display:flex;align-items:center;gap:8px;font-size:15px;line-height:1.3;font-weight:650;margin:0 0 4px}
 .connect h2 .i{color:var(--accent);fill:currentColor;stroke:none;width:16px;height:16px}
 .connect p{margin:0 0 12px;color:var(--ink-3);font-size:13.5px}
@@ -608,8 +640,15 @@ def render_profile(card, lang, path, nonce):
     json_url = address + ".json"
     stats = card.get("stats") or {}
     connected = bool((card.get("chat") or {}).get("agent_connected"))
-    badge = ('<span class="on" role="img" aria-label="%s" title="%s">%s</span>' % (
-        _e(t["agent_on"]), _e(t["agent_on"]), _icon("spark"))) if connected else ""
+    agents = _display_agents(card)
+    if agents:
+        # The first agent the owner shows, on the picture; a tap goes to the list.
+        said = t["agent_badge"] % A.NAMES[agents[0]]
+        badge = '<a class="on ag" href="#agents" aria-label="%s" title="%s">%s</a>' % (
+            _e(said), _e(said), _agent_mark(agents[0]))
+    else:
+        badge = ('<span class="on" role="img" aria-label="%s" title="%s">%s</span>' % (
+            _e(t["agent_on"]), _e(t["agent_on"]), _icon("spark"))) if connected else ""
     own_links = "".join(_link_row(link) for link in _display_links(card))
     prompt = t["connect_prompt"] % (handle, address)
     body = (
@@ -619,7 +658,7 @@ def render_profile(card, lang, path, nonce):
         '<div class="av"><img class="avatar" src="%(avatar)s" width="96" height="96" alt="">%(badge)s</div>'
         '<h1 dir="auto">%(name)s</h1><div class="handle"><bdi>%(handle)s</bdi></div>%(desc)s'
         '<ul class="stats">%(stats)s</ul>%(acts)s</section>'
-        '%(links)s'
+        '%(agents)s%(links)s'
         '<section class="card connect"><h2>%(spark)s%(connect_title)s</h2><p>%(connect_body)s</p>'
         '<div class="prompt"><span>%(shown)s</span>'
         '<button class="iconbtn" type="button" data-copy="%(prompt)s" data-done="%(copied)s" aria-label="%(copy)s" '
@@ -634,7 +673,7 @@ def render_profile(card, lang, path, nonce):
          "desc": '<p class="desc" dir="auto">%s</p>' % _e(card["description"]) if card.get("description") else "",
          "stats": "".join('<li><b>%s</b><span>%s</span></li>' % (_e(compact(stats.get(k), lang)), _e(t["stats"][k]))
                           for k in ("messages", "followers", "friends")),
-         "acts": _acts(card, t),
+         "acts": _acts(card, t), "agents": _agents(agents, t) if agents else "",
          "links": '<nav class="links" aria-label="%s">%s</nav>' % (_e(t["links"]), own_links) if own_links else "",
          "spark": _icon("spark"), "connect_title": _e(t["connect_title"]), "connect_body": _e(t["connect_body"]),
          "prompt": _e(prompt), "copied": _e(t["copied"]), "copy": _e(t["copy"]),
@@ -678,6 +717,8 @@ def render_agent_page(card, nonce=None):
         "accepts followers: %s" % yes(card.get("accepts_followers")),
         "accepts contact requests: %s" % yes(card.get("accepts_contact_requests")),
         "owner's agent connected (binding configured): %s" % yes((card.get("chat") or {}).get("agent_connected")),
+        "agents the owner shows (the owner's statement): %s" % (
+            ", ".join(A.NAMES[aid] for aid in _display_agents(card)) or "none"),
     ]
     links = "".join('<li>%s (%s): <a href="%s">%s</a></li>' % (
         _e(link["label"]), _e(L.LABELS[L.platform_of(link["url"])]), _e(link["url"]), _e(link["url"]))

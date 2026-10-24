@@ -170,7 +170,7 @@ class AdministrationTests(GatewayCase):
         self.assertEqual({"ok", "type", "card_version", "issuer", "bot_id", "handle", "address", "id_address",
                           "display_name", "description", "capabilities", "capabilities_note", "accepts_visitors",
                           "accepts_followers", "accepts_contact_requests", "chat", "e2e", "identity", "api",
-                          "connect", "stats", "links", "avatar"},
+                          "connect", "stats", "links", "avatar", "agents"},
                          set(card))
         self.assertEqual({"messages": 0, "followers": 0, "friends": 0}, card["stats"], "counts only, never who")
         self.assertTrue(card["address"].endswith("/@" + self.handle()))
@@ -517,6 +517,23 @@ class ProfilePageTests(GatewayCase):
         self.assertIn("matches 2 links", err)
         for bad in (("add", "@" + h, "javascript:alert(1)"), ("add", "@" + h, "@me"), ("remove", "@" + h, "tiktok")):
             self.assertNotEqual(0, cli(home, "bot", "link", *bad)[0], bad)
+
+    def test_cli_sets_the_agents_the_page_shows(self):
+        from support.public_harness import cli
+        h = self.handle()
+        self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        code, out, err = cli(home, "bot", "edit", "@" + h, "--agents", "Grok Bot, claude code，Codex、grok")
+        self.assertEqual((0, ["grok", "claude_code", "codex"]), (code, [a["id"] for a in out["agents"]]), err)
+        self.assertEqual(["Grok", "Claude Code", "Codex"], [a["name"] for a in self.gw.ok("GET", "/@" + h)["agents"]])
+        code, _, err = cli(home, "bot", "edit", "@" + h, "--agents", "Grok, Skynet")
+        self.assertNotEqual(0, code)
+        self.assertIn("unknown agent 'Skynet'", err)
+        self.assertEqual(3, len(self.gw.ok("GET", "/@" + h)["agents"]), "a refused edit changes nothing")
+        code, out, err = cli(home, "bot", "edit", "@" + h, "--agents", "")
+        self.assertEqual((0, []), (code, out["agents"]), err)
 
     def test_share_links_from_the_page_still_parse(self):
         for link in ("https://gw.example/@guoyu.json", "https://gw.example/@guoyu?lang=zh",

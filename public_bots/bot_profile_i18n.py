@@ -1,8 +1,8 @@
 """Text of the human profile page behind a share link, in the 16 languages the page offers.
 
 Every language has every key of `T["en"]` (a test checks this). `%s` placeholders: `title` the bot's name, `hosted` the
-Yobiru link, `connect_prompt` the handle and then the address. Agents never read this text: they get the JSON card
-or the plain agent page (bot_profile.render_agent_page), which stays in English.
+Yobiru link, `connect_prompt` the handle and then the address, `agent_badge` an agent's name. Agents never read this
+text: they get the JSON card or the plain agent page (bot_profile.render_agent_page), which stays in English.
 """
 
 # Menu order. The first is the fallback when nothing in Accept-Language matches.
@@ -16,6 +16,7 @@ T = {
         "title": "%s on Yobiru",
         "share": "Share", "link_copied": "Link copied",
         "agent_on": "The owner's agent is connected",
+        "agents": "Connected agents", "agent_badge": "Connected agent: %s",
         "stats": {"messages": "Messages", "followers": "Followers", "friends": "Friends"},
         "acts": {"chat": "Chat", "leave_message": "Message", "follow": "Follow", "calendar_slots": "Schedule",
                  "files": "Files"},
@@ -50,6 +51,7 @@ T = {
         "title": "%s 的 Yobiru 主页",
         "share": "分享", "link_copied": "链接已复制",
         "agent_on": "主人的 agent 已接入",
+        "agents": "已连接的 agent", "agent_badge": "已连接的 agent：%s",
         "stats": {"messages": "消息", "followers": "粉丝", "friends": "好友"},
         "acts": {"chat": "私信", "leave_message": "留言", "follow": "关注", "calendar_slots": "约时间",
                  "files": "文件"},
@@ -84,6 +86,7 @@ T = {
         "title": "%s の Yobiru ページ",
         "share": "共有", "link_copied": "リンクをコピーしました",
         "agent_on": "オーナーの agent が接続済み",
+        "agents": "接続済みの agent", "agent_badge": "接続済みの agent：%s",
         "stats": {"messages": "メッセージ", "followers": "フォロワー", "friends": "友だち"},
         "acts": {"chat": "DM", "leave_message": "伝言", "follow": "フォロー", "calendar_slots": "日程調整",
                  "files": "ファイル"},
@@ -118,6 +121,7 @@ T = {
         "title": "%s의 Yobiru 페이지",
         "share": "공유", "link_copied": "링크를 복사했어요",
         "agent_on": "주인의 에이전트가 연결되어 있어요",
+        "agents": "연결된 에이전트", "agent_badge": "연결된 에이전트: %s",
         "stats": {"messages": "메시지", "followers": "팔로워", "friends": "친구"},
         "acts": {"chat": "DM", "leave_message": "쪽지", "follow": "팔로우", "calendar_slots": "일정",
                  "files": "파일"},
@@ -152,6 +156,7 @@ T = {
         "title": "%s sur Yobiru",
         "share": "Partager", "link_copied": "Lien copié",
         "agent_on": "L'agent du propriétaire est connecté",
+        "agents": "Agents connectés", "agent_badge": "Agent connecté : %s",
         "stats": {"messages": "Messages", "followers": "Abonnés", "friends": "Amis"},
         "acts": {"chat": "Chat", "leave_message": "Message", "follow": "Suivre", "calendar_slots": "Agenda",
                  "files": "Fichiers"},
@@ -189,6 +194,7 @@ T = {
         "title": "%s auf Yobiru",
         "share": "Teilen", "link_copied": "Link kopiert",
         "agent_on": "Der Agent des Besitzers ist verbunden",
+        "agents": "Verbundene Agents", "agent_badge": "Verbundener Agent: %s",
         "stats": {"messages": "Nachrichten", "followers": "Follower", "friends": "Freunde"},
         "acts": {"chat": "Chat", "leave_message": "Nachricht", "follow": "Folgen", "calendar_slots": "Termin",
                  "files": "Dateien"},
@@ -224,6 +230,7 @@ T = {
         "title": "%s en Yobiru",
         "share": "Compartir", "link_copied": "Enlace copiado",
         "agent_on": "El agente del propietario está conectado",
+        "agents": "Agentes conectados", "agent_badge": "Agente conectado: %s",
         "stats": {"messages": "Mensajes", "followers": "Seguidores", "friends": "Amigos"},
         "acts": {"chat": "Chat", "leave_message": "Mensaje", "follow": "Seguir", "calendar_slots": "Agenda",
                  "files": "Archivos"},
@@ -259,6 +266,7 @@ T = {
         "title": "%s no Yobiru",
         "share": "Compartilhar", "link_copied": "Link copiado",
         "agent_on": "O agente do dono está conectado",
+        "agents": "Agentes conectados", "agent_badge": "Agente conectado: %s",
         "stats": {"messages": "Mensagens", "followers": "Seguidores", "friends": "Amigos"},
         "acts": {"chat": "Chat", "leave_message": "Recado", "follow": "Seguir", "calendar_slots": "Agenda",
                  "files": "Arquivos"},
@@ -294,6 +302,7 @@ T = {
         "title": "%s su Yobiru",
         "share": "Condividi", "link_copied": "Link copiato",
         "agent_on": "L'agente del proprietario è collegato",
+        "agents": "Agenti collegati", "agent_badge": "Agente collegato: %s",
         "stats": {"messages": "Messaggi", "followers": "Follower", "friends": "Amici"},
         "acts": {"chat": "Chat", "leave_message": "Messaggio", "follow": "Segui", "calendar_slots": "Agenda",
                  "files": "File"},
@@ -329,6 +338,7 @@ T = {
         "title": "%s в Yobiru",
         "share": "Поделиться", "link_copied": "Ссылка скопирована",
         "agent_on": "Агент владельца подключён",
+        "agents": "Подключённые агенты", "agent_badge": "Подключённый агент: %s",
         "stats": {"messages": "Сообщения", "followers": "Подписчики", "friends": "Друзья"},
         "acts": {"chat": "Чат", "leave_message": "Записка", "follow": "Подписка", "calendar_slots": "Встреча",
                  "files": "Файлы"},
@@ -363,6 +373,7 @@ T = {
         "title": "%s على Yobiru",
         "share": "مشاركة", "link_copied": "تم نسخ الرابط",
         "agent_on": "وكيل المالك متصل",
+        "agents": "الوكلاء المتصلون", "agent_badge": "الوكيل المتصل: %s",
         "stats": {"messages": "الرسائل", "followers": "المتابِعون", "friends": "الأصدقاء"},
         "acts": {"chat": "دردشة", "leave_message": "رسالة", "follow": "متابعة", "calendar_slots": "موعد",
                  "files": "ملفات"},
@@ -397,6 +408,7 @@ T = {
         "title": "Yobiru पर %s",
         "share": "शेयर करें", "link_copied": "लिंक कॉपी हो गया",
         "agent_on": "मालिक का एजेंट जुड़ा हुआ है",
+        "agents": "जुड़े हुए एजेंट", "agent_badge": "जुड़ा हुआ एजेंट: %s",
         "stats": {"messages": "संदेश", "followers": "फ़ॉलोअर", "friends": "दोस्त"},
         "acts": {"chat": "चैट", "leave_message": "संदेश", "follow": "फ़ॉलो", "calendar_slots": "शेड्यूल",
                  "files": "फ़ाइलें"},
@@ -431,6 +443,7 @@ T = {
         "title": "Yobiru-এ %s",
         "share": "শেয়ার", "link_copied": "লিংক কপি হয়েছে",
         "agent_on": "মালিকের এজেন্ট যুক্ত আছে",
+        "agents": "যুক্ত এজেন্ট", "agent_badge": "যুক্ত এজেন্ট: %s",
         "stats": {"messages": "বার্তা", "followers": "ফলোয়ার", "friends": "বন্ধু"},
         "acts": {"chat": "চ্যাট", "leave_message": "বার্তা", "follow": "ফলো", "calendar_slots": "শিডিউল",
                  "files": "ফাইল"},
@@ -465,6 +478,7 @@ T = {
         "title": "%s di Yobiru",
         "share": "Bagikan", "link_copied": "Tautan disalin",
         "agent_on": "Agen pemilik sudah terhubung",
+        "agents": "Agen yang terhubung", "agent_badge": "Agen terhubung: %s",
         "stats": {"messages": "Pesan", "followers": "Pengikut", "friends": "Teman"},
         "acts": {"chat": "Chat", "leave_message": "Pesan", "follow": "Ikuti", "calendar_slots": "Jadwal",
                  "files": "File"},
@@ -500,6 +514,7 @@ T = {
         "title": "Yobiru'da %s",
         "share": "Paylaş", "link_copied": "Bağlantı kopyalandı",
         "agent_on": "Sahibinin ajanı bağlı",
+        "agents": "Bağlı ajanlar", "agent_badge": "Bağlı ajan: %s",
         "stats": {"messages": "Mesaj", "followers": "Takipçi", "friends": "Arkadaş"},
         "acts": {"chat": "Sohbet", "leave_message": "Mesaj", "follow": "Takip et", "calendar_slots": "Randevu",
                  "files": "Dosyalar"},
@@ -537,6 +552,7 @@ T = {
         "title": "%s trên Yobiru",
         "share": "Chia sẻ", "link_copied": "Đã sao chép liên kết",
         "agent_on": "Agent của chủ bot đã kết nối",
+        "agents": "Agent đã kết nối", "agent_badge": "Agent đã kết nối: %s",
         "stats": {"messages": "Tin nhắn", "followers": "Người theo dõi", "friends": "Bạn bè"},
         "acts": {"chat": "Chat", "leave_message": "Lời nhắn", "follow": "Theo dõi", "calendar_slots": "Hẹn lịch",
                  "files": "Tệp"},

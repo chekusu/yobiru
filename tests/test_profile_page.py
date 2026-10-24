@@ -14,6 +14,8 @@ from pathlib import Path
 
 from support.public_harness import FriendsGateway
 
+import bot_agents as A
+import bot_gateway as G
 import bot_links as L
 import bot_profile as P
 import bot_profile_i18n as I18N
@@ -359,6 +361,92 @@ class LinkTests(ProfilePageCase):
         self.assertEqual(["x", "xiaohongshu", "wechat_official", None],
                          [L.platform_named(n) for n in ("Twitter", "小红书", "公众号", "myspace")])
 
+
+
+class AgentTests(ProfilePageCase):
+    def test_agents_the_owner_shows_are_on_the_card_and_the_page(self):
+        h = self.handle("g")
+        bot_id, _ = self.gw.owned_bot(h)
+        path = "/v1/owner/bots/%s" % bot_id
+        self.assertEqual([], self.gw.ok("GET", "/@" + h)["agents"])
+        self.gw.native(bot_id)
+        _, _, text = self.page("/@%s?lang=zh" % h)
+        self.assertIn('<span class="on" role="img" aria-label="主人的 agent 已接入"', text, "no agents shown: the spark")
+        self.assertNotIn('id="agents"', text)
+
+        owner = self.gw.ok("PATCH", path, {"agents": ["grok", "claude_code", "codex"]}, self.gw.owner_token)
+        self.assertEqual(["grok", "claude_code", "codex"], [a["id"] for a in owner["agents"]])
+        card = self.gw.ok("GET", "/@" + h)
+        self.assertEqual([{"id": "grok", "name": "Grok"}, {"id": "claude_code", "name": "Claude Code"},
+                          {"id": "codex", "name": "Codex"}], card["agents"])
+        _, _, text = self.page("/@%s?lang=zh" % h)
+        badge = re.search(r'<a class="on ag" href="#agents" aria-label="([^"]+)" title="[^"]+"><svg class="b" '
+                          r'viewBox="0 0 24 24" fill-rule="evenodd" aria-hidden="true"><path d="([^"]+)"/>', text)
+        self.assertEqual(("已连接的 agent：Grok", A.mark("grok")[2][0]), badge.groups(), "the first agent is on the picture")
+        self.assertEqual(["grok", "claude_code", "codex"], re.findall(r'<li data-agent="([a-z_]+)">', text))
+        self.assertIn('<h2 id="agents-h">已连接的 agent</h2>', text)
+        self.assertIn("Claude Code", visible(text))
+        self.assertLess(text.index('id="agents"'), text.index('class="card connect"'))
+        agent = self.page("/@" + h, user_agent=CLAUDE)[2]
+        self.assertIn("agents the owner shows (the owner&#x27;s statement): Grok, Claude Code, Codex", agent)
+
+        self.gw.ok("PATCH", path, {"agents": []}, self.gw.owner_token)
+        self.assertEqual([], self.gw.ok("GET", "/@" + h)["agents"])
+        self.assertNotIn('id="agents"', self.page("/@" + h)[2])
+
+    def test_agent_lists_are_checked(self):
+        h = self.handle("c")
+        bot_id, _ = self.gw.owned_bot(h)
+        path = "/v1/owner/bots/%s" % bot_id
+        self.gw.ok("PATCH", path, {"agents": ["muse"]}, self.gw.owner_token)
+        for bad in ("grok", ["grok", "grok"], ["skynet"], [1], list(A.IDS[:A.MAX_AGENTS + 1])):
+            with self.subTest(agents=bad):
+                status, obj = self.gw.call("PATCH", path, {"agents": bad}, self.gw.owner_token)
+                self.assertEqual((400, "invalid_agents"), (status, obj.get("error")))
+        self.assertEqual([{"id": "muse", "name": "Muse"}], self.gw.ok("GET", "/@" + h)["agents"])
+        # An id a later version added and this one does not know (after a rollback) is left out, never drawn.
+        self.gw.sql("UPDATE bot_profiles SET agents=? WHERE bot_id=?", (json.dumps(["future", "muse"]), bot_id))
+        self.assertEqual([{"id": "muse", "name": "Muse"}], self.gw.ok("GET", "/@" + h)["agents"])
+        self.assertEqual(["muse"], re.findall(r'<li data-agent="([a-z_]+)">', self.page("/@" + h)[2]))
+
+    def test_upgrade_adds_the_agents_column_once(self):
+        h = self.handle("o")
+        bot_id, _ = self.gw.owned_bot(h)
+        links = [{"label": "X", "url": "https://x.com/me"}]
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"links": links}, self.gw.owner_token)
+        self.gw.stop()
+        self.gw.sql("ALTER TABLE bot_profiles DROP COLUMN agents")      # a database from before this version
+        self.gw.start()
+        self.gw.stop()
+        self.gw.start()                                                 # a restart adds nothing twice
+        card = self.gw.ok("GET", "/@" + h)
+        self.assertEqual((links, []), (card["links"], card["agents"]))
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"agents": ["gemini"]}, self.gw.owner_token)
+        self.assertEqual(["gemini"], [a["id"] for a in self.gw.ok("GET", "/@" + h)["agents"]])
+
+    def test_catalog_names_and_marks(self):
+        self.assertEqual(len(A.IDS), len(set(A.IDS)))
+        self.assertEqual(set(A.IDS), set(A._MARKS))
+        self.assertEqual(A.IDS + ("other",), G.HOST_KINDS, "a binding's host kind and a shown agent share names")
+        for aid in A.IDS:
+            view_box, rule, paths, faint = A.mark(aid)
+            self.assertIn(view_box, ("0 0 24 24", "0 0 100 100"), aid)
+            self.assertIn(rule, ("evenodd", "nonzero"), aid)
+            self.assertTrue(paths, aid)
+            for d in paths:
+                self.assertRegex(d, r"^[MmZzLlHhVvCcSsQqTtAa0-9.,\- ]+\Z", aid)
+            self.assertTrue(all(0 <= i < len(paths) for i in faint), aid)
+        names = [A.named(n) for n in ("Grok", "grok bot", "Claude Code", "claude-code", "CLAUDE_CODE", "Meta Muse",
+                                      "OpenAI Codex", "ChatGPT", "通义千问", "豆包", "clawdbot", "myspace", "")]
+        self.assertEqual(["grok", "grok", "claude_code", "claude_code", "claude_code", "muse", "codex", "chatgpt",
+                          "qwen", "doubao", "openclaw", None, None], names)
+        owners = {}
+        for aid, name, aliases in A.AGENTS:
+            for n in [aid, name] + [x for x in aliases.split(",") if x.strip()]:
+                owners.setdefault(A._key(n), set()).add(aid)
+        self.assertEqual({}, {k: v for k, v in owners.items() if len(v) > 1}, "no name means two agents")
+        for lang in I18N.LANGS:
+            self.assertIn("%s", I18N.T[lang]["agent_badge"], lang)
 
 class LinkValidationTests(unittest.TestCase):
     def test_tel_normalization_rejects_parameters_and_nonformatting_characters(self):
