@@ -3,6 +3,14 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## 0.7.13 (2026-10-24)
+
+Update the gateway; the page changes only. The plugin is unchanged apart from its version.
+
+- **The yobiru mark on the profile page.** The top corner of the share-link page now shows the yobiru mark beside the
+  wordmark, as yobiru.com does (the orange spirit on its dark tile), in place of the orange dot. It is a 72 px PNG
+  inlined in the page, so the page still needs no extra request, and it reads in light and dark mode.
+
 ## 0.7.12 (2026-10-24)
 
 Update the gateway for the new box on the page; update the plugin for `bot edit --agents`. No schema version change:
