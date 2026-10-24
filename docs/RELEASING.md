@@ -188,7 +188,12 @@ none is touched by a deploy.
 
   Check with `nginx -t`, apply with `systemctl reload nginx` (no connection is dropped).
 - Litestream: `deploy/yobiru-litestream.service` and `deploy/yobiru-litestream.yml` replicate `gateway.sqlite3` to
-  the blob store's R2 bucket under `litestream/gateway`, with the blob store's key. Install the `litestream` binary
+  the blob store's R2 bucket under `litestream/gateway`, with the blob store's key. This copies the entire database
+  and transaction history, including metadata, stored message bodies and transient verification email addresses
+  and codes. Publish the [privacy notice](PRIVACY.md#the-official-gateway-botsyobirucom) describing these remote
+  copies before enabling replication. The configuration takes daily snapshots with 7-day retention; Litestream
+  [removes expired backups when it makes snapshots](https://litestream.io/docs/troubleshooting/), normally within
+  roughly 8 days. The bucket's 35-day object expiry also applies if that cleanup stops. Install the `litestream` binary
   from its GitHub release as `/usr/local/bin/litestream`, the files as `/etc/systemd/system/yobiru-litestream.service`
   and `/etc/yobiru-litestream.yml`, and write `/etc/yobiru-litestream.env` (root, 0600) with `YOBIRU_R2_ENDPOINT`,
   `LITESTREAM_ACCESS_KEY_ID` and `LITESTREAM_SECRET_ACCESS_KEY` taken from `gw/blobs.json` and `gw/r2.secret`. Add

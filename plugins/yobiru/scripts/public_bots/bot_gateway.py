@@ -4887,7 +4887,11 @@ class ChangeWatcher(object):
             self.someone.set()
         try:
             # A change committed between the listing and this registration was before the watcher's next look.
-            if self.store.attempt(lambda db: change_seq(db, bot_id)) > seen:
+            # Registrations run without a request slot: serialize their reads so even a burst of held polls
+            # needs only one extra database connection, covered by the fixed open-file reserve.
+            with self.lock:
+                changed = self.store.attempt(lambda db: change_seq(db, bot_id)) > seen
+            if changed:
                 return True
             return ev.wait(timeout)
         finally:
@@ -6030,19 +6034,21 @@ def cmd_owner(home, a):
     return 0
 
 
-FD_RESERVE = 64                 # a process's database connections, blob store, log and listening socket
+FD_PER_REQUEST = 4              # request socket, SQLite database + WAL, and one blob file or socket
+FD_RESERVE = 64                 # shared WAL index, background readers/sweeps, listener, stdio/log and spare accept
 
 
 def fit_open_files(slots, waiting):
-    """Every request and every held connector poll keeps a socket open. Raise the soft limit on open files to cover
-    them (request processes inherit it); where the hard limit is lower, hold fewer polls rather than fail to accept
-    connections. -> how many polls each process may hold."""
+    """Budget concurrent requests' sockets, SQLite and blob I/O, plus a socket per held connector poll. Raise the
+    soft limit (request processes inherit it); where the hard limit is lower, hold fewer polls. Refuse a request
+    concurrency that cannot fit even without held polls. -> how many polls each process may hold."""
     try:
         import resource
     except ImportError:                 # Windows: no such limit
         return waiting
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    need = slots + waiting + FD_RESERVE
+    baseline = slots * FD_PER_REQUEST + FD_RESERVE
+    need = baseline + waiting
     if soft == resource.RLIM_INFINITY or soft >= need:
         return waiting
     target = need if hard == resource.RLIM_INFINITY else min(need, hard)
@@ -6053,7 +6059,11 @@ def fit_open_files(slots, waiting):
         pass
     if soft >= need:
         return waiting
-    fit = max(0, soft - slots - FD_RESERVE)
+    if soft < baseline:
+        raise ValueError("the open file limit (%d) cannot support max_concurrent_requests=%d (needs at least %d); "
+                         "reduce max_concurrent_requests or raise the limit (systemd LimitNOFILE, ulimit -n)"
+                         % (soft, slots, baseline))
+    fit = soft - baseline
     log("WARNING: the open file limit (%d) leaves room for %d held connector polls per process, not %d; raise it "
         "(systemd LimitNOFILE, ulimit -n)" % (soft, fit, waiting))
     return fit
@@ -6085,8 +6095,11 @@ def cmd_serve(home, a):
     family = socket.AF_INET6 if ip.version == 6 else socket.AF_INET
     api = Api(store)
     slots = cfg["limits"]["max_concurrent_requests"]
-    srv = BoundedServer((bind, port), make_handler(api), slots, family,
-                        fit_open_files(slots, cfg["limits"]["max_waiting_connectors"]))
+    try:
+        waiting = fit_open_files(slots, cfg["limits"]["max_waiting_connectors"])
+    except ValueError as e:
+        die(str(e), 2)
+    srv = BoundedServer((bind, port), make_handler(api), slots, family, waiting)
     actual = srv.server_address[1]
     host = "[%s]" % bind if ip.version == 6 else bind
     if not ip.is_loopback:

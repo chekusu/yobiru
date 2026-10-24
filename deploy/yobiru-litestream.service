@@ -6,7 +6,9 @@
 # LITESTREAM_ACCESS_KEY_ID and LITESTREAM_SECRET_ACCESS_KEY; gateway.json needs "external_checkpoints": true.
 [Unit]
 Description=Litestream replication of the yobiru gateway database
-After=network-online.target
+# Stop Litestream before the gateway: deploy/rollback waits on the gateway's stop
+# job before replacing its database. PartOf alone does not order these stop jobs.
+After=network-online.target yobiru-gateway.service
 Wants=network-online.target
 PartOf=yobiru-gateway.service
 
