@@ -170,8 +170,9 @@ class AdministrationTests(GatewayCase):
         self.assertEqual({"ok", "type", "card_version", "issuer", "bot_id", "handle", "address", "id_address",
                           "display_name", "description", "capabilities", "capabilities_note", "accepts_visitors",
                           "accepts_followers", "accepts_contact_requests", "chat", "e2e", "identity", "api",
-                          "connect", "links", "avatar"},
+                          "connect", "stats", "links", "avatar"},
                          set(card))
+        self.assertEqual({"messages": 0, "followers": 0, "friends": 0}, card["stats"], "counts only, never who")
         self.assertTrue(card["address"].endswith("/@" + self.handle()))
         self.assertEqual(card, self.gw.ok("GET", "/@" + self.handle()), "the share link serves the same card")
         self.assertEqual(card, self.gw.ok("GET", "/@" + bot_id))
@@ -249,11 +250,13 @@ class ProfilePageTests(GatewayCase):
         self.assertEqual(200, status)
         self.assertTrue(hdrs["content-type"].startswith("text/html"))
         text = body.decode("utf-8")
-        self.assertIn('<html lang="zh-CN">', text)
+        self.assertIn('<html lang="zh-CN" dir="ltr">', text)
         self.assertIn("Synthetic " + h, text)
         self.assertIn('rel="alternate" type="application/json" href="%s.json"' % card["address"], text)
         self.assertIn("%s.json" % card["address"], hdrs["link"])
-        self.assertIn("yobiru public connect " + card["address"], text)
+        comment = text.split("<!--", 1)[1].split("-->", 1)[0]
+        self.assertIn("yobiru public connect " + card["address"], comment, "agents find the steps in a comment")
+        self.assertNotIn("yobiru public connect", text.split("</head>", 1)[1].replace(comment, ""))
         self.assertNotIn("<script>alert", text, "the description is escaped")
         self.assertIn("Hi &lt;script&gt;alert(1)&lt;/script&gt; &amp; welcome", text)
         embedded = text.split('<script type="application/json" id="yobiru-card">', 1)[1].split("</script>", 1)[0]
@@ -262,9 +265,9 @@ class ProfilePageTests(GatewayCase):
         self.assertEqual(2, text.count('nonce="%s"' % nonce), "only the page's own style and script run")
         self.assertIn("frame-ancestors 'none'", hdrs["content-security-policy"])
 
-        self.assertIn('<html lang="ja">', page(self.gw, "/@%s?lang=ja" % h, BROWSER)[2].decode("utf-8"))
-        self.assertIn('<html lang="en">', page(self.gw, "/@" + h, {"Accept": "text/html"})[2].decode("utf-8"))
-        self.assertIn('<html lang="en">', page(self.gw, "/@%s?format=html&lang=en" % h)[2].decode("utf-8"))
+        self.assertIn('<html lang="ja" dir="ltr">', page(self.gw, "/@%s?lang=ja" % h, BROWSER)[2].decode("utf-8"))
+        self.assertIn('<html lang="en" dir="ltr">', page(self.gw, "/@" + h, {"Accept": "text/html"})[2].decode())
+        self.assertIn('<html lang="en" dir="ltr">', page(self.gw, "/@%s?format=html&lang=en" % h)[2].decode())
         self.assertTrue(page(self.gw, "/@" + bot_id, BROWSER)[1]["content-type"].startswith("text/html"))
 
     def test_missing_bots_and_odd_queries(self):
@@ -310,7 +313,8 @@ class ProfilePageTests(GatewayCase):
         self.assertEqual(404, page(self.gw, "/@%s/avatar/%s" % (bot_id, "0" * 16))[0])
         text = page(self.gw, "/@" + h, BROWSER)[2].decode("utf-8")
         self.assertIn('<img class="avatar" src="%s"' % card["avatar"], text)
-        self.assertIn('href="https://github.com/x" rel="noopener nofollow ugc me">GitHub</a>', text)
+        self.assertIn('href="https://github.com/x" rel="noopener nofollow ugc me">', text)
+        self.assertIn("<bdi>GitHub</bdi>", text)
 
         for bad in (b"<svg xmlns='http://www.w3.org/2000/svg'/>", b"GIF89a" + b"\x00" * 40, png(8, 8),
                     png(64, 64) + b"\x00" * 70000, b"\x89PNG\r\n\x1a\n"):

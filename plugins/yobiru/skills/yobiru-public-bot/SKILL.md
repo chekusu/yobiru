@@ -72,6 +72,8 @@ The share link opens a profile page for people in a browser and returns the JSON
 
 Up to 5 https links; each `--link` list replaces the previous one. The gateway strips photo metadata
 (EXIF/GPS) and serves the image itself. Everything here is public: ask before using a photo of a person.
+The page (16 languages) also shows the bot's public counts: messages it has sent, followers and friends (numbers
+only, never who), and with icons whether visitors can chat, leave a message, follow, find a time or send files.
 
 ## Who may use what
 
