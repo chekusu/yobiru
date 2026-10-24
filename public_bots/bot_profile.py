@@ -276,6 +276,16 @@ def _icon(name, cls="i"):
 _GENERIC_MARKS = {"email": "leave_message", "phone": "phone"}
 
 
+def _display_links(card):
+    """Only make links clickable when they pass today's rules, including records saved before an upgrade."""
+    for link in card.get("links") or []:
+        try:
+            L.check_url(link["url"])
+        except ValueError:
+            continue
+        yield link
+
+
 def _link_row(link):
     """One link button: the mark of the service its URL points to (never chosen by the label), the label and, below
     it, where the link goes when that says more than the label."""
@@ -600,7 +610,7 @@ def render_profile(card, lang, path, nonce):
     connected = bool((card.get("chat") or {}).get("agent_connected"))
     badge = ('<span class="on" role="img" aria-label="%s" title="%s">%s</span>' % (
         _e(t["agent_on"]), _e(t["agent_on"]), _icon("spark"))) if connected else ""
-    own_links = "".join(_link_row(link) for link in card.get("links") or [])
+    own_links = "".join(_link_row(link) for link in _display_links(card))
     prompt = t["connect_prompt"] % (handle, address)
     body = (
         '<main><section class="card hero">'
@@ -671,7 +681,7 @@ def render_agent_page(card, nonce=None):
     ]
     links = "".join('<li>%s (%s): <a href="%s">%s</a></li>' % (
         _e(link["label"]), _e(L.LABELS[L.platform_of(link["url"])]), _e(link["url"]), _e(link["url"]))
-        for link in card.get("links") or [])
+        for link in _display_links(card))
     body = ("<main><h1>%s (%s)</h1><p>A Yobiru bot. This version of the page is for AI agents; people who open the "
             "link in a browser see a profile page.</p>%s<h2>How to connect</h2><pre>%s</pre>"
             "<h2>Facts</h2><ul>%s</ul>%s<h2>Machine-readable card</h2><p><a href=\"%s\">%s</a></p><pre>%s</pre></main>"

@@ -9,6 +9,7 @@ import json
 import re
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 
 from support.public_harness import FriendsGateway
@@ -264,6 +265,42 @@ class LanguageTests(ProfilePageCase):
 
 
 class LinkTests(ProfilePageCase):
+    def test_unsafe_link_edits_leave_public_links_unchanged(self):
+        h = self.handle("u")
+        bot_id, _ = self.gw.owned_bot(h)
+        path = "/v1/owner/bots/%s" % bot_id
+        links = [{"label": "Website", "url": "https://example.com/profile"}]
+        self.gw.ok("PATCH", path, {"links": links}, self.gw.owner_token)
+        for url in ("mailto:owner%40example.com?bcc=hidden@example.net",
+                    "mailto:owner%40example.com%3Fbcc=hidden@example.net",
+                    "mailto:owner%2Cother@example.com", "mailto:owner%0D%0ABcc=hidden@example.net",
+                    "https://evil.example\\.instagram.com/login"):
+            with self.subTest(url=url):
+                status, obj = self.gw.call("PATCH", path, {"links": [{"label": "Contact", "url": url}]},
+                                           self.gw.owner_token)
+                self.assertEqual((400, "invalid_links"), (status, obj.get("error")))
+                self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"])
+
+    def test_unsafe_stored_links_are_not_clickable_after_upgrade(self):
+        h = self.handle("u")
+        bot_id, _ = self.gw.owned_bot(h)
+        safe = {"label": "Website", "url": "https://example.com/profile"}
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"links": [safe]}, self.gw.owner_token)
+        unsafe = [{"label": "Instagram", "url": "https://evil.example\\.instagram.com/login"},
+                  {"label": "Mail", "url": "mailto:owner%40example.com?bcc=hidden@example.net"}]
+        # Simulate links persisted by the older validator. Rendering must apply the current rules too.
+        stored = [safe] + unsafe
+        self.gw.sql("UPDATE bot_profiles SET links=? WHERE bot_id=?", (json.dumps(stored), bot_id))
+        for user_agent in (CHROME, CLAUDE):
+            with self.subTest(user_agent=user_agent):
+                status, _, text = self.page("/@" + h, user_agent=user_agent)
+                self.assertEqual(200, status)
+                self.assertIn('href="%s"' % safe["url"], text)
+                for link in unsafe:
+                    self.assertNotIn('href="%s"' % html.escape(link["url"], quote=True), text)
+                self.assertNotIn('data-platform="instagram"', text)
+        self.assertEqual(stored, self.gw.ok("GET", "/@" + h)["links"], "rendering does not rewrite stored data")
+
     def test_each_link_shows_the_icon_of_where_it_goes(self):
         h = self.handle("k")
         bot_id, _ = self.gw.owned_bot(h)
@@ -321,6 +358,73 @@ class LinkTests(ProfilePageCase):
                 L.normalize(bad)
         self.assertEqual(["x", "xiaohongshu", "wechat_official", None],
                          [L.platform_named(n) for n in ("Twitter", "小红书", "公众号", "myspace")])
+
+
+class LinkValidationTests(unittest.TestCase):
+    def test_mailto_rejects_headers_and_decoded_recipient_delimiters(self):
+        for url in ("mailto:owner%40example.com?bcc=hidden@example.net",
+                    "mailto:owner%40example.com#hidden@example.net",
+                    "mailto:owner@example.com?", "mailto:owner@example.com#",
+                    "mailto:owner%2Chidden@example.net", "mailto:owner%3Bhidden@example.net",
+                    "mailto:owner%40example.com%3Fbcc=hidden@example.net",
+                    "mailto:owner%0D%0ABcc=hidden@example.net", "mailto:owner%00@example.net",
+                    "mailto:owner%20name@example.net", "mailto:owner%FF@example.net",
+                    "mailto:owner%2@example.net", "mailto:owner%GG@example.net"):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    L.check_url(url)
+                self.assertEqual("website", L.platform_of(url), "invalid old links must not get a service icon")
+
+    def test_mailto_preserves_one_address_and_literal_local_characters(self):
+        for url in ("mailto:owner@example.com", "mailto:alice=work@example.com",
+                    "mailto:owner+notes@example.com", "mailto:owner%40example.com",
+                    "mailto:question%3Fmark@example.com", "mailto:hash%23tag@example.com",
+                    "mailto:100%25done@example.com"):
+            with self.subTest(url=url):
+                self.assertEqual(url, L.check_url(url))
+                self.assertEqual("email", L.platform_of(url))
+        for address, url in (("alice=work@example.com", "mailto:alice=work@example.com"),
+                             ("first.last@example.com", "mailto:first.last@example.com"),
+                             ("question?mark@example.com", "mailto:question%3Fmark@example.com"),
+                             ("hash#tag@example.com", "mailto:hash%23tag@example.com"),
+                             ("100%done@example.com", "mailto:100%25done@example.com")):
+            with self.subTest(address=address):
+                self.assertEqual(url, L.normalize(address))
+
+    def test_backslash_in_authority_cannot_claim_a_service(self):
+        # Browsers parse the backslash as a path separator and navigate to evil.example;
+        # urllib.parse otherwise sees a hostname ending with .instagram.com / .x.com.
+        for url in (r"https://evil.example\.instagram.com/login", r"https://evil.example\.x.com/me"):
+            with self.subTest(url=url):
+                with self.assertRaises(ValueError):
+                    L.check_url(url)
+                with self.assertRaises(ValueError):
+                    L.normalize(url)
+                self.assertEqual("website", L.platform_of(url), "also protect links stored before upgrade")
+        for url in ("https://www.instagram.com/me", "https://www.instagram.com/?next=https://other.example",
+                    r"https://www.instagram.com/path\segment", "https://www.instagram.com/path%5Csegment"):
+            with self.subTest(url=url):
+                self.assertEqual(url, L.check_url(url))
+                self.assertEqual("instagram", L.platform_of(url))
+
+    def test_bare_url_keeps_query_and_fragment_destinations(self):
+        for value in ("example.com/page?ref=https://friend.example", "example.com?ref=friend.example",
+                      "example.com#ref=friend.example"):
+            with self.subTest(value=value):
+                self.assertEqual("https://" + value, L.normalize(value))
+
+    def test_ambiguous_bare_email_or_url_requires_an_explicit_scheme(self):
+        for value, mailto in (("alice.smith/notes@example.com", "mailto:alice.smith/notes@example.com"),
+                              ("alice.smith?notes@example.com", "mailto:alice.smith%3Fnotes@example.com"),
+                              ("alice.smith#notes@example.com", "mailto:alice.smith%23notes@example.com"),
+                              ("example.com/page?email=alice@example.com",
+                               "mailto:example.com/page%3Femail=alice@example.com")):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "https://.*mailto:"):
+                    L.normalize(value)
+                self.assertEqual("https://" + value, L.normalize("https://" + value))
+                self.assertEqual(mailto, L.normalize(mailto))
+                self.assertEqual(value, urllib.parse.unquote(L.normalize(mailto)[7:]))
 
 
 if __name__ == "__main__":

@@ -356,10 +356,64 @@ class ProfilePageTests(GatewayCase):
         self.assertEqual(([], None), (card["links"], card["avatar"]))
         self.assertNotEqual(0, cli(home, "bot", "edit", "@" + h, "--link", "nope")[0])
         code, out, err = cli(home, "bot", "edit", "@" + h, "--link", "https://www.youtube.com/watch?v=abc",
-                             "--link", "Mail=me@example.com")
+                             "--link", "Mail=mailto:me@example.com")
         self.assertEqual(0, code, err)
         self.assertEqual([("YouTube", "https://www.youtube.com/watch?v=abc"), ("Mail", "mailto:me@example.com")],
                          [(l["label"], l["url"]) for l in out["links"]], "a bare URL keeps its query")
+
+    def test_cli_keeps_equals_in_bare_web_destinations(self):
+        from support.public_harness import cli
+        h = self.handle()
+        self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        for value, expected in (("example.com/page?ref=friend.example", "https://example.com/page?ref=friend.example"),
+                                ("www.youtube.com/watch?v=abc", "https://www.youtube.com/watch?v=abc"),
+                                ("example.com/path=friend.example", "https://example.com/path=friend.example"),
+                                ("example.com?ref=friend.example", "https://example.com?ref=friend.example"),
+                                ("example.com#ref=friend.example", "https://example.com#ref=friend.example"),
+                                ("example.com/page?ref=https://friend.example",
+                                 "https://example.com/page?ref=https://friend.example"),
+                                ("https://example.com/page?email=alice@example.com",
+                                 "https://example.com/page?email=alice@example.com"),
+                                ("Profile=https://example.com/page?ref=friend.example",
+                                 "https://example.com/page?ref=friend.example"),
+                                ("Profile=example.com/page?ref=friend.example",
+                                 "https://example.com/page?ref=friend.example")):
+            with self.subTest(value=value):
+                code, out, err = cli(home, "bot", "edit", "@" + h, "--link", value)
+                self.assertEqual(0, code, err)
+                self.assertEqual([expected], [link["url"] for link in out["links"]])
+                self.assertEqual(out["links"], self.gw.ok("GET", "/@" + h)["links"])
+        links = self.gw.ok("GET", "/@" + h)["links"]
+        code, _, _ = cli(home, "bot", "edit", "@" + h, "--link", "example.com/invalid path=friend.example")
+        self.assertNotEqual(0, code)
+        self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"], "an invalid bare URL is not reinterpreted")
+
+    def test_cli_requires_unambiguous_equals_in_email_links(self):
+        from support.public_harness import cli
+        h = self.handle()
+        self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        code, out, err = cli(home, "bot", "edit", "@" + h, "--link", "mailto:alice=work@example.com",
+                             "--link", "Mail=mailto:me@example.com", "--link", "mailto:alice.smith/notes@example.com")
+        self.assertEqual(0, code, err)
+        links = [{"label": "alice=work@example.com", "url": "mailto:alice=work@example.com"},
+                 {"label": "Mail", "url": "mailto:me@example.com"},
+                 {"label": "alice.smith/notes@example.com", "url": "mailto:alice.smith/notes@example.com"}]
+        self.assertEqual(links, out["links"])
+        self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"])
+        for value in ("alice=work@example.com", "Mail=me@example.com", "alice.smith/notes@example.com",
+                      "example.com/page?email=alice@example.com"):
+            with self.subTest(value=value):
+                code, _, err = cli(home, "bot", "edit", "@" + h, "--link", value)
+                self.assertNotEqual(0, code, "ambiguous email links must not change the destination")
+                self.assertIn("ambiguous", err)
+                self.assertIn("mailto:", err)
+                self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"])
 
     def test_cli_changes_one_link_at_a_time(self):
         from support.public_harness import cli

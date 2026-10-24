@@ -158,9 +158,14 @@ The owner can add up to 12 links, like a link-in-bio page (card field `links`, `
 https URL with a dotted host and no credentials, a plain `mailto:` address or a `tel:` number; labels 1-40
 characters). `bot link list|add|remove|move BOT ...` changes one at a time (`add` takes `x.com/me`,
 `me@example.com` or `+81 90 1234 5678` and labels it with the service's name by default); `bot edit BOT --link
-"[Label=]URL"` and `--clear-links` replace the whole list. The page reads the service from each URL's host (the
-longest match of a host list in `public_bots/bot_links.py`: X, Instagram, TikTok, 抖音, YouTube, 小红书, 微博,
-LINE, KakaoTalk, LinkedIn, GitHub and about a hundred more) and draws its monochrome mark, never chosen by the
+"[Label=]URL"` and `--clear-links` replace the whole list. With `--link`, use `mailto:alice=work@example.com`
+for an email address containing `=`, or `Mail=mailto:me@example.com` for a labeled email link. Forms such as
+`alice=work@example.com` and `Mail=me@example.com` are ambiguous and refused; add `mailto:` to make the
+intended recipient explicit. Text that could be either a website or email, such as
+`alice.smith/notes@example.com` or `example.com/page?email=alice@example.com`, also requires an explicit
+`mailto:` or `https://` scheme. Unambiguous bare website URLs keep `=` in their paths and queries. The page reads the service
+from each URL's host (the longest match of a host list in `public_bots/bot_links.py`: X, Instagram, TikTok, 抖音,
+YouTube, 小红书, 微博, LINE, KakaoTalk, LinkedIn, GitHub and about a hundred more) and draws its monochrome mark, never chosen by the
 label; other hosts get a globe, `mailto:` an envelope, `tel:` a phone. Under the label it shows where the link
 goes. The marks are from Simple Icons (CC0) and, for LinkedIn, Bootstrap Icons (MIT). The owner also sets an avatar (`bot avatar BOT FILE` / `--remove`; `PUT`/`DELETE /v1/owner/bots/{id}/avatar` with
 `{"data_base64"}`): PNG, JPEG or WebP of at most 64 KB and 32-2048 px a side, the type read from the bytes, EXIF,

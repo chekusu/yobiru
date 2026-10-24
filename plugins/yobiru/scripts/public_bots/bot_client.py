@@ -2198,9 +2198,21 @@ def link_item(url, label=None):
 
 def link_arg(value):
     """'Label=URL' or a bare URL from --link."""
+    value = value.strip()
     label, sep, url = value.partition("=")
     if not sep or "://" in label or label.lower().startswith(("mailto:", "tel:")):
         label, url = "", value
+    else:
+        try:
+            bare = L.normalize(value)
+        except ValueError:
+            bare = None
+        if bare and bare.startswith("mailto:"):
+            die("--link: ambiguous email with '='; use mailto:alice=work@example.com for an address "
+                "or Mail=mailto:me@example.com for a labeled link")
+        # Even an invalid bare host/path must not be split into a different destination.
+        if re.match(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:[/?#]|\Z)", value):
+            label, url = "", value
     if not url.strip():
         die("--link: use 'Label=https://example.com/...' or just the URL")
     return link_item(url, label)
@@ -4150,6 +4162,8 @@ def main(argv=None):
                    help="refuse messages that are not end-to-end encrypted (MCP clients without a key cannot write)")
     p.add_argument("--link", action="append", metavar="[LABEL=]URL",
                    help="a link button on the bot's page (https, mailto: or tel:, up to 12; replaces the whole list; "
+                        "use mailto: for email addresses containing '=' or labeled email links; "
+                        "use https:// or mailto: when text could be either a website or email; "
                         "`bot link` changes one at a time)")
     p.add_argument("--clear-links", action="store_true", help="remove every link from the bot's page")
     p.add_argument("--gateway")

@@ -157,7 +157,11 @@ def check_url(url):
                                                              for c in url):
         raise ValueError("links: url is at most %d ASCII characters with no spaces" % URL_MAX)
     if url.startswith("mailto:"):
-        if not _EMAIL_RE.match(url[7:]):
+        u = urllib.parse.urlsplit(url)
+        # URI delimiters are not address characters here. Validate the decoded recipient too:
+        # an encoded comma, extra @ or CRLF must not turn one address into recipients or headers.
+        if u.netloc or "?" in url or "#" in url or re.search(r"%(?![0-9A-Fa-f]{2})", u.path) or \
+                not _EMAIL_RE.match(urllib.parse.unquote(u.path, errors="strict")):
             raise ValueError("links: mailto: takes one plain address, such as mailto:me@example.com")
         return url
     if url.startswith("tel:"):
@@ -166,13 +170,17 @@ def check_url(url):
         return url
     u = urllib.parse.urlsplit(url)
     if u.scheme != "https" or not u.hostname or "." not in u.hostname or u.username or u.password or \
-            "@" in u.netloc:
+            "@" in u.netloc or "\\" in u.netloc:
         raise ValueError("links: url must be https://host/..., mailto: or tel:, with no credentials")
     return url
 
 
 def platform_of(url):
-    """The service a checked link points to: a PLATFORMS id, "email", "phone" or "website"."""
+    """The service a link points to: a PLATFORMS id, "email", "phone" or "website" (also for invalid old links)."""
+    try:
+        check_url(url)
+    except ValueError:
+        return "website"
     if url.startswith("mailto:"):
         return "email"
     if url.startswith("tel:"):
@@ -223,14 +231,16 @@ def normalize(value):
     if v.lower().startswith(("mailto:", "tel:")):
         scheme, _, rest = v.partition(":")
         v = scheme.lower() + ":" + rest
+    elif re.match(r"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+([/?#]|\Z)", v):
+        if _EMAIL_RE.match(v):
+            raise ValueError("links: ambiguous address; use https:// for a URL or mailto: for an email")
+        v = "https://" + v
     elif _EMAIL_RE.match(v):
-        v = "mailto:" + v
+        v = "mailto:" + urllib.parse.quote(v, safe="@.!$&'*+=^_`{|}~-")
     elif re.match(r"^\+?[0-9][0-9 ().-]{4,}\Z", v) and len(re.sub(r"\D", "", v)) >= 6:
         v = "tel:" + v
     elif v.lower().startswith("http://"):
         v = "https://" + v[7:]
-    elif "://" not in v and re.match(r"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(/|\Z)", v):
-        v = "https://" + v
     if v.startswith("tel:"):
         digits = re.findall(r"[0-9]+", v)
         v = "tel:" + ("+" if v[4:5] == "+" else "") + "-".join(digits)
