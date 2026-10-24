@@ -293,7 +293,9 @@ class ProfilePageTests(GatewayCase):
         self.assertEqual(links, self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"links": links}, owner)["links"])
         for bad in ([{"label": "x", "url": "http://example.com"}], [{"label": "x", "url": "javascript:alert(1)"}],
                     [{"label": "x", "url": "https://user:pw@example.com"}], [{"label": "", "url": "https://a.example"}],
-                    [{"label": "x", "url": "https://a.example", "more": 1}], [links[0]] * 6, "https://a.example"):
+                    [{"label": "x", "url": "https://a.example", "more": 1}], [links[0]] * 13, "https://a.example",
+                    [{"label": "x", "url": "mailto:a@example.com?subject=hi"}], [{"label": "x", "url": "tel:12"}],
+                    [{"label": "x", "url": "mailto:a@example.com,b@example.com"}]):
             status, obj = self.gw.call("PATCH", "/v1/owner/bots/%s" % bot_id, {"links": bad}, owner)
             self.assertEqual((400, "invalid_links"), (status, obj.get("error")), bad)
         self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"], "a refused edit changes nothing")
@@ -313,8 +315,8 @@ class ProfilePageTests(GatewayCase):
         self.assertEqual(404, page(self.gw, "/@%s/avatar/%s" % (bot_id, "0" * 16))[0])
         text = page(self.gw, "/@" + h, BROWSER)[2].decode("utf-8")
         self.assertIn('<img class="avatar" src="%s"' % card["avatar"], text)
-        self.assertIn('href="https://github.com/x" rel="noopener nofollow ugc me">', text)
-        self.assertIn("<bdi>GitHub</bdi>", text)
+        self.assertIn('href="https://github.com/x" rel="noopener nofollow ugc me" data-platform="github">', text)
+        self.assertIn('<bdi class="lb">GitHub</bdi>', text)
 
         for bad in (b"<svg xmlns='http://www.w3.org/2000/svg'/>", b"GIF89a" + b"\x00" * 40, png(8, 8),
                     png(64, 64) + b"\x00" * 70000, b"\x89PNG\r\n\x1a\n"):
@@ -353,6 +355,47 @@ class ProfilePageTests(GatewayCase):
         card = self.gw.ok("GET", "/@" + h)
         self.assertEqual(([], None), (card["links"], card["avatar"]))
         self.assertNotEqual(0, cli(home, "bot", "edit", "@" + h, "--link", "nope")[0])
+        code, out, err = cli(home, "bot", "edit", "@" + h, "--link", "https://www.youtube.com/watch?v=abc",
+                             "--link", "Mail=me@example.com")
+        self.assertEqual(0, code, err)
+        self.assertEqual([("YouTube", "https://www.youtube.com/watch?v=abc"), ("Mail", "mailto:me@example.com")],
+                         [(l["label"], l["url"]) for l in out["links"]], "a bare URL keeps its query")
+
+    def test_cli_changes_one_link_at_a_time(self):
+        from support.public_harness import cli
+        h = self.handle()
+        self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        seen = lambda out: [(l["n"], l["label"], l["url"], l["platform"]) for l in out["links"]]  # noqa: E731
+        for args in (("x.com/me",), ("https://www.instagram.com/me", "--label", "IG"), ("+81 90 1234 5678",),
+                     ("me@example.com", "--at", "1")):
+            code, out, err = cli(home, "bot", "link", "add", "@" + h, *args)
+            self.assertEqual(0, code, err)
+        self.assertEqual([(1, "me@example.com", "mailto:me@example.com", "email"),
+                          (2, "X", "https://x.com/me", "x"), (3, "IG", "https://www.instagram.com/me", "instagram"),
+                          (4, "+81-90-1234-5678", "tel:+81-90-1234-5678", "phone")], seen(out))
+        code, out, err = cli(home, "bot", "link", "add", "@" + h, "https://x.com/me", "--label", "X (Twitter)")
+        self.assertEqual((0, ["me@example.com", "X (Twitter)", "IG", "+81-90-1234-5678"]),
+                         (code, [l["label"] for l in out["links"]]), "the same URL again changes it, not a copy")
+        code, out, err = cli(home, "bot", "link", "move", "@" + h, "instagram", "1")
+        self.assertEqual((0, "IG"), (code, out["links"][0]["label"]), err)
+        code, out, err = cli(home, "bot", "link", "remove", "@" + h, "twitter")
+        self.assertEqual(0, code, err)
+        code, out, err = cli(home, "bot", "link", "remove", "@" + h, "3")
+        self.assertEqual(0, code, err)
+        code, out, err = cli(home, "bot", "link", "list", "@" + h)
+        self.assertEqual((0, ["https://www.instagram.com/me", "mailto:me@example.com"]),
+                         (code, [l["url"] for l in out["links"]]), err)
+        self.assertEqual(["https://www.instagram.com/me", "mailto:me@example.com"],
+                         [l["url"] for l in self.gw.ok("GET", "/@" + h)["links"]], "the public card changed")
+        cli(home, "bot", "link", "add", "@" + h, "https://instagram.com/second", "--label", "IG 2")
+        code, _, err = cli(home, "bot", "link", "remove", "@" + h, "instagram")
+        self.assertNotEqual(0, code)
+        self.assertIn("matches 2 links", err)
+        for bad in (("add", "@" + h, "javascript:alert(1)"), ("add", "@" + h, "@me"), ("remove", "@" + h, "tiktok")):
+            self.assertNotEqual(0, cli(home, "bot", "link", *bad)[0], bad)
 
     def test_share_links_from_the_page_still_parse(self):
         for link in ("https://gw.example/@guoyu.json", "https://gw.example/@guoyu?lang=zh",

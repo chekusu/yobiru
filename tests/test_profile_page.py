@@ -13,6 +13,7 @@ from pathlib import Path
 
 from support.public_harness import FriendsGateway
 
+import bot_links as L
 import bot_profile as P
 import bot_profile_i18n as I18N
 
@@ -260,6 +261,66 @@ class LanguageTests(ProfilePageCase):
                                                                                            1234567)])
         self.assertEqual(["9,999", "1.2万", "123.4万"], [P.compact(n, "zh") for n in (9999, 12345, 1234567)])
         self.assertEqual(["1.234", "1.2만"], [P.compact(1234, "de"), P.compact(12345, "ko")])
+
+
+class LinkTests(ProfilePageCase):
+    def test_each_link_shows_the_icon_of_where_it_goes(self):
+        h = self.handle("k")
+        bot_id, _ = self.gw.owned_bot(h)
+        links = [{"label": "X", "url": "https://x.com/me"}, {"label": "小红书", "url": "https://xhslink.com/a1"},
+                 {"label": "Music", "url": "https://music.youtube.com/channel/1"},
+                 {"label": "Instagram", "url": "https://phish.example/login"},
+                 {"label": "Mail", "url": "mailto:me@example.com"}, {"label": "Call", "url": "tel:+81-90-1234-5678"},
+                 {"label": "me.example", "url": "https://me.example/"}]
+        links += [{"label": "Post %d" % i, "url": "https://example.com/%d" % i} for i in range(12 - len(links))]
+        self.assertEqual(links, self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"links": links},
+                                           self.gw.owner_token)["links"])
+        status, _, text = self.page("/@" + h)
+        self.assertEqual(200, status)
+        rows = re.findall(r'<a class="row" href="([^"]+)" rel="noopener nofollow ugc me" data-platform="([a-z_]+)">'
+                          r'<span class="mk"><svg class="(b|i)"', text)
+        self.assertEqual([("https://x.com/me", "x", "b"), ("https://xhslink.com/a1", "xiaohongshu", "b"),
+                          ("https://music.youtube.com/channel/1", "youtubemusic", "b"),
+                          ("https://phish.example/login", "website", "i"), ("mailto:me@example.com", "email", "i"),
+                          ("tel:+81-90-1234-5678", "phone", "i"), ("https://me.example/", "website", "i")],
+                         rows[:7], "the icon follows the URL, never the label")
+        self.assertEqual(12, len(rows))
+        self.assertIn(L._MARKS["x"], text)
+        self.assertIn('<bdi class="to" dir="ltr">phish.example/login</bdi>', text, "where it really goes is shown")
+        self.assertNotIn('<bdi class="to" dir="ltr">me.example</bdi>', text, "not when the label already says it")
+        agent = self.page("/@" + h, user_agent=CLAUDE)[2]
+        self.assertIn('<li>Instagram (Website): <a href="https://phish.example/login">', agent)
+        self.assertIn('<li>X (X): <a href="https://x.com/me">', agent)
+
+    def test_services_labels_and_input(self):
+        ids = [p[0] for p in L.PLATFORMS]
+        self.assertEqual(len(ids), len(set(ids)))
+        hosts = [host for p in L.PLATFORMS for host in p[3].split()]
+        self.assertEqual(len(hosts), len(set(hosts)), "each host names one service")
+        for pid, label, mark, _ in L.PLATFORMS:
+            self.assertTrue(label, pid)
+            if mark:
+                view_box, path = L.mark(pid)
+                self.assertRegex(path, r"^[MmZzLlHhVvCcSsQqTtAa0-9.,\- ]+\Z", pid)
+        for url, pid in (("https://www.x.com/a", "x"), ("https://twitter.com/a", "x"), ("https://m.youtube.com/a",
+                         "youtube"), ("https://music.youtube.com/a", "youtubemusic"), ("https://v.douyin.com/a",
+                         "douyin"), ("https://mp.weixin.qq.com/s/a", "wechat_official"), ("https://qq.com/", "website"),
+                         ("https://mastodon.example/@a", "mastodon"), ("https://notx.com/a", "website"),
+                         ("https://x.com.evil.example/", "website"), ("https://bots.yobiru.com/@a", "yobiru")):
+            self.assertEqual(pid, L.platform_of(url), url)
+        self.assertEqual(["X", "抖音", "me@example.com", "example.org"],
+                         [L.default_label(u) for u in ("https://x.com/a", "https://douyin.com/a",
+                                                       "mailto:me@example.com", "https://www.example.org/a")])
+        self.assertEqual(["https://x.com/me", "https://a.example/b", "mailto:me@example.com", "tel:+1-555-123-4567",
+                          "tel:090-1234-5678"],
+                         [L.normalize(v) for v in ("x.com/me", "http://a.example/b", " me@example.com ",
+                                                   "+1 (555) 123-4567", "090 1234 5678")])
+        for bad in ("@me", "javascript:alert(1)", "https://localhost/", "mailto:me@example.com?cc=x@example.com",
+                    "tel:+1", "data:text/html,hi", "https://a.example/" + "x" * 300):
+            with self.assertRaises(ValueError, msg=bad):
+                L.normalize(bad)
+        self.assertEqual(["x", "xiaohongshu", "wechat_official", None],
+                         [L.platform_named(n) for n in ("Twitter", "小红书", "公众号", "myspace")])
 
 
 if __name__ == "__main__":

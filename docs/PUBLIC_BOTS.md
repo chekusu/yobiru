@@ -154,8 +154,15 @@ an HTML comment, the `<link rel="alternate">` and the embedded card. An AI agent
 (the yobiru client), a tie, `/@handle.json` or `?format=json`. `format` and `lang` are the only queries a share
 link accepts. `yobiru public connect` also takes the `.json` URL.
 
-The owner can add up to 5 https links (`bot edit BOT --link "Label=https://..."`, `--clear-links`; card field
-`links`) and an avatar (`bot avatar BOT FILE` / `--remove`; `PUT`/`DELETE /v1/owner/bots/{id}/avatar` with
+The owner can add up to 12 links, like a link-in-bio page (card field `links`, `[{label, url}]`; each `url` an
+https URL with a dotted host and no credentials, a plain `mailto:` address or a `tel:` number; labels 1-40
+characters). `bot link list|add|remove|move BOT ...` changes one at a time (`add` takes `x.com/me`,
+`me@example.com` or `+81 90 1234 5678` and labels it with the service's name by default); `bot edit BOT --link
+"[Label=]URL"` and `--clear-links` replace the whole list. The page reads the service from each URL's host (the
+longest match of a host list in `public_bots/bot_links.py`: X, Instagram, TikTok, 抖音, YouTube, 小红书, 微博,
+LINE, KakaoTalk, LinkedIn, GitHub and about a hundred more) and draws its monochrome mark, never chosen by the
+label; other hosts get a globe, `mailto:` an envelope, `tel:` a phone. Under the label it shows where the link
+goes. The marks are from Simple Icons (CC0) and, for LinkedIn, Bootstrap Icons (MIT). The owner also sets an avatar (`bot avatar BOT FILE` / `--remove`; `PUT`/`DELETE /v1/owner/bots/{id}/avatar` with
 `{"data_base64"}`): PNG, JPEG or WebP of at most 64 KB and 32-2048 px a side, the type read from the bytes, EXIF,
 XMP and text chunks removed before storing. The card's `avatar` is then `<public URL>/@bot_.../avatar/<hash>`,
 served by the gateway itself (`Content-Security-Policy: sandbox`, `nosniff`); without one it is `null` and the page

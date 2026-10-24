@@ -15,15 +15,15 @@ import re
 import secrets
 import struct
 import unicodedata
-import urllib.parse
 
+import bot_links as L
 import bot_profile_i18n as I18N
 
 LANGS = I18N.LANGS
 SITE = "https://yobiru.com"
 AVATAR_MAX_BYTES = 65536                    # decoded; its base64 JSON body fits the attachment body limit
 AVATAR_MIN_PX, AVATAR_MAX_PX = 32, 2048
-MAX_LINKS, LINK_LABEL_MAX, LINK_URL_MAX = 5, 40, 300
+MAX_LINKS, LINK_LABEL_MAX, LINK_URL_MAX = 12, 40, L.URL_MAX
 REPO = "https://github.com/chekusu/yobiru"
 
 
@@ -162,8 +162,8 @@ def strip_metadata(data, kind):
 
 
 def clean_links(value):
-    """An owner's link list: up to MAX_LINKS {"label", "url"} with plain https URLs. Returns the canonical list or
-    raises ValueError with a short reason."""
+    """An owner's link list: up to MAX_LINKS {"label", "url"} with plain https URLs, mailto: addresses or tel:
+    numbers (bot_links.check_url). Returns the canonical list or raises ValueError with a short reason."""
     if not isinstance(value, list) or len(value) > MAX_LINKS:
         raise ValueError("links: a list of at most %d {label, url}" % MAX_LINKS)
     out = []
@@ -174,13 +174,7 @@ def clean_links(value):
         if not isinstance(label, str) or not label.strip() or len(label) > LINK_LABEL_MAX or \
                 any(unicodedata.category(c) in ("Cc", "Cs", "Cf", "Zl", "Zp") for c in label):
             raise ValueError("links: label is 1-%d characters of plain text" % LINK_LABEL_MAX)
-        if not isinstance(url, str) or len(url) > LINK_URL_MAX or any(c.isspace() or ord(c) < 33 or ord(c) > 126
-                                                                      for c in url):
-            raise ValueError("links: url is an https URL of at most %d ASCII characters" % LINK_URL_MAX)
-        u = urllib.parse.urlsplit(url)
-        if u.scheme != "https" or not u.hostname or "." not in u.hostname or u.username or u.password or \
-                "@" in u.netloc:
-            raise ValueError("links: url must be https://host/... with no credentials")
+        L.check_url(url)
         out.append({"label": " ".join(unicodedata.normalize("NFC", label).split()), "url": url})
     return out
 
@@ -262,9 +256,10 @@ _ICONS = {
     "globe": '<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 '
              '1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
     "down": '<path d="m6 9 6 6 6-6"/>',
-    "link": '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54'
-            '-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
     "out": '<path d="M7 7h10v10"/><path d="M7 17 17 7"/>',
+    "phone": '<path d="M13.83 16.57a1 1 0 0 0 1.21-.3l.36-.47a2 2 0 0 1 1.6-.8h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 '
+             '0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.47.35a1 1 0 0 0-.29 1.23 14 14 0 0 0 6.39 '
+             '6.39"/>',
     "lock": '<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
     "user": '<circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/>',
     "off": '<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>',
@@ -276,6 +271,24 @@ _ICONS = {
 
 def _icon(name, cls="i"):
     return '<svg class="%s" viewBox="0 0 24 24" aria-hidden="true">%s</svg>' % (cls, _ICONS[name])
+
+
+_GENERIC_MARKS = {"email": "leave_message", "phone": "phone"}
+
+
+def _link_row(link):
+    """One link button: the mark of the service its URL points to (never chosen by the label), the label and, below
+    it, where the link goes when that says more than the label."""
+    url, label = link["url"], link["label"]
+    platform = L.platform_of(url)
+    brand = L.mark(platform)
+    icon = ('<svg class="b" viewBox="%s" aria-hidden="true"><path d="%s"/></svg>' % brand if brand
+            else _icon(_GENERIC_MARKS.get(platform, "globe")))
+    to = L.shown(url)
+    sub = '<bdi class="to" dir="ltr">%s</bdi>' % _e(to) if to.lower() != label.lower() else ""
+    return ('<a class="row" href="%s" rel="noopener nofollow ugc me" data-platform="%s"><span class="mk">%s</span>'
+            '<span class="tx"><bdi class="lb">%s</bdi>%s</span>%s</a>'
+            % (_e(url), platform, icon, _e(label), sub, _icon("out", "i go")))
 
 
 CSS = """
@@ -377,13 +390,22 @@ background:var(--surface);color:var(--ink-2);display:grid;place-items:center;box
 .n{margin:0;color:var(--ink-2);font-size:13px}
 .n b{color:var(--ink);font-weight:640}
 .n span{display:block;color:var(--ink-3);font-size:12.5px;margin-top:2px}
-.links{display:grid;gap:8px;margin:0 0 12px}
-.row{display:flex;align-items:center;gap:12px;min-height:54px;padding:0 16px;border-radius:18px;
-background:var(--surface);box-shadow:0 0 0 1px var(--line),var(--shadow);text-decoration:none;font-weight:560;
-transition:box-shadow .15s}
-.row:hover{box-shadow:0 0 0 1px var(--line-2),var(--shadow)}
-.row span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.row .i{color:var(--ink-3);width:18px;height:18px}
+.links{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;margin:0 0 12px}
+.row{display:flex;align-items:center;gap:12px;min-height:60px;padding:10px 16px;padding-inline-start:10px;
+border-radius:18px;background:var(--surface);box-shadow:0 0 0 1px var(--line),var(--shadow);text-decoration:none;
+transition:box-shadow .15s,transform .15s}
+.row:hover{box-shadow:0 0 0 1px var(--line-2),var(--shadow);transform:translateY(-1px)}
+.row:focus-visible{outline:none;box-shadow:0 0 0 2px var(--ink)}
+.mk{display:grid;place-items:center;width:40px;height:40px;flex:none;border-radius:12px;background:var(--muted);
+color:var(--ink)}
+.mk .b{width:20px;height:20px;fill:currentColor}
+.mk .i{width:20px;height:20px;stroke-width:1.7}
+.tx{display:flex;flex-direction:column;align-items:flex-start;flex:1;min-width:0}
+.tx>*{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lb{font-weight:600;line-height:1.35}
+.to{font-size:12.5px;line-height:1.35;color:var(--ink-3)}
+.row .go{color:var(--ink-3);width:18px;height:18px}
+[dir=rtl] .row .go{transform:scaleX(-1)}
 .connect h2{display:flex;align-items:center;gap:8px;font-size:15px;line-height:1.3;font-weight:650;margin:0 0 4px}
 .connect h2 .i{color:var(--accent);fill:currentColor;stroke:none;width:16px;height:16px}
 .connect p{margin:0 0 12px;color:var(--ink-3);font-size:13.5px}
@@ -404,7 +426,7 @@ color:var(--bg);padding:8px 16px;border-radius:999px;font-size:13px;transition:o
 pointer-events:none}
 .toast.show{opacity:1;transform:translate(-50%,0)}
 @media (min-width:600px){.wrap{padding-top:28px}}
-@media (prefers-reduced-motion:reduce){.act .ic,.row,.toast{transition:none}}
+@media (prefers-reduced-motion:reduce){.act .ic,.row,.toast{transition:none}.row:hover{transform:none}}
 """
 
 JS = """
@@ -578,8 +600,7 @@ def render_profile(card, lang, path, nonce):
     connected = bool((card.get("chat") or {}).get("agent_connected"))
     badge = ('<span class="on" role="img" aria-label="%s" title="%s">%s</span>' % (
         _e(t["agent_on"]), _e(t["agent_on"]), _icon("spark"))) if connected else ""
-    own_links = "".join('<a class="row" href="%s" rel="noopener nofollow ugc me">%s<span><bdi>%s</bdi></span>%s</a>' % (
-        _e(l["url"]), _icon("link"), _e(l["label"]), _icon("out")) for l in card.get("links") or [])
+    own_links = "".join(_link_row(link) for link in card.get("links") or [])
     prompt = t["connect_prompt"] % (handle, address)
     body = (
         '<main><section class="card hero">'
@@ -648,11 +669,15 @@ def render_agent_page(card, nonce=None):
         "accepts contact requests: %s" % yes(card.get("accepts_contact_requests")),
         "owner's agent connected (binding configured): %s" % yes((card.get("chat") or {}).get("agent_connected")),
     ]
+    links = "".join('<li>%s (%s): <a href="%s">%s</a></li>' % (
+        _e(link["label"]), _e(L.LABELS[L.platform_of(link["url"])]), _e(link["url"]), _e(link["url"]))
+        for link in card.get("links") or [])
     body = ("<main><h1>%s (%s)</h1><p>A Yobiru bot. This version of the page is for AI agents; people who open the "
             "link in a browser see a profile page.</p>%s<h2>How to connect</h2><pre>%s</pre>"
-            "<h2>Facts</h2><ul>%s</ul><h2>Machine-readable card</h2><p><a href=\"%s\">%s</a></p><pre>%s</pre></main>"
+            "<h2>Facts</h2><ul>%s</ul>%s<h2>Machine-readable card</h2><p><a href=\"%s\">%s</a></p><pre>%s</pre></main>"
             ) % (_e(name), _e(handle), "<p>%s</p>" % _e(description) if description else "",
                  _e(agent_note(card)), "".join("<li>%s</li>" % _e(f) for f in facts),
+                 "<h2>The owner's links</h2><ul>%s</ul>" % links if links else "",
                  _e(card["address"] + ".json"), _e(card["address"] + ".json"),
                  _e(json.dumps(card, ensure_ascii=False, indent=2)))
     return ("<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">"
@@ -666,8 +691,9 @@ def render_not_found(lang, path, nonce):
     t = I18N.T[lang]
     body = ('<main><section class="card hero"><div class="av"><img class="avatar" src="%s" width="96" height="96" '
             'alt=""></div><h1>%s</h1><p class="desc">%s</p></section><nav class="links"><a class="row" href="%s">'
-            '<span>%s</span>%s</a></nav></main>') % (DEFAULT_AVATAR, _e(t["notfound_title"]), _e(t["notfound_body"]),
-                                                    SITE, _e(t["home"]), _icon("out"))
+            '<span class="mk">%s</span><span class="tx"><span class="lb">%s</span></span>%s</a></nav></main>') % (
+                DEFAULT_AVATAR, _e(t["notfound_title"]), _e(t["notfound_body"]), SITE, _icon("globe"), _e(t["home"]),
+                _icon("out", "i go"))
     return _page(lang, t["notfound_title"], t["notfound_body"], '<meta name="robots" content="noindex">', body, nonce,
                  path).encode("utf-8")
 

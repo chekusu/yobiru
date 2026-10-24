@@ -78,6 +78,7 @@
       "public_bots/bot_blobs.py": "scripts/public_bots/bot_blobs.py",
       "public_bots/bot_common.py": "scripts/public_bots/bot_common.py",
       "public_bots/bot_e2e.py": "scripts/public_bots/bot_e2e.py",
+      "public_bots/bot_links.py": "scripts/public_bots/bot_links.py",
       "public_bots/bot_gateway.py": "scripts/public_bots/bot_gateway.py",
       "public_bots/bot_client.py": "scripts/public_bots/bot_client.py",
       "public_bots/bot_calendar.py": "scripts/public_bots/bot_calendar.py",
