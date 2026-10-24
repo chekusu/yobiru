@@ -170,6 +170,52 @@ class AudienceTests(ProfilePageCase):
         self.gw.native(bot_id)
         self.assertIn('class="on"', self.page("/@%s?lang=zh" % h)[2])
 
+    def test_independent_presets_match_gateway_access(self):
+        # Relationship presets replace each other; following (or becoming friends)
+        # can remove a capability as well as grant it.
+        cases = (
+            ((), "off", "Not open right now"),
+            (("visitor",), "visitor", "Only visitors (not following this bot)"),
+            (("follower",), "follower_only", "Only one-way followers (not mutual friends)"),
+            (("friend",), "friend", "For friends (mutual follows)"),
+            (("visitor", "follower"), "visitor_follower",
+             "Visitors and one-way followers only (not mutual friends)"),
+            (("visitor", "friend"), "visitor_friend",
+             "Visitors and mutual friends only (not one-way followers)"),
+            (("follower", "friend"), "follower", "Open once you follow this bot"),
+            (("visitor", "follower", "friend"), "all", "Open to everyone"),
+        )
+        caps = ["leave_message", "calendar_slots", "files", "chat"]
+        for n, (allowed, state, explanation) in enumerate(cases):
+            with self.subTest(allowed=allowed):
+                h = self.handle("a%d" % n)
+                bot_id, source = self.gw.owned_bot(h)
+                caller_id, caller = self.gw.owned_bot(self.handle("b%d" % n))
+                cid = self.gw.conversation(bot_id, caller)
+                self.gw.policy(bot_id, offered=caps, **{
+                    level: caps if level in allowed else [] for level in ("visitor", "follower", "friend")})
+                for level in ("visitor", "follower", "friend"):
+                    if level == "follower":
+                        self.assertEqual(201, self.gw.follow(caller, bot_id)[0])
+                    elif level == "friend":
+                        self.assertEqual(201, self.gw.follow(source, caller_id)[0])
+                    contact = self.gw.relation(caller, bot_id)
+                    self.assertEqual(level, contact["relationship"])
+                    self.assertEqual(set(caps) if level in allowed else set(), set(contact["capabilities"]))
+                    status, result = self.gw.send(cid, caller, kind="chat", text="Synthetic permission check")
+                    self.assertEqual(202 if level in allowed else 403, status, result)
+                    if level not in allowed:
+                        self.assertEqual("capability_not_granted", result["error"])
+
+                status, _, page = self.page("/@" + h)
+                self.assertEqual(200, status)
+                for cap in caps:
+                    button = re.search(r'<button[^>]+data-act="%s"[^>]+>' % cap, page).group(0)
+                    self.assertIn('class="act s-%s"' % state, button)
+                    self.assertIn('aria-label="%s: %s"' % (I18N.T["en"]["acts"][cap], explanation), button)
+                    note = re.search(r'<p class="n" data-for="%s" hidden>(.*?)</p>' % cap, page).group(1)
+                    self.assertIn(explanation, html.unescape(note))
+
 
 class LanguageTests(ProfilePageCase):
     def test_every_language_has_every_text(self):
@@ -186,13 +232,22 @@ class LanguageTests(ProfilePageCase):
 
     def test_pages_in_sixteen_languages(self):
         h = self.handle("l")
-        self.gw.owned_bot(h)
+        self.gw.owned_bot(h, policy={
+            "offered": ["chat", "leave_message", "calendar_slots", "files"],
+            "visitor": ["chat", "calendar_slots", "files"],
+            "follower": ["leave_message", "calendar_slots"], "friend": ["files"],
+        })
         for lang in I18N.LANGS:
             status, _, text = self.page("/@%s?lang=%s" % (h, lang))
             self.assertEqual(200, status, lang)
             self.assertIn('<html lang="%s" dir="%s">' % (P.html_lang(lang), "rtl" if lang == "ar" else "ltr"), text)
             self.assertIn(html.escape(I18N.T[lang]["stats"]["followers"]), text, lang)
             self.assertEqual(16, text.count('<link rel="alternate" hreflang='), lang)
+            for cap, state in (("chat", "visitor"), ("leave_message", "follower_only"),
+                               ("calendar_slots", "visitor_follower"), ("files", "visitor_friend")):
+                label = "%s: %s" % (I18N.T[lang]["acts"][cap], I18N.T[lang]["st_long"][state])
+                self.assertIn('aria-label="%s"' % html.escape(label, quote=True), text, (lang, cap))
+                self.assertIn(html.escape(I18N.T[lang]["st"][state]), text, (lang, state))
         for header, lang in (("ko-KR,ko;q=0.9,en;q=0.5", "ko"), ("pt-BR,pt;q=0.9", "pt-BR"), ("sv-SE,sv", "en"),
                              ("zh-TW,zh;q=0.9", "zh-CN"), ("ar-EG", "ar")):
             self.assertIn('<html lang="%s"' % lang, self.page("/@" + h, lang=header)[2], header)

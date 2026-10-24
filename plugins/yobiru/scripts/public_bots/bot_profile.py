@@ -513,21 +513,32 @@ def _comment(text):
     return "<!--\n%s\n-->" % text.replace("--", "- -").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _level_of(card, cap):
-    """The most open relationship level that has `cap`: all, follower, friend, or off."""
+_ACCESS_STATES = {
+    (): "off",
+    ("visitor",): "visitor",
+    ("follower",): "follower_only",
+    ("friend",): "friend",
+    ("visitor", "follower"): "visitor_follower",
+    ("visitor", "friend"): "visitor_friend",
+    ("follower", "friend"): "follower",
+    ("visitor", "follower", "friend"): "all",
+}
+
+
+def _access_state(card, cap):
+    """Describe the exact presets granting `cap`; relationship presets do not inherit from each other."""
     levels = card.get("capabilities") or {}
-    for level, state in (("visitor", "all"), ("follower", "follower"), ("friend", "friend")):
-        if cap in (levels.get(level) or []):
-            return state
-    return "off"
+    allowed = tuple(level for level in ("visitor", "follower", "friend") if cap in (levels.get(level) or []))
+    return _ACCESS_STATES[allowed]
 
 
 ACTS = ("chat", "leave_message", "follow", "calendar_slots", "files")
-_BADGE = {"follower": "user", "friend": "lock"}
+_BADGE = {"visitor": "user", "follower_only": "user", "visitor_follower": "user", "visitor_friend": "user",
+          "follower": "user", "friend": "lock"}
 
 
 def _acts(card, t):
-    """The icon row (what a visitor can do, and from which relationship on) and the notes it reveals."""
+    """The icon row and notes describing exactly which relationships allow each action."""
     connected = bool((card.get("chat") or {}).get("agent_connected"))
     items, notes, used = [], [], []
     for act in ACTS:
@@ -536,7 +547,7 @@ def _acts(card, t):
             text = t["follow_on"] if state == "all" else t["follow_off"]
             extra = t["follow_back"] if state == "all" else ""
         else:
-            state = _level_of(card, act)
+            state = _access_state(card, act)
             text = t["st_long"][state]
             extra = ""
             if act == "chat" and state != "off":
@@ -549,9 +560,11 @@ def _acts(card, t):
                      % (state, act, _e("%s: %s" % (t["acts"][act], text)), _icon(act), badge, _e(t["acts"][act])))
         notes.append('<p class="n" data-for="%s" hidden><b>%s</b> · %s%s</p>'
                      % (act, _e(t["acts"][act]), _e(text), "<span>%s</span>" % _e(extra) if extra else ""))
-    marks = {"all": '<i class="dot"></i>', "follower": _icon("user"), "friend": _icon("lock"), "off": _icon("off")}
+    marks = dict((state, _icon(icon)) for state, icon in _BADGE.items())
+    marks.update({"all": '<i class="dot"></i>', "off": _icon("off")})
     legend = "".join("<span>%s%s</span>" % (marks[s], _e(t["st"][s]))
-                     for s in ("all", "follower", "friend", "off") if s in used)
+                     for s in ("all", "visitor", "visitor_follower", "visitor_friend", "follower", "follower_only",
+                               "friend", "off") if s in used)
     return ('<ul class="acts">%s</ul><div class="note" aria-live="polite"><p class="legend">%s</p>%s</div>'
             % ("".join(items), legend, "".join(notes)))
 
