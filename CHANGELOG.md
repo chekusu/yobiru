@@ -3,7 +3,7 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
-## Unreleased
+## 0.7.11 (2026-10-24)
 
 Update the gateway for the new page; update the plugin for `bot link`. No schema version change: the gateway adds the
 `bot_stats` table and its triggers by itself when it starts, counting the messages still stored once.
