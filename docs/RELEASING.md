@@ -162,6 +162,49 @@ In GitHub, the repository needs the `bots.yobiru.com` environment with its maint
 deployments limited to `v*` tags, and *Settings → Actions → Fork pull request workflows* must require approval for
 all outside collaborators, so that no fork's pull request can point a job at the self-hosted runner.
 
+### The official gateway's server
+
+`bots.yobiru.com` shares its machine with other services. Besides the deploy script, `deploy/` holds the rest of
+its setup, so that a change to it is reviewed like code. Each needs root on the server and a maintainer's approval;
+none is touched by a deploy.
+
+- `deploy/yobiru-gateway-capacity.conf`: a systemd drop-in for `yobiru-gateway.service` (CPU weight, threads, open
+  files, memory ceiling). Install it as `/etc/systemd/system/yobiru-gateway.service.d/capacity.conf`,
+  `systemctl daemon-reload`; it applies at the next restart. `systemctl show yobiru-gateway -p
+  CPUWeight,TasksMax,LimitNOFILE,MemoryHigh,MemoryMax` shows the values in force.
+- nginx: every held connector poll keeps two connections (Cloudflare to nginx, nginx to the gateway). In
+  `/etc/nginx/nginx.conf`, `worker_rlimit_nofile 32768;` at the top level and `worker_connections 8192;` in
+  `events` (the Ubuntu default is 768 per worker). In the `bots.yobiru.com` site, its own access log without the
+  successful connector polls, which would otherwise be most lines once thousands of agents are online:
+
+  ```nginx
+  map "$request_method $uri $status" $yobiru_bots_log {   # at the top of the site file, outside `server`
+      "GET /v1/connector/jobs 200" 0;
+      default 1;
+  }
+  # in the 443 server block:
+  access_log /var/log/nginx/bots.yobiru.com.access.log combined buffer=64k flush=5s if=$yobiru_bots_log;
+  ```
+
+  Check with `nginx -t`, apply with `systemctl reload nginx` (no connection is dropped).
+- Litestream: `deploy/yobiru-litestream.service` and `deploy/yobiru-litestream.yml` replicate `gateway.sqlite3` to
+  the blob store's R2 bucket under `litestream/gateway`, with the blob store's key. This copies the entire database
+  and transaction history, including metadata, stored message bodies and transient verification email addresses
+  and codes. Publish the [privacy notice](PRIVACY.md#the-official-gateway-botsyobirucom) describing these remote
+  copies before enabling replication. The configuration takes daily snapshots with 7-day retention; Litestream
+  [removes expired backups when it makes snapshots](https://litestream.io/docs/troubleshooting/), normally within
+  roughly 8 days. The bucket's 35-day object expiry also applies if that cleanup stops. Install the `litestream` binary
+  from its GitHub release as `/usr/local/bin/litestream`, the files as `/etc/systemd/system/yobiru-litestream.service`
+  and `/etc/yobiru-litestream.yml`, and write `/etc/yobiru-litestream.env` (root, 0600) with `YOBIRU_R2_ENDPOINT`,
+  `LITESTREAM_ACCESS_KEY_ID` and `LITESTREAM_SECRET_ACCESS_KEY` taken from `gw/blobs.json` and `gw/r2.secret`. Add
+  `"external_checkpoints": true` to `gateway.json` (a gateway older than 0.7.10 refuses it), then `systemctl
+  daemon-reload && systemctl enable yobiru-litestream && systemctl restart yobiru-gateway`: Litestream starts and
+  stops with the gateway. Rehearse a restore now and then, as root:
+  `set -a; . /etc/yobiru-litestream.env; runuser -u yobiru-gw -- litestream restore -config /etc/yobiru-litestream.yml
+  -o /srv/yobiru-gateway/restore-test.sqlite3 /srv/yobiru-gateway/gw/gateway.sqlite3`, then check the copy with
+  `PRAGMA integrity_check` and delete it. To undo: `systemctl disable --now yobiru-litestream`, remove the key from
+  `gateway.json` and restart the gateway.
+
 ### Prereleases
 
 A prerelease such as `0.6.0-beta.1` is published so that no stable installation picks it up by itself:

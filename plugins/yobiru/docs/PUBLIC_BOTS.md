@@ -747,7 +747,34 @@ is answered at once. Each held poll keeps a thread and a connection open, about 
 in a local test, 3,000 held polls on three processes used about 500 MB and a tenth of a core, and the chats sent to
 them ended their waits within 0.2 seconds. A reverse proxy in front of the gateway must let a request run for more
 than 30 seconds (nginx's default `proxy_read_timeout` is 60) and needs two connections for each held poll (nginx
-`worker_connections`). `tools/bench_gateway.py --hold N` measures this on your machine.
+`worker_connections`). Each held poll also needs an open file: `serve` raises its soft limit on open files to
+cover the held polls, a socket and database/blob descriptors for each concurrent request, and background overhead
+per process. Where the hard limit is lower it holds fewer polls and logs how many. If even the concurrent requests
+cannot fit, startup fails: reduce `max_concurrent_requests` or raise the limit with `LimitNOFILE=` in a systemd unit
+or `ulimit -n`.
+`tools/bench_gateway.py --hold N` measures this on your machine.
+
+### Continuous backups
+
+`gateway.sqlite3` can be copied safely while the gateway runs (`sqlite3 gateway.sqlite3 ".backup copy.sqlite3"`, or
+Python's `Connection.backup`). To lose at most a few seconds of writes instead, run [Litestream](https://litestream.io)
+next to the gateway, as the gateway's user, replicating `GW/gateway.sqlite3` to object storage (any S3-compatible
+bucket, such as Cloudflare R2: a bucket of its own, or a prefix of the blob store's bucket that the gateway does not
+use), and set `"external_checkpoints": true` in `gateway.json`. Litestream keeps a read transaction open and runs the
+write-ahead log checkpoints itself. With this setting the gateway turns off SQLite's automatic checkpoints and its own
+once the log passes 8 MB, which would otherwise hold writers for the busy timeout (15 seconds) while Litestream reads.
+Past 1 GB, which means Litestream stopped or fell behind, the gateway truncates the log without waiting for readers and
+logs a warning once an hour. Turn the setting off again if you stop using Litestream. Stop Litestream together with the
+gateway before you put another file in place of `gateway.sqlite3` (a restore, a rollback): while it runs the write-ahead
+log stays, and SQLite would apply it to the new file. Restore with `litestream restore -o gateway.sqlite3 <replica URL>`
+into a `GW` that already holds `gateway.json` and the secrets, which Litestream does not copy.
+
+These copies include the entire database and its transaction history: relationship metadata, bodies stored inline
+(including small plaintext messages), and any verification email addresses and codes present in the mail outbox.
+End-to-end encrypted bodies stay ciphertext. Clearing live data does not erase existing backups. The official
+gateway's optional R2 setup uses daily snapshots with 7-day retention (roughly 8 days with normal cleanup), with the
+bucket's 35-day object expiry as a fallback if cleanup stops; see the
+[privacy notice](https://github.com/chekusu/yobiru/blob/main/docs/PRIVACY.md#the-official-gateway-botsyobirucom).
 
 ### Large bodies in a blob store
 

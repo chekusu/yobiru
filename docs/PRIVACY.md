@@ -1,7 +1,9 @@
 # Yobiru plugin privacy policy
 
-Effective date: October 22, 2026, with Yobiru 0.7.3. This
-version says where a gateway may keep large message bodies (a blob store; for the official gateway, Cloudflare R2).
+Effective date: October 24, 2026. This revision describes the optional continuous
+database backups for the official gateway, including data retained after deletion
+from the live database. The October 22, 2026 notice, with Yobiru 0.7.3, added where
+a gateway may keep large message bodies (a blob store; for the official gateway, Cloudflare R2).
 The 0.7.0 version added end-to-end encryption of public bot messages: from 0.7.0 a gateway,
 including the official one, stores message text, attachments and replies only as
 ciphertext it cannot read whenever both sides use the Yobiru client (see
@@ -77,11 +79,11 @@ private Tailscale messaging.
 | Metadata the gateway still sees with end-to-end encryption | Who talks to whom, when, the message kind, sizes, attachment counts and byte totals, review and delivery states, decision receipts, relationships and follows. Stored meeting-slot queries and suggested slot times stay plaintext (they are structured times the gateway checks), as do the gateway's own fixed status texts. |
 | End-to-end keys | The gateway stores the public half of each bot's and caller's key and shows a bot's on its card. Secret keys stay on your devices in `0600` files (`public/credentials.json`, and `.e2e` key files the owner hands to the bot's own agent or worker devices); the gateway never receives them. |
 | Caller display names, contact requests with their notes, follows between bots, relationships, grants, ceilings and conversation membership | Stored by the gateway to authorize each request. Display names are self-asserted and unverified. |
-| Email address of a new bot owner (only on gateways that turn on email verification) | Used once to send a verification code. The gateway keeps the address and the code in its outbox only until the mail is sent (or the code expires after 15 minutes), and then only a keyed hash of the address (a hash with a secret random key of that gateway), so that one address registers one owner. The address passes through the mail provider the operator configures. |
+| Email address of a new bot owner (only on gateways that turn on email verification) | Used once to send a verification code. The gateway keeps the address and the code in its live outbox only until the mail is sent (or the code expires after 15 minutes), and then only a keyed hash of the address (a hash with a secret random key of that gateway), so that one address registers one owner. Database backups can retain the address and code until those backups expire. The address passes through the mail provider the operator configures. |
 | Friends (mutual follows) | Messages from friends are admitted for your agent and its replies released without your per-message review; the gateway still records a decision receipt for each. |
 | Drafts written by your own agent, review decisions, wake records and binding test results | Stored by the gateway; drafts are released to the caller only after you approve them. Wake records hold opaque job ids, outcomes and the route type the connector reported, never message text. |
 | Decision receipts | One record per review, trust and continuation decision: ids, the action, content hashes (never content), grant generation, epochs and times. The owner sees them in full; a caller sees only a masked projection about its own messages, with no hash of a draft it never received. Kept for 365 days by default, and deleted with their conversation. |
-| Attachments (`files` capability, on for friends by default) | Text files, images, PDFs, audio and video stored inline with their message, draft or result, with the same retention, deletion and encryption as message bodies (end-to-end encrypted under the same conditions; only their count and total size stay visible); the gateway keeps no other copy. |
+| Attachments (`files` capability, on for friends by default) | Text files, images, PDFs, audio and video stored inline with their message, draft or result, with the same retention, deletion and encryption as message bodies (end-to-end encrypted under the same conditions; only their count and total size stay visible); backups can retain copies after deletion. |
 | Binding descriptions and delivery evidence | Your private host kind, session note and delivery declaration, and the times of recorded checks, wakes, claims and approvals; never on the public card, which shows only whether a binding is configured, your declared tier and how fresh the wake evidence is. |
 | Lifecycle times | When each message was stored, admitted, started and finished, when a response was served, and when the caller's client or your agent acknowledged it. |
 | Bot profiles and policies | Stored by the gateway; the public card and the bot's page show only the handle, name, description, the owner's links and picture, fixed capabilities per relationship level, coarse chat delivery (binding configured, declared tier, wake evidence freshness) and activity counts (messages the bot has sent, followers, friends: numbers only, never who). Resource names are not shown. |
@@ -134,14 +136,22 @@ Chekusu as "whoever operates the gateway host":
   such as those carrying pictures, PDFs, audio or video) are kept in a private
   Cloudflare R2 bucket in the Asia-Pacific region instead of the database; only
   the gateway holds the key to that bucket. End-to-end encrypted bodies are
-  ciphertext there as well.
+  ciphertext there as well. When enabled, the optional
+  [continuous backup setup](PUBLIC_BOTS.md#continuous-backups) uses Litestream to
+  back up the entire database and its transaction history to that same private
+  R2 bucket. These remote copies include relationship and other metadata,
+  credential hashes, bodies stored in the database (including small plaintext
+  messages where end-to-end encryption does not apply), and any verification
+  email addresses and codes present in the mail outbox. End-to-end encrypted
+  content stays ciphertext in these backups; plaintext fields remain readable
+  by those with access to the backups.
 - **Who can read it.** With end-to-end encryption (the Yobiru client 0.7.0 or
   later on both sides, talking to a bot with a key), message bodies, drafts,
   results, owner messages and attachments reach the gateway and Cloudflare only
   as ciphertext: neither Chekusu nor Cloudflare can read them, and Chekusu cannot
   hand their content to anyone. Chekusu sees the metadata listed above. Content
   that is not end-to-end encrypted (see the conditions above) is stored in
-  plaintext, and Chekusu personnel with server access can read it. Chekusu
+  plaintext, and Chekusu personnel with server or backup access can read it. Chekusu
   accesses stored content and metadata only to operate and secure the service, to
   investigate abuse reported to it, or when required by law. Chekusu does not sell
   them, use them for advertising, or use them to train models. Because Chekusu
@@ -151,19 +161,26 @@ Chekusu as "whoever operates the gateway host":
   days; decision receipts after 365 days. Identities, follows, contacts and bot
   profiles stay until deletion is requested. The database is backed up daily on
   the same server and each backup is kept for 7 days, so deleted content can
-  remain in a backup for up to 7 more days. Bodies in R2 are not part of those
-  backups: they are deleted with their messages, and a bucket rule removes
-  anything left after 35 days. Web server access logs (client IP
+  remain in a local backup for up to 7 more days. The optional remote database
+  backups use daily snapshots and a 7-day retention setting. Cleanup runs when
+  snapshots are made, so deleted data can remain in those backups for roughly
+  8 days during normal operation. If backup cleanup is interrupted, files can
+  remain until the bucket's 35-day object expiry removes them. Deleting live
+  data does not selectively erase it from existing backups. Large bodies stored
+  separately in R2 are not copied into database backups, which contain only
+  their references: those bodies are deleted with their messages, and the
+  bucket rule removes anything left after 35 days. Web server access logs (client IP
   address, time, path, status and size, never bodies or credentials) are rotated
   and deleted after about two weeks.
 - **Email.** The official gateway verifies an email address before it registers
   a new owner, so that one address registers one owner. The code is sent through
   Resend (Resend, Inc., a US email delivery service, from its Tokyo region),
-  whose own privacy terms apply to that delivery. Your address is kept only
-  until that mail is sent (at most 15 minutes), then cleared; what stays is a
-  keyed hash of it, used only to refuse a second registration with the same
-  address. Chekusu does not use the address to
-  contact you and cannot read it back from the hash without guessing it.
+  whose own privacy terms apply to that delivery. Your address and code are kept
+  in the live database only until that mail is sent (at most 15 minutes), then
+  cleared; database backups can retain them for the periods above. What stays
+  in the live database is a keyed hash of your address, used only to refuse a
+  second registration with the same address. Chekusu does not use the address
+  to contact you and cannot read it back from the hash without guessing it.
 - **Deletion.** You can delete a conversation's stored messages yourself as its
   bot's owner. To have a bot, its handle or your caller identity removed, ask the
   maintainer through the contact route below; a released handle is never given to

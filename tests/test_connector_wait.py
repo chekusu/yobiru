@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import unittest
@@ -252,6 +253,191 @@ class ChangeTriggerTests(unittest.TestCase):
                 self.assertEqual({"bot_a": 12, "bot_b": 13}, seqs())
             finally:
                 db.close()
+
+
+class ChangeWatcherTests(unittest.TestCase):
+    def test_poll_registration_serializes_database_reads_without_request_slots(self):
+        with tempfile.TemporaryDirectory(prefix="yobiru watcher readers ") as tmp:
+            gw = FriendsGateway(Path(tmp))
+            store = G.Store(gw.home, G.load_config(gw.home))
+            self.addCleanup(G.close_all, store._idle)
+            watcher = G.ChangeWatcher(store)
+            # Isolate registrations: a background polling thread is not needed for zero-duration waits.
+            watcher.thread = threading.current_thread()
+            entered, overlapping, release = threading.Event(), threading.Event(), threading.Event()
+            lock, active, errors = threading.Lock(), [], []
+            progress = threading.local()
+
+            class ObservedLock:
+                """Tell the test when a contender reaches the lock, without waiting for a timing window."""
+                def __init__(self):
+                    self.lock = threading.Lock()
+
+                def __enter__(self):
+                    if not self.lock.acquire(blocking=False):
+                        progress.ready.set()
+                        self.lock.acquire()
+
+                def __exit__(self, *exc):
+                    self.lock.release()
+
+            watcher.lock = ObservedLock()
+
+            def blocked_read(fn, write=False):
+                with store.tx(write=write) as db:
+                    with lock:
+                        active.append(db)
+                        if len(active) > 1:
+                            overlapping.set()
+                    entered.set()
+                    progress.ready.set()
+                    try:
+                        if not release.wait(5):
+                            raise AssertionError("registration read was not released")
+                        return fn(db)
+                    finally:
+                        with lock:
+                            active.remove(db)
+
+            store.attempt = blocked_read
+
+            def register(ready):
+                progress.ready = ready
+                try:
+                    watcher.wait("synthetic-bot", 0, 0)
+                except BaseException as e:
+                    errors.append(e)
+
+            ready = [threading.Event() for _ in range(4)]
+            threads = [threading.Thread(target=register, args=(event,)) for event in ready]
+            try:
+                threads[0].start()
+                self.assertTrue(entered.wait(2), "one registration reaches the database")
+                for thread in threads[1:]:
+                    thread.start()
+                self.assertTrue(all(event.wait(2) for event in ready), "every contender reaches the read or its lock")
+                self.assertFalse(overlapping.is_set(), "held polls must not open unbounded extra connections")
+            finally:
+                release.set()
+                for thread in threads:
+                    if thread.ident is not None:
+                        thread.join(5)
+            self.assertFalse(any(thread.is_alive() for thread in threads))
+            self.assertEqual([], errors)
+            self.assertEqual({}, watcher.waiting)
+
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "reads the gateway's limits from /proc")
+class OpenFileLimitTests(unittest.TestCase):
+    """Every held poll keeps a socket open. With the usual soft limit of 1,024 open files, 1,000 held polls and the
+    request slots would leave the gateway unable to accept connections: it raises its soft limit to fit them, and
+    holds fewer polls (with a warning) where the hard limit is lower."""
+
+    def require_hard_limit(self, minimum):
+        import resource
+        hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+        if hard != resource.RLIM_INFINITY and hard < minimum:
+            self.skipTest("inherited hard open-file limit is below %d" % minimum)
+        return hard
+
+    def serve(self, ulimit, limits=None):
+        tmp = tempfile.TemporaryDirectory(prefix="yobiru open files ")
+        self.addCleanup(tmp.cleanup)
+        prefix = ["sh", "-c", 'ulimit %s && exec "$0" "$@"' % ulimit, sys.executable, str(PUBLIC / "bot_gateway.py")]
+        gw = FriendsGateway(Path(tmp.name), prefix=prefix, limits=limits)
+        gw.start()
+        self.addCleanup(gw.stop)
+        limits = Path("/proc/%d/limits" % gw.service.proc.pid).read_text()
+        soft = [line.split()[3] for line in limits.splitlines() if line.startswith("Max open files")][0]
+        return gw, int(soft)
+
+    def test_the_soft_limit_is_raised_to_fit_the_held_polls(self):
+        import resource
+        baseline = 32 * G.FD_PER_REQUEST + G.FD_RESERVE
+        hard = self.require_hard_limit(baseline + 1)
+        waiting = 1000 if hard == resource.RLIM_INFINITY else min(1000, hard - baseline)
+        need = baseline + waiting
+        gw, soft = self.serve("-Sn %d" % min(256, need - 1), {"max_waiting_connectors": waiting})
+        self.assertEqual(need, soft)
+        self.assertNotIn("open file limit", gw.service.log_path.read_text())
+
+    def test_a_low_hard_limit_holds_fewer_polls_and_says_so(self):
+        self.require_hard_limit(200)
+        gw, soft = self.serve("-n 200")
+        self.assertEqual(200, soft)
+        self.assertTrue(wait_until(lambda: "open file limit" in gw.service.log_path.read_text()))
+        self.assertIn("room for %d held connector polls per process, not 1000"
+                      % (200 - 32 * G.FD_PER_REQUEST - G.FD_RESERVE),
+                      gw.service.log_path.read_text())
+
+    def test_a_hard_limit_too_low_for_requests_refuses_to_serve(self):
+        self.require_hard_limit(200)
+        with tempfile.TemporaryDirectory(prefix="yobiru insufficient files ") as tmp:
+            gw = FriendsGateway(Path(tmp), limits={"max_concurrent_requests": 64})
+            command = ["sh", "-c", 'ulimit -n 200 && exec "$0" "$@"', sys.executable,
+                       str(PUBLIC / "bot_gateway.py"), "--gateway-home", str(gw.home), "serve"]
+            result = subprocess.run(command, capture_output=True, text=True, env=gw.env, timeout=15)
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual("", result.stdout, "the gateway must not begin listening")
+            self.assertIn("cannot support max_concurrent_requests=64", result.stderr)
+            self.assertIn("reduce max_concurrent_requests or raise the limit", result.stderr)
+
+    def assert_saturated_capacity(self, slots, hard):
+        """Use the advertised waiting cap, real sockets, WAL transactions and open blob reads in one process.
+        The child alone lowers its hard limit, leaving the test runner's descriptors and limits untouched."""
+        self.require_hard_limit(hard)
+        with tempfile.TemporaryDirectory(prefix="yobiru fd saturation ") as tmp:
+            gw = FriendsGateway(Path(tmp))
+            script = textwrap.dedent("""\
+                import contextlib
+                import resource
+                import socket
+                import sys
+                from pathlib import Path
+                sys.path.insert(0, sys.argv[1])
+                import bot_gateway as G
+
+                home, slots, hard = Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+                store = G.Store(home, G.load_config(home))
+                blobs = G.B.LocalStore(home / "blobs")
+                key, body = "a" * 32, b"synthetic blob body"
+                blobs.put(key, body)
+                resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+                waiting = G.fit_open_files(slots, 1000)
+                with contextlib.ExitStack() as stack:
+                    listener = stack.enter_context(socket.socket())
+                    listener.bind(("127.0.0.1", 0))
+                    listener.listen()
+                    # One server-side socket per admitted request or held poll.
+                    sockets = [stack.enter_context(socket.socket()) for _ in range(slots + waiting)]
+                    # Maintenance, change watching and serialized poll registration also read the database.
+                    for _ in range(3):
+                        db = stack.enter_context(store.tx(write=False))
+                        db.execute("SELECT value FROM meta").fetchall()
+                    for _ in range(slots):
+                        db = stack.enter_context(store.tx(write=False))
+                        db.execute("SELECT value FROM meta").fetchall()
+                        blob = stack.enter_context(blobs._path(key).open("rb"))
+                        assert blob.read() == body
+                    # Even at capacity the listener can accept and answer a connection (such as a 503).
+                    client = stack.enter_context(socket.socket())
+                    client.connect(listener.getsockname())
+                    accepted = stack.enter_context(listener.accept()[0])
+                    accepted.sendall(b"busy")
+                    assert client.recv(4) == b"busy"
+                G.close_all(store._idle)
+                print("capacity fits")
+                """)
+            result = subprocess.run([sys.executable, "-c", script, str(PUBLIC), str(gw.home), str(slots), str(hard)],
+                                    capture_output=True, text=True, env=plain_env(Path(tmp)), timeout=30)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("capacity fits", result.stdout.strip())
+
+    def test_admitted_capacity_fits_concurrent_database_and_blob_reads(self):
+        self.assert_saturated_capacity(32, 200)
+
+    def test_the_descriptor_budget_scales_with_request_concurrency(self):
+        self.assert_saturated_capacity(64, 384)
 
 
 def host_command(log):

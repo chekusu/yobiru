@@ -104,6 +104,61 @@ class ReadTransactionTests(unittest.TestCase):
         self.assertEqual(0, wal.stat().st_size)
         self.assertEqual(1, self.count())
 
+    def external(self):
+        """A store with `external_checkpoints`: Litestream checkpoints, and keeps a read transaction open for it."""
+        config = self.gw.home / "gateway.json"
+        cfg = json.loads(config.read_text())
+        cfg["external_checkpoints"] = True
+        config.write_text(json.dumps(cfg))
+        return G.Store(self.gw.home, G.load_config(self.gw.home))
+
+    def test_the_setting_takes_true_or_false(self):
+        config = self.gw.home / "gateway.json"
+        cfg = json.loads(config.read_text())
+        self.assertFalse(G.load_config(self.gw.home)["external_checkpoints"])
+        cfg["external_checkpoints"] = "yes"
+        config.write_text(json.dumps(cfg))
+        with self.assertRaises(ValueError):
+            G.load_config(self.gw.home)
+
+    def test_with_external_checkpoints_the_log_is_left_to_litestream(self):
+        store = self.external()
+        wal = Path(str(store.path) + "-wal")
+        with store.tx() as db:
+            self.assertEqual(0, db.execute("PRAGMA wal_autocheckpoint").fetchone()[0])
+            counter(db)
+        size = wal.stat().st_size
+        self.assertGreater(size, 0)
+        with mock.patch.object(G, "WAL_RESET_BYTES", 0):
+            G.reset_wal(store)
+        self.assertEqual(size, wal.stat().st_size)
+
+    def test_past_the_backstop_the_log_is_truncated_without_waiting_for_its_reader(self):
+        store = self.external()
+        wal = Path(str(store.path) + "-wal")
+        with store.tx() as db:
+            counter(db)
+        reader = sqlite3.connect(str(store.path), isolation_level=None)
+        self.addCleanup(reader.close)
+        reader.execute("BEGIN")
+        reader.execute("SELECT COUNT(*) FROM counters").fetchone()
+        with store.tx() as db:
+            counter(db, "second")
+        with mock.patch.object(G, "WAL_EXTERNAL_LIMIT_BYTES", 0), mock.patch.object(G, "log") as logged:
+            started = time.monotonic()
+            G.reset_wal(store)
+            self.assertLess(time.monotonic() - started, 2)          # not the 15 s busy timeout
+            self.assertGreater(wal.stat().st_size, 0)                # the reader still needs the log
+            self.assertIn("is Litestream running?", logged.call_args[0][0])
+            with store.tx() as db:
+                self.assertEqual(15000, db.execute("PRAGMA busy_timeout").fetchone()[0])
+                counter(db, "third")
+            reader.execute("COMMIT")
+            G.reset_wal(store)
+            self.assertEqual(0, wal.stat().st_size)
+            self.assertEqual(1, logged.call_count)                  # once an hour
+        self.assertEqual(1, self.count("third"))
+
 
 class ConnectorPollTests(unittest.TestCase):
     def setUp(self):

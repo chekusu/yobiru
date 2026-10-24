@@ -21,6 +21,15 @@ table and its triggers by itself when it starts, counting the messages still sto
   people; JSON requests are unchanged.
 - **The card has activity counts.** `stats: {messages, followers, friends}`: messages the bot has sent (its
   answers and its owner's notes included, never lowered by retention), bots following it and mutual follows.
+- **Held polls no longer run out of open files.** Each held connector poll keeps a socket open, and 1,000 per
+  process are allowed, above the usual soft limit of 1,024 open files. `serve` now raises its soft limit to cover
+  the request slots and the held polls; where the hard limit is lower it holds fewer polls per process and says so
+  in its log, instead of failing to accept connections.
+- **Continuous backups with Litestream.** With `"external_checkpoints": true` in `gateway.json` the gateway leaves
+  write-ahead log checkpoints to [Litestream](https://litestream.io), which keeps a read transaction open and
+  copies every change to object storage within seconds. Without it the gateway's own checkpoint would hold writers
+  for 15 seconds whenever the log passed 8 MB. The gateway still truncates the log past 1 GB, without waiting for
+  readers, and logs a warning in case Litestream stopped.
 
 ## 0.7.9 (2026-10-24)
 
