@@ -65,6 +65,30 @@ DEFAULT_AVATAR = ("data:image/png;base64,"
                   "lE+Xnedsdz4gmWi+4e+26qeCKAAVwLUHRbrz7bvVpMfVpdsHf5eK1k+nBnDrR7HN88PLyVtxyPOtuHE3FwBKoEaiTZqe/LK1KLDl51Oabhq8gu2x"
                   "/wOmeJx9yPPmmwAAAABJRU5ErkJggg==")
 
+# The yobiru mark that yobiru.com shows beside its wordmark (public/brand/yobiru-mark.png there): the dark tile cut
+# out of its cream square, 72 px for 24 px at 3x, inlined like the default picture.
+BRAND_MARK = ("data:image/png;base64,"
+              "iVBORw0KGgoAAAANSUhEUgAAAEgAAABICAMAAABiM0N1AAABgFBMVEUyMjEtLSz7+PL8WiEAAAA5OTgxMTAvLi1YWFaxSyZ4d3XZ19OJiIb/YCIbGxuP"
+              "RCnq6ONVVVWpqKXKyMQ5OjnRUyVnZ2W3trI1NTRUNyyYl5QtLSxGRkUtLS0zMzNrPCt4QSwrKzA0NDLBwLwBCxEfKCri4dwtLS0uLi0vLy5LJRaCgX64"
+              "USkXHiEgHx4gIB8yMjJVVQBhYF+NORu2RB3+XB/h39oAVQBVKlVISEhhLBd/f3+fQB2Bf3yjPxugn52jop/fUR8AAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+              "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+              "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABD7JVYAAAAgHRS"
+              "TlP+/v//AK2Wl////////////wP//wn///9Q///S/0kx//8Scv////81caL////////aA///////AwYH/wL///////8AAAAAAAAAAAAAAAAAAAAAAAAA"
+              "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPE+yAwAAAQ1SURBVHjarZjpYto4EIBnLIcaH2AM5r5pmqTpvdvuvd19/5da"
+              "SZbk0WFgQ+eHA471ee4RgriR0Sh+kfyh14G5NZkfe1zurpZe7zifmOUSxKnzO3iR3M3l8gY0ircvxEjUNp40oEk8h5tkLkjA9bmRI0ijGLhdcLNs4xHE"
+              "k0+3gz5NuGnH2zkIxxgOCD9A8ACba14or1zO+Bt6Fzm7fl0zxur+cAedrCdYXVJnwbQUjPV3EEat4JKLcPiVtVIU9T64BLtA0iMor3XBqBT1Aq8F8dVJ"
+              "Phtn2biawj30bRJjQ+wIiHczzyItWYo4dEDFO/TVD6jzXEZUKsS9R7oMwvU4cqRCGLrW9V2dXOMwKSNPUoQ+O+8nF4RfooB840+5IGbHztMnCsrUdzir"
+              "tV+kg9DR7k0YtPxAElzL3rjYBgl/zcKcaMafYwGVMBw1nHZwRNzQczfbGQ+7oHEXKB+EQH00UbdA3QpFCV/geZsx4xlVmPpbl4eki0KgBToVrlxfdnDK"
+              "dQdo3/ZODRIfOnIoeiMMC/moGLog+WGQd0SsSf8ASBUcOiCsQlZViYqMDfqq6w3b9cq2kK/HaRvXkEZDRA/Enzw5mGxK8+ze65MiIx1QMPoVWK9RUXv7"
+              "u7y+VeEnIENyfJRTjHhKVu3Pr1//K681aW6tdxpQ7hSFXULYOOmnv+X1TzcfVUS8CqkGitI6u1GpKNSoZEXbbdFqSTSzM/Gf9PStzGZp8yoh+yLcRXRv"
+              "0xVCvJ1+xERPpOyLdhatEj6RHJAKnfiWGoXsekk/aDsXNWu0qnfvdYzADT+xbTmwe246MPW0GPb5tmSP9/m4ao2mbURU21K3H/PJkEgxIN6/l8MvpzeB"
+              "Nl6lUgleR1laDoFcK+6AdBKoVMoGfq/MUrNorXcGKQIENJIVIbv22LWsaUtVOk2SaT4rSQNuRhHamSsHfylBVXSFZOhlNhmRIuynwewakKwi2iEdUlZO"
+              "r9KoBKqQA1JdFf/6HwphEATn5wD1ENl+O5lNR2Z2EZQgkJhZ4ae7/PyiYWht/HwQXBiWSv5pfOKOI2efJO6mZzlVUw5mttptBMgbzmwEmsozu0bT2n3L"
+              "lBc79ziyxsiz6GU20k1TJ+m0RtvNBmR0RBJ/oer3UPqklhUEtNLTyPRNk0+YjAMz3ExC2h9xBa+0RcRxeiQgJkuTmuUpXyNZbBfIE/8p2t7zhxR+xPU0"
+              "fX7mraidOUh36Aq0gcnKDG4rWZ2goFFG37Y8tJpA/AgK5Pzcac10HGsFS9165L/7f10BfSXdFQRWYFBWv4lDlq2ju/MNnI1UCPfQHLJsgq/2LLRstR7e"
+              "iEMWceyzCaqss4m2wOBjm+bYRxxEHZ4AOsw/L+Ig6qAPouL4lzh+uHvZGUlvG8efncO67fyx13vFpdf8EX/NDXLH3D3OHw72YR2Xzy88PjTHjv8BaT87"
+              "OV+JxJMAAAAASUVORK5CYII=")
+
 
 def image_info(data):
     """(content type, width, height) of a PNG, JPEG or WebP read from its own bytes, never from a declared type.
@@ -353,9 +377,9 @@ button{font:inherit}
 stroke-linejoin:round}
 .wrap{max-width:480px;margin:0 auto;padding:12px 16px 40px}
 .top{display:flex;align-items:center;justify-content:space-between;height:52px;margin-bottom:8px}
-.wordmark{display:inline-flex;align-items:baseline;gap:.06em;font-size:22px;font-weight:650;letter-spacing:-.045em;
+.wordmark{display:inline-flex;align-items:center;gap:8px;font-size:22px;font-weight:650;letter-spacing:-.045em;
 line-height:1;text-decoration:none;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif}
-.wordmark i{width:.22em;height:.22em;border-radius:50%;background:var(--accent);display:inline-block}
+.wordmark img{width:24px;height:24px;flex:none}
 .lang{position:relative}
 .lang summary{list-style:none;display:flex;align-items:center;gap:6px;height:34px;padding:0 10px;border-radius:999px;
 background:var(--surface);box-shadow:0 0 0 1px var(--line);font-size:13px;color:var(--ink-2);cursor:pointer;
@@ -548,11 +572,11 @@ def _page(lang, title, description, head_extra, body, nonce, path, comment=""):
             "<meta name=\"theme-color\" content=\"#0e0e10\" media=\"(prefers-color-scheme: dark)\">%s%s"
             "<style nonce=\"%s\">%s</style></head><body>%s<div class=\"wrap\">"
             "<header class=\"top\"><a class=\"wordmark\" href=\"%s\" dir=\"ltr\" aria-label=\"Yobiru\">"
-            "yobiru<i></i></a>%s</header>"
+            "<img src=\"%s\" width=\"24\" height=\"24\" alt=\"\"><span>yobiru</span></a>%s</header>"
             "%s</div><div class=\"toast\" role=\"status\" aria-live=\"polite\"></div>"
             "<script nonce=\"%s\">%s</script></body></html>\n") % (
         html_lang(lang), "rtl" if lang in I18N.RTL else "ltr", _e(title), _e(description), alternates, head_extra,
-        nonce, CSS, comment, SITE, _lang_menu(lang, path), body, nonce, JS)
+        nonce, CSS, comment, SITE, BRAND_MARK, _lang_menu(lang, path), body, nonce, JS)
 
 
 def agent_note(card):

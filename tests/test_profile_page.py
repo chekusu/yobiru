@@ -4,9 +4,11 @@ agents in what people see) and the plain page for agents that ask for HTML.
 Real bot_gateway.py subprocesses with synthetic homes on ephemeral loopback ports; the native host is played by the
 test through the binding credential.
 """
+import base64
 import html
 import json
 import re
+import struct
 import tempfile
 import unittest
 import urllib.parse
@@ -196,6 +198,22 @@ class AudienceTests(ProfilePageCase):
                    "Gecko) Version/18.0 Mobile/15E148 Safari/604.1", "Mozilla/5.0 (compatible; Googlebot/2.1)",
                    "Slackbot-LinkExpanding 1.0", "Twitterbot/1.0", None, ""):
             self.assertFalse(P.is_agent(ua), ua)
+
+    def test_the_top_corner_shows_the_yobiru_mark(self):
+        h = self.handle("x")
+        self.gw.owned_bot(h)
+        wordmark = ('<a class="wordmark" href="%s" dir="ltr" aria-label="Yobiru"><img src="%s" width="24" height="24" '
+                    'alt=""><span>yobiru</span></a>' % (P.SITE, P.BRAND_MARK))
+        status, hdrs, text = self.page("/@" + h)
+        self.assertIn(wordmark, text)
+        self.assertIn("img-src 'self' data:", hdrs["content-security-policy"])
+        self.assertIn(wordmark, self.page("/@nobody-at-all")[2], "the page for a missing bot has it too")
+        self.assertNotIn("<img", self.page("/@" + h, user_agent=CLAUDE)[2], "the agent page stays plain")
+
+        png = base64.b64decode(P.BRAND_MARK.split(",", 1)[1])
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual((72, 72), struct.unpack(">II", png[16:24]), "24 px at 3x")
+        self.assertLess(len(png), 4096)
 
     def test_icons_show_who_can_do_what(self):
         h = self.handle("p")
