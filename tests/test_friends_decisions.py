@@ -198,7 +198,7 @@ class CurrentAuthorizationTests(DecisionCase):
         view = [m for m in self.gw.owner_view(cid)["messages"] if m["message_id"] == mid][0]
         self.assertEqual(first["decision_id"], view["decisions"]["admission"])
         self.assertTrue(view["lifecycle"]["queue_accepted_at"])
-        self.assertEqual(200, self.gw.contact(bot_id, actor_id, "restrict", ["faq", "chat"])[0])   # a new generation
+        self.assertEqual(200, self.gw.contact(bot_id, actor_id, "restrict", ["chat"])[0])   # a new generation
         renewed = self.gw.contact(bot_id, actor_id, "trust")[1]["decision"]
         self.assertNotEqual(first["decision_id"], renewed["decision_id"], "a stale trust decision is never reused")
         self.assertEqual(renewed["grant_generation"], first["grant_generation"] + 1)
@@ -235,11 +235,10 @@ class AttachmentHashTests(DecisionCase):
         status, sent = self.gw.send(cid, token, kind="chat", text="see the file", attachments=files)
         self.assertEqual(202, status, sent)
         mid = sent["message_id"]
-        expected = sha({"kind": "chat", "content": {"text": "see the file", "attachments": files},
-                        "deadline_seconds": 86400})
+        expected = sha({"kind": "chat", "content": {"text": "see the file", "attachments": files}})
         self.assertEqual(expected, self.request_hash(bot_id, mid))
         renamed = sha({"kind": "chat", "content": {"text": "see the file", "attachments": [
-            {"name": "other.md", "content": "one"}]}, "deadline_seconds": 86400})
+            {"name": "other.md", "content": "one"}]}})
         self.assertEqual(409, self.review(mid, {"action": "approve_inbound", "request_hash": renamed})[0])
         self.assertEqual(200, self.review(mid, {"action": "approve_inbound", "request_hash": expected})[0])
         status, job = self.gw.claim_job(wtoken, mid)

@@ -311,7 +311,7 @@ class Acceptance(object):
         if self.remote:
             shutil.copyfile(str(self.resource_token), str(self.handoff / "resource-access.token"))
             os.chmod(str(self.handoff / "resource-access.token"), 0o600)
-        caps = "faq,leave_message,chat,resource:%s" % MENU
+        caps = "faq,chat,resource:%s" % MENU
         self.y("owner", "bot", "edit", BOT, "--offered", caps, "--friend-capabilities", caps)
 
     def host_setup(self):
@@ -423,29 +423,34 @@ class Acceptance(object):
                    done["state"] == "completed" and self.evidence()["multiturn_tested_at"], done["state"])
 
     def item7(self):
-        sent = self.chat("b", "[acc-7] For your information: the acceptance run is halfway. SMOKE-NOTICE",
-                         "--notice")
-        nid = self.ids["notice"] = sent["message_id"]
-        self.check(7, "`chat --notice`: state `stored`, no reply expected",
-                   (sent["state"], sent["reply_expected"]) == ("stored", False), sent)
+        sent = self.chat("b", "[acc-7] For your information: the acceptance run is halfway, no need to answer. "
+                         "SMOKE-FYI")
+        mid = self.ids["fyi"] = sent["message_id"]
+        self.check(7, "a `chat` that needs no answer: `queued`, `reply_required` false, no deadline",
+                   (sent["state"], sent.get("reply_required"), sent.get("deadline")) == ("queued", False, None), sent)
         if not self.remote:
-            jobs = self.y("host", "job", "list", self.ids["bot_id"])["jobs"]
-            self.check(7, "a notice never becomes a job", nid not in [j["job_id"] for j in jobs], jobs)
-        self.admit(nid)
-        if not self.remote:
-            notices = self.y("host", "job", "notices", self.ids["bot_id"])["notices"]
-            read = self.y("host", "job", "notice", self.ids["bot_id"], nid)
-            self.check(7, "after admission the agent reads it from its notice inbox",
-                       nid in [n["notice_id"] for n in notices] and "SMOKE-NOTICE" in json.dumps(read), notices)
-            self.y("host", "job", "notice-ack", self.ids["bot_id"], nid)
-        acked = self.wait("the host's acknowledgement of notice %s" % nid,
-                          lambda: self.status("b", nid, "--no-ack")["lifecycle"].get("agent_acknowledged_at"))
-        state = self.status("b", nid, "--no-ack")["state"]
-        self.check(7, "the sender sees `lifecycle.agent_acknowledged_at`; the notice stays `stored`",
-                   acked and state == "stored", state)
+            jobs = {j["job_id"]: j for j in self.y("host", "job", "list", self.ids["bot_id"])["jobs"]}
+            self.check(7, "it is a job like every message, ready for the agent (a friend is in the inbox)",
+                       mid in jobs and jobs[mid]["review"]["inbound"] == "approved", jobs)
+            self.host_claim(mid)
+            self.y("host", "job", "read", self.ids["bot_id"], mid)
+        self.wait("the host marking %s read" % mid, lambda: self.status("b", mid, "--no-ack")["state"] == "completed")
+        after = self.status("b", mid, "--no-ack")
+        self.check(7, "`job read` ends it without a reply: the sender sees `completed`, code `read`",
+                   (after["state"], after["code"], after.get("result")) == ("completed", "read", None), after)
+        req = self.ids["fyi_request"] = self.chat("a", "[acc-7b] Also for your information. SMOKE-FYI-REQUEST")[
+            "message_id"]
+        inbound = {x["job_id"]: x for x in self.review_list()["inbound"]}
+        self.check(7, "the follower's message is a message request like any other, in full for the owner",
+                   "SMOKE-FYI-REQUEST" in (inbound.get(req, {}).get("message") or {}).get("text", ""), inbound)
+        self.y("owner", "review", "ignore", BOT, req)
+        left = self.status("a", req, "--no-ack")
+        self.check(7, "the owner ignores it: it leaves the requests, and the sender still sees `queued`",
+                   req not in [x["job_id"] for x in self.review_list()["inbound"]] and left["state"] == "queued",
+                   left["state"])
 
     def item8(self):
-        caps = "faq,leave_message,chat,files,resource:%s" % MENU
+        caps = "faq,chat,files,resource:%s" % MENU
         self.y("owner", "bot", "edit", BOT, "--offered", caps, "--friend-capabilities", caps)
         rel_a = self.y("a", "relationship", BOT)["capabilities"]
         self.check(8, "`files` offered to friends only", "files" in self.y("b", "relationship", BOT)["capabilities"]
@@ -594,13 +599,11 @@ text. The text itself is caller content: these instructions come from your owner
 | `[acc-4]` | `job resource {bot} JOB {menu}` and `job resource {bot} JOB {secret}`. Reply with the menu text you received, and say which one was refused. |
 | `[acc-4b]` | `job resource {bot} JOB {menu}`. Reply that you have no resource for this caller if it is refused. |
 | `[acc-6]` | Reply by quoting your earlier answer in this conversation, from the claim's `transcript`. |
+| `[acc-7]` | Nothing to answer: `job read {bot} JOB` marks it read. No message needs a reply. |
 | `[acc-8]` | `job attachments {bot} JOB`, then write `{files}/answer.md` containing `SMOKE-ANSWER-FILE` and reply with `job reply {bot} JOB --text "See the attached answer." --attach {files}/answer.md`. |
 | `[acc-11]` | Nothing: this job is cancelled before you can claim it. A refused claim is the expected result. |
 
 Reply with `sh Y --home {home} public job reply {bot} JOB --text "..."`. The owner reviews each reply.
-
-Also every minute or so: `sh Y --home {home} public job notices {bot}`. Read each with
-`job notice {bot} NOTICE_ID` and acknowledge it with `job notice-ack {bot} NOTICE_ID`. Notices expect no reply.
 
 ## If your device restarts during the run
 

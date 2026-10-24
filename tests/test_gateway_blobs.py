@@ -296,8 +296,8 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="yobiru migration 6-7 ") as tmp:
             gw = FriendsGateway(Path(tmp)).start()
             try:
-                taken = gw.bot("files-taken-back", policy={"offered": ["faq", "leave_message", "chat"],
-                                                          "friend": ["faq", "leave_message", "chat"]})
+                taken = gw.bot("files-taken-back", policy={"offered": ["faq", "chat"],
+                                                          "friend": ["faq", "chat"]})
             finally:
                 gw.stop()
             db = gw.db()
@@ -310,7 +310,7 @@ class MigrationTests(unittest.TestCase):
                                    "migrate"], capture_output=True, text=True, env=plain_env(Path(tmp)), timeout=60)
             self.assertEqual(0, done.returncode, done.stderr)
             summary = json.loads(done.stdout)
-            self.assertEqual(("7", "6"), (summary["schema"], summary["from_schema"]))
+            self.assertEqual(("8", "6"), (summary["schema"], summary["from_schema"]))
             self.assertNotIn("friend_files_bots", summary)
             pol = json.loads(gw.sql("SELECT policy FROM bots WHERE id=?", (taken,))[0]["policy"])
             self.assertNotIn("files", pol["friend"])

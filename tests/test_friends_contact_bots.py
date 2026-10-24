@@ -2,10 +2,11 @@
 scheduled task brings in that friend's messages (`friend sync`) and sends the owner's words back (`friend send`).
 
 Two people, each with a self-enrolled bot (owner and source credential in one data home) and that bot's native
-binding in a second data home, become friends through the CLI. Notices carry text and pictures both ways; a
-question the friend's bot asks is held for the owner's answer and answered by the owner's next words; replies and
-notes come in once each; the bot's general routine is kept away from these friends' jobs; full conversations make
-room for new ones. Real bot_gateway.py subprocesses, synthetic homes and files, loopback only.
+binding in a second data home, become friends through the CLI. Direct messages carry text and pictures both
+ways; the friend's latest message is held for the owner's next words, which answer it, and earlier ones count as
+read (no message needs a reply); what the owner sends goes with the owner credential, so no automation budget
+counts it; replies and notes come in once each; the bot's general routine is kept away from these friends' jobs;
+full conversations make room for new ones. Real bot_gateway.py subprocesses, synthetic homes and files, loopback only.
 """
 import argparse
 import base64
@@ -118,22 +119,28 @@ class MessageTests(ContactBotCase):
 
     def test_messages_go_both_ways_once_each(self):
         sent = self.y("ben", "friend", "send", "ann", "--text", "dinner tonight?")
-        self.assertEqual(("message", "stored"), (sent["sent_as"], sent["state"]))
+        self.assertEqual(("message", "queued", "owner credential"), (sent["sent_as"], sent["state"], sent["sent_with"]))
         got = self.sync("ann", "ben")
         self.assertEqual([("message", "dinner tonight?", False)],
                          [(m["type"], m["text"], m["answer_expected"]) for m in got["messages"]])
+        self.assertEqual([sent["message_id"]], got["waiting_for_your_answer"], "held for the owner's next words")
         self.assertIn("Ben", got["show"])
         self.assertEqual([], self.sync("ann", "ben")["messages"], "each message comes in once")
-        self.y("ann", "friend", "send", "ben", "--text", "yes, 7pm")
-        self.assertEqual(["yes, 7pm"], [m["text"] for m in self.sync("ben", "ann")["messages"]])
-        stored = self.gw.sql("SELECT content FROM messages WHERE kind='notice'")
-        self.assertNotIn("dinner tonight", json.dumps(stored), "notices stay end-to-end encrypted")
+        answered = self.y("ann", "friend", "send", "ben", "--text", "yes, 7pm")
+        self.assertEqual(("answer", sent["message_id"]), (answered["sent_as"], answered["answered"]))
+        self.assertEqual([("reply", "yes, 7pm", "dinner tonight?")],
+                         [(m["type"], m["text"], m["to_your_message"]) for m in self.sync("ben", "ann")["messages"]])
+        stored = self.gw.sql("SELECT content, result FROM messages WHERE kind='chat'")
+        self.assertNotIn("dinner tonight", json.dumps(stored), "messages stay end-to-end encrypted")
+        self.assertNotIn("7pm", json.dumps(stored))
+        self.assertEqual([], self.gw.sql("SELECT count FROM counters WHERE key=?", (
+            "auto:pair:%s:%s" % (self.ids["ben"], self.ids["ann"]),)), "the owner's words cost no automation budget")
 
     def test_pictures_travel_with_a_message(self):
         folder = self.allow_files("ben")
         (folder / "menu.png").write_bytes(PNG)
         sent = self.y("ben", "friend", "send", "ann", "--attach", str(folder / "menu.png"))
-        self.assertEqual("message", sent["sent_as"], "the gateway takes files with notices")
+        self.assertEqual("message", sent["sent_as"], "files travel with any message")
         got = self.sync("ann", "ben")["messages"]
         self.assertEqual("menu.png", got[0]["text"], "a picture without words is named by its file")
         self.assertTrue(self.gw.sql("SELECT content FROM messages WHERE id=?", (got[0]["id"],))[0]["content"]
@@ -142,65 +149,65 @@ class MessageTests(ContactBotCase):
         self.assertEqual((PNG, "image/png"), (saved.read_bytes(), got[0]["files"][0]["media_type"]))
         self.assertEqual(0o600, saved.stat().st_mode & 0o777)
 
-    def test_a_question_waits_for_the_owner_and_the_answer_goes_back(self):
+    def test_what_the_friends_bot_asks_is_answered_by_the_owners_next_words(self):
         asked = self.y("ben", "chat", "ann", "which wine do you like?")
         got = self.sync("ann", "ben")
-        self.assertEqual([("question", "which wine do you like?", True)],
+        self.assertEqual([("message", "which wine do you like?", False)],
                          [(m["type"], m["text"], m["answer_expected"]) for m in got["messages"]])
         self.assertEqual([asked["message_id"]], got["waiting_for_your_answer"])
         again = self.sync("ann", "ben")
         self.assertEqual(([], [asked["message_id"]]), (again["messages"], again["waiting_for_your_answer"]),
-                         "the question is held (its lease renewed), not shown twice")
+                         "the message is held (its lease renewed), not shown twice")
         jobs = self.y("ann-agent", "job", "list", self.ids["ann"])["jobs"]
         self.assertEqual("ben", jobs[0]["contact_bot"]["alias"])
         answered = self.y("ann", "friend", "send", "ben", "--text", "a dry riesling")
-        self.assertEqual(("answer", asked["message_id"]), (answered["sent_as"], answered["answered"]))
+        self.assertEqual(("answer", asked["message_id"], []),
+                         (answered["sent_as"], answered["answered"], answered["marked_read"]))
         back = self.sync("ben", "ann")["messages"]
         self.assertEqual([("reply", "a dry riesling", "which wine do you like?")],
                          [(m["type"], m["text"], m["to_your_message"]) for m in back])
         self.assertEqual([], self.sync("ben", "ann")["messages"])
         nxt = self.y("ann", "friend", "send", "ben", "--text", "and you?")
-        self.assertEqual("message", nxt["sent_as"], "with no question waiting, the owner's words are a message")
+        self.assertEqual("message", nxt["sent_as"], "with nothing held, the owner's words are a new message")
 
-    def test_concurrent_same_second_questions_are_answered_in_receipt_order(self):
+    def test_of_several_messages_the_latest_is_held_and_the_others_count_as_read(self):
         asked = [self.y("ben", "chat", "ann", "Question %d" % i)["message_id"] for i in range(3)]
         stamp = self.gw.sql("SELECT created_ts FROM messages WHERE id=?", (asked[0],))[0]["created_ts"]
         for mid in asked:
             self.gw.sql("UPDATE messages SET created_ts=? WHERE id=?", (stamp, mid))
         shown = self.sync("ann", "ben")
-        self.assertEqual(asked, [m["id"] for m in shown["messages"]])
+        self.assertEqual(asked, [m["id"] for m in shown["messages"]], "all shown once, in receipt order")
         self.assertEqual(1, len({m["at"] for m in shown["messages"]}))
-        self.assertEqual((asked, 0), (shown["waiting_for_your_answer"], shown["waiting_behind_your_answer"]))
-        self.assertEqual(asked, self.sync("ann", "ben")["waiting_for_your_answer"],
-                         "renewing persisted leases preserves the question order")
+        self.assertEqual((asked[-1:], 0), (shown["waiting_for_your_answer"], shown["waiting_behind_your_answer"]))
+        self.assertEqual([("completed", "read")] * 2, [tuple(self.gw.sql(
+            "SELECT state, code FROM messages WHERE id=?", (mid,))[0].values()) for mid in asked[:2]])
+        self.assertEqual(asked[-1:], self.sync("ann", "ben")["waiting_for_your_answer"])
         api_call = P.C.api_call
 
         def lose_finish_response(base, method, path, *args, **kwargs):
             result = api_call(base, method, path, *args, **kwargs)
-            if method == "POST" and path.endswith("/%s/finish" % asked[0]):
+            if method == "POST" and path.endswith("/%s/finish" % asked[-1]):
                 raise P.C.ApiError(0, "connection_failed", "Synthetic lost finish response")
             return result
 
         with patch.object(P.C, "api_call", side_effect=lose_finish_response):
-            failed, _ = self.y("ann", "friend", "send", "ben", "--text", "Answer 0", expect=2)
+            failed, _ = self.y("ann", "friend", "send", "ben", "--text", "One answer", expect=2)
         self.assertEqual("connection_failed", failed["error"])
-        listed = self.y("ann-agent", "job", "list", self.ids["ann"])["jobs"]
-        self.assertEqual(asked[1:], [job["job_id"] for job in listed], "the finished question is no longer listed")
-        for i, mid in enumerate(asked):
-            answer = self.y("ann", "friend", "send", "ben", "--text", "Answer %d" % i)
-            self.assertEqual(mid, answer["answered"])
-            self.assertEqual(asked[i + 1:], answer["still_waiting"])
-            if i == 0:
-                self.assertTrue(answer["duplicate"], "a lost finish response retries the same held question")
-            self.assertEqual("Answer %d" % i, self.y("ben", "status", mid)["result"]["text"])
+        self.assertEqual([], self.y("ann-agent", "job", "list", self.ids["ann"])["jobs"])
+        answer = self.y("ann", "friend", "send", "ben", "--text", "One answer")
+        self.assertEqual((asked[-1], True), (answer["answered"], answer["duplicate"]),
+                         "a lost finish response retries the same held message")
+        self.assertEqual("One answer", self.y("ben", "status", asked[-1])["result"]["text"])
+        self.assertEqual(["read", "read"], [self.y("ben", "status", mid)["code"] for mid in asked[:2]])
 
     def test_the_general_routine_leaves_a_linked_friend_alone(self):
         asked = self.y("ben", "chat", "ann", "are you there?")
         _, err = self.y("ann-agent", "job", "claim", self.ids["ann"], asked["message_id"], expect=2)
         self.assertIn("contact bot", err)
         self.y("ben", "friend", "send", "ann", "--text", "fyi")
-        notices = self.y("ann-agent", "job", "notices", self.ids["ann"])["notices"]
-        self.assertEqual(["ben"], [n["contact_bot"]["alias"] for n in notices])
+        jobs = self.y("ann-agent", "job", "list", self.ids["ann"])["jobs"]
+        self.assertEqual(["ben", "ben"], [j["contact_bot"]["alias"] for j in jobs], "every message is a job")
+        self.assertEqual([], self.y("ann-agent", "job", "notices", self.ids["ann"])["notices"])
         self.sync("ann", "ben")
         self.y("ann", "friend", "send", "ben", "--text", "here")
         inbox = self.y("ben", "inbox")["items"]
@@ -231,37 +238,45 @@ class HeldQuestionOrderTests(unittest.TestCase):
             "gateway": self.base, "as": self.bot, "bot_id": self.friend,
             "agent_home": str(self.agent.home)}}})
         for mid in self.ids:
-            P.save_lease(self.agent, mid, {"bot_id": self.bot, "contact_bot": "ben",
-                                          "job": {"created_at": "2026-01-01T00:00:00Z"}})
+            P.save_lease(self.agent, mid, {"bot_id": self.bot, "contact_bot": "ben", "lease_id": "lease-" + mid,
+                                          "fence": 1, "job": {"created_at": "2026-01-01T00:00:00Z"}})
         self.args = argparse.Namespace(friend="ben", text="Synthetic answer", text_file=None, attach=None,
                                        new_message=False)
 
-    def test_same_second_legacy_leases_use_receipt_order_not_random_ids(self):
-        def reply(fn, agent, args):
-            self.assertIs(P.cmd_job, fn)
-            P.forget_lease(agent, args.job)
-            return 0, {"ok": True}
+    def finished(self, *gone):
+        """A stand-in for the gateway's finish: `read` succeeds, except for a job already final there."""
+        def request(base, method, path, body, token):
+            mid = path.split("/")[-2]
+            if mid in gone:
+                return {"ok": False, "http_status": 409, "error": "already_final"}
+            self.assertEqual("read", body["outcome"])
+            return {"ok": True, "message_id": mid, "state": "completed", "code": "read"}
+        return request
 
+    def test_same_second_legacy_leases_use_receipt_order_not_random_ids(self):
         # State serialization sorts object keys, and old leases have no local ordering field.
         self.assertEqual(list(reversed(self.ids)), list(self.agent.load("leases.json")["leases"]))
         with patch.object(P, "agent_home", return_value=(self.agent, "synthetic-token")), \
                 patch.object(P, "call", return_value={"jobs": [{"job_id": mid} for mid in self.ids]}), \
-                patch.object(P, "captured", side_effect=reply), patch.object(P, "out") as output:
-            for i, mid in enumerate(self.ids):
-                P.friend_send(self.source, self.args)
-                self.assertEqual(mid, output.call_args.args[0]["answered"])
-                self.assertEqual(self.ids[i + 1:], output.call_args.args[0]["still_waiting"])
+                patch.object(P, "request", side_effect=self.finished()), \
+                patch.object(P, "captured", return_value=(0, {"ok": True})) as captured, \
+                patch.object(P, "out") as output:
+            P.friend_send(self.source, self.args)
+        self.assertEqual(self.ids[-1], captured.call_args.args[2].job, "the latest by receipt order is answered")
+        self.assertEqual((self.ids[-1], self.ids[:2]), (output.call_args.args[0]["answered"],
+                                                        output.call_args.args[0]["marked_read"]))
+        self.assertEqual([self.ids[-1]], list(self.agent.load("leases.json")["leases"]))
 
-    def test_unlisted_lease_remains_available_for_reply_retry(self):
+    def test_an_unlisted_lease_already_final_there_is_forgotten(self):
         with patch.object(P, "agent_home", return_value=(self.agent, "synthetic-token")), \
                 patch.object(P, "call", return_value={"jobs": [{"job_id": mid} for mid in self.ids[1:]]}), \
+                patch.object(P, "request", side_effect=self.finished(self.ids[0])), \
                 patch.object(P, "captured", return_value=(0, {"ok": True, "duplicate": True})) as captured, \
                 patch.object(P, "out") as output:
             P.friend_send(self.source, self.args)
-        self.assertIs(P.cmd_job, captured.call_args.args[0])
-        self.assertEqual(self.ids[0], captured.call_args.args[2].job,
-                         "a completed reply missing from jobs may need an idempotent retry")
-        self.assertTrue(output.call_args.args[0]["duplicate"])
+        self.assertEqual(self.ids[-1], captured.call_args.args[2].job)
+        self.assertEqual(self.ids[:2], output.call_args.args[0]["marked_read"], "a finished job needs no read")
+        self.assertNotIn(self.ids[0], self.agent.load("leases.json")["leases"])
 
     def test_single_held_question_retries_without_listing(self):
         for mid in self.ids[1:]:

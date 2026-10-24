@@ -218,14 +218,13 @@ class AudienceTests(ProfilePageCase):
     def test_icons_show_who_can_do_what(self):
         h = self.handle("p")
         bot_id, _ = self.gw.owned_bot(h)
-        self.gw.policy(bot_id, offered=["faq", "leave_message", "calendar_slots", "chat"], visitor=["faq"],
-                       follower=["faq", "leave_message"], friend=["faq", "leave_message", "calendar_slots", "chat"],
-                       accept_followers=False)
+        self.gw.policy(bot_id, offered=["faq", "calendar_slots", "chat"], visitor=["faq"],
+                       follower=["faq", "chat"], friend=["faq", "calendar_slots", "chat"], accept_followers=False)
         _, _, text = self.page("/@%s?lang=zh" % h)
         states = dict((act, state) for state, act in re.findall(r'class="act s-(\w+)" type="button" data-act="(\w+)"',
                                                                text))
-        self.assertEqual({"chat": "friend", "leave_message": "follower", "follow": "off", "calendar_slots": "friend",
-                          "files": "off"}, states)
+        self.assertEqual({"chat": "follower", "follow": "off", "calendar_slots": "friend", "files": "off"}, states,
+                         "no separate leave-a-message button: a message is a chat (0.7.14)")
         self.assertIn("暂不接受关注", text)
         self.assertIn("关注之后可以用", text)
         self.assertNotIn('class="on"', text, "no agent badge without a binding")
@@ -247,7 +246,7 @@ class AudienceTests(ProfilePageCase):
             (("follower", "friend"), "follower", "Open once you follow this bot"),
             (("visitor", "follower", "friend"), "all", "Open to everyone"),
         )
-        caps = ["leave_message", "calendar_slots", "files", "chat"]
+        caps = ["calendar_slots", "files", "chat"]
         for n, (allowed, state, explanation) in enumerate(cases):
             with self.subTest(allowed=allowed):
                 h = self.handle("a%d" % n)
@@ -295,9 +294,9 @@ class LanguageTests(ProfilePageCase):
     def test_pages_in_sixteen_languages(self):
         h = self.handle("l")
         self.gw.owned_bot(h, policy={
-            "offered": ["chat", "leave_message", "calendar_slots", "files"],
-            "visitor": ["chat", "calendar_slots", "files"],
-            "follower": ["leave_message", "calendar_slots"], "friend": ["files"],
+            "offered": ["chat", "calendar_slots", "files"],
+            "visitor": ["calendar_slots", "files"],
+            "follower": ["chat", "calendar_slots"], "friend": ["files"],
         })
         for lang in I18N.LANGS:
             status, _, text = self.page("/@%s?lang=%s" % (h, lang))
@@ -305,8 +304,8 @@ class LanguageTests(ProfilePageCase):
             self.assertIn('<html lang="%s" dir="%s">' % (P.html_lang(lang), "rtl" if lang == "ar" else "ltr"), text)
             self.assertIn(html.escape(I18N.T[lang]["stats"]["followers"]), text, lang)
             self.assertEqual(16, text.count('<link rel="alternate" hreflang='), lang)
-            for cap, state in (("chat", "visitor"), ("leave_message", "follower_only"),
-                               ("calendar_slots", "visitor_follower"), ("files", "visitor_friend")):
+            for cap, state in (("chat", "follower_only"), ("calendar_slots", "visitor_follower"),
+                               ("files", "visitor_friend")):
                 label = "%s: %s" % (I18N.T[lang]["acts"][cap], I18N.T[lang]["st_long"][state])
                 self.assertIn('aria-label="%s"' % html.escape(label, quote=True), text, (lang, cap))
                 self.assertIn(html.escape(I18N.T[lang]["st"][state]), text, (lang, state))

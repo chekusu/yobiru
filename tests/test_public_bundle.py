@@ -171,7 +171,8 @@ class DemoFromArchiveTests(unittest.TestCase):
                            capture_output=True, text=True, timeout=240)
         self.assertEqual(0, r.returncode, r.stdout + r.stderr)
         out = r.stdout
-        for expected in ("asked a visitor question: queued", '["completed", "completed", "completed"]',
+        for expected in ("asked a visitor question: queued", 'one worker pass: ["completed", "completed"]\n',
+                         "the message: queued, in the owner's message requests",
                          "T11:00:00Z", "T12:00:00Z", "T13:00:00Z", '["Please tell the owner hello"]',
                          "private event details are only in: ./calendar/events.json\n",
                          "the caller's next history read: not_found 404",

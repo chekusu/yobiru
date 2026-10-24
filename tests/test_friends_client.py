@@ -103,9 +103,9 @@ class OnboardingTests(FriendsClientCase):
         connected = self.y("caller", "connect", share["share_link"], "--name", "Synthetic visitor agent")
         self.assertEqual(("alice", "visitor", True), (connected["alias"], connected["as_kind"],
                                                       connected["enrolled_visitor"]))
-        self.assertEqual(["faq", "leave_message", "chat"], connected["relationship"]["capabilities"])
+        self.assertEqual(["faq", "chat"], connected["relationship"]["capabilities"])
         sent = self.y("caller", "chat", "alice", "Hello from a synthetic visitor")
-        self.assertEqual("queued", sent["state"])
+        self.assertEqual(("queued", False, None), (sent["state"], sent["reply_required"], sent["deadline"]))
         again = self.y("caller", "connect", share["share_link"])
         self.assertFalse(again["enrolled_visitor"], "the saved identity is reused, never a second one")
         ids = self.y("caller", "identities")["identities"]
@@ -312,7 +312,7 @@ class ResourceTests(FriendsClientCase):
         svc = Service([sys.executable, str(PUBLIC / "bot_resources.py"), "serve", "--dir", str(rdir)],
                       plain_env(self.root), self.root / "resources.log").start()
         self.addCleanup(svc.stop)
-        self.y("owner", "bot", "edit", "alice", "--offered", "faq,leave_message,calendar_slots,chat,resource:menu,"
+        self.y("owner", "bot", "edit", "alice", "--offered", "faq,calendar_slots,chat,resource:menu,"
                                                              "resource:secret")
         caller = self.y("caller", "connect", self.gw.url + "/@alice", "--name", "Granted visitor")["as"]
         self.y("other", "connect", self.gw.url + "/@alice", "--name", "Other visitor")

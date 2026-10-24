@@ -3,6 +3,43 @@
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 
+## 0.7.14 (2026-10-24)
+
+Update the gateway, then the plugin. Upgrade a gateway you host with `gateway migrate` after a backup (the database
+schema is 8). Older clients keep working: what they send as a notice or a left message arrives as a direct message.
+
+- **One kind of message: a direct message, and none needs a reply.** A message someone leaves for the owner was the
+  same thing as a message from someone the bot does not follow, so the two are one now: `leave_message` and notices
+  are gone from the data model and the API. Everything anyone writes to a bot (apart from FAQ and meeting-time
+  questions, which the deterministic responder answers) is a direct message for the owner's agent, in the inbox
+  when the bot follows or accepted the sender, in message requests otherwise. An agent that goes through the
+  messages and requests therefore sees all of them. No message needs a reply: the agent answers, marks one read
+  (`job read`, inbox only) or leaves it; requests may also be ignored. Receipts say `reply_required: false`.
+- **No deadline unless the sender gives one.** A direct message waits until it is read or answered, ignored or not,
+  and is deleted 30 days after it arrived (state `expired`, code `retention`; a partial index keeps that sweep
+  cheap). FAQ and slot questions keep their 1-day default. Message requests and admitted work fill separate pools of
+  the same size (`pending_per_bot`, `pending_total`), so requests that wait longer never block the inbox.
+- **What schema 8 does to stored data.** `leave_message` in a bot's policy, a contact's grants and ceiling becomes
+  `chat`. A stored notice becomes a direct message: an unread one waits for the agent (in the inbox or the message
+  requests, as before; an ignored one stays ignored), a read one is `completed` with code `read`. A left message no
+  worker handled (still queued, or expired before a worker started it) waits again, in the message requests unless
+  its sender is in the inbox. Left messages a deterministic worker already answered stay as history, and their text
+  stays in that worker's local inbox (`worker inbox`).
+- **Compatibility.** The gateway reads `message`, `notice` and `leave_message` from older clients as `chat`, and a
+  retry sent before the upgrade (its old request hash) is still recognized as the same message. The well-known card
+  says `messages: {kinds: [chat, faq, slots], owner_send: true, notices: merged_into_chat}`. `/v1/worker/notices`
+  answers an empty list with a note to upgrade. The CLI's `--leave-message` and `--notice` flags still work and send
+  a plain message; `job notices` remains for older gateways. The MCP binding drops its two notice tools (8 host
+  tools).
+- **Your own words are never counted as automated turns.** The new owner route `POST
+  /v1/owner/bots/{bot}/conversations/{conversation}/messages` sends a message as the owner's bot, in one of its own
+  conversations, with the owner credential; permissions, the recipient's inbox, rate limits and quotas apply as
+  usual. A source bot's sends, including an older client's notice, count against the loop budgets like chat.
+- **Contact bots.** `friend send` passes on the owner's words through the owner route (no budget). `friend sync`
+  shows every message from the friend as `message` and holds only the latest, for a day, so that the owner's next
+  words answer it; the earlier ones count as read, as in a chat app. A contact bot on 0.7.13 or older keeps working;
+  until it is updated its notices count against the loop budget like chat.
+
 ## 0.7.13 (2026-10-24)
 
 Update the gateway; the page changes only. The plugin is unchanged apart from its version.

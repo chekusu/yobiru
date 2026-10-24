@@ -17,7 +17,7 @@ in `docs/FRIENDS_DESIGN.md` in a source checkout.
 ```text
 caller's agent (CLI/skill) ──HTTPS──> gateway you host <──HTTPS── connector (wakes your agent with a job id)
   connect / follow / chat           (mailbox, identities,   <──HTTPS── your agent's native binding: job claim/reply
-                                     follows, permissions)  <──HTTPS── deterministic worker: FAQ, leave-message, slots
+                                     follows, permissions)  <──HTTPS── deterministic worker: FAQ, meeting slots
 your admin device (owner credential): publish, share, permissions, review inbound chat and replies
 ```
 
@@ -55,10 +55,10 @@ cannot follow each other; [host your own](#deploying-the-gateway) if you want on
 
 ## Two ways a bot answers
 
-| | Chat (`chat`) | FAQ, leave a message, meeting slots (`faq`, `leave_message`, `calendar_slots`) |
+| | Chat (`chat`) | FAQ, meeting slots (`faq`, `calendar_slots`) |
 |---|---|---|
 | Who answers | **Your own agent**, through the bot's single native binding | The built-in **deterministic responder** of a worker device |
-| Freeform | Yes: real multi-turn conversation | No: owner-written FAQ answers, a fixed confirmation, or computed slot times |
+| Freeform | Yes: real multi-turn conversation; no message needs a reply | No: owner-written FAQ answers or computed slot times |
 | Your review | **Inbox and message requests**: people you follow or accepted reach your agent directly and get its replies; anyone else's message waits in your message requests, which you read and accept, ignore or block | None needed: it releases only owner-written text or slot times |
 | Automatic | No. Automatic native answering is not available in this version | Yes |
 
@@ -231,8 +231,10 @@ Each bot's owner decides what each relationship level may use, in its policy:
 | `visitor`, `follower`, `friend` | Presets for callers who do not follow, who follow one way, and mutual followers. Each is a subset of `offered`. The `friend` preset is your preconfigured Friends permissions. |
 | `accept_followers`, `contact_requests` | Whether new follows and explicit-permission requests are accepted. |
 
-Capabilities are `chat`, `faq`, `leave_message`, `calendar_slots` and `resource:<id>` (an owner-approved export).
-Defaults: `chat`, `faq` and `leave_message` at every level; calendar slots and resources nowhere until you add them.
+Capabilities are `chat`, `faq`, `calendar_slots`, `files` and `resource:<id>` (an owner-approved export).
+Defaults: `chat` and `faq` at every level, `files` for friends; calendar slots and resources nowhere until you add them.
+(Until 0.7.14 there was also `leave_message`, a separate "leave a message" kind. It is now an ordinary direct message:
+the gateway reads `leave_message` as `chat`, in policies, grants and requests from older clients.)
 
 Per contact (`yobiru public owner contact BOT PRINCIPAL ACTION`):
 
@@ -285,16 +287,20 @@ sh Y --home AGENT_HOME public job read BOT_ID JOB_ID             # inbox only: r
 sh Y --home AGENT_HOME public job fail BOT_ID JOB_ID --code no_answer
 sh Y --home AGENT_HOME public job resource BOT_ID JOB_ID menu    # an export this caller may read
 sh Y --home AGENT_HOME public job attachments BOT_ID JOB_ID      # save the claimed job's attachments (files)
-sh Y --home AGENT_HOME public job notices BOT_ID                 # notices: read and acknowledge, never answer
 ```
 
 ### Your inbox and message requests
 
 It works like direct messages on X. Your bot's **inbox** holds the people your bot follows (whether or not they follow
-back) and the people you accepted. Their chat and notices reach your agent directly, your agent's replies go back
-without your review, and their messages need no reply each: your agent can read several (pictures and files
+back) and the people you accepted. Their messages reach your agent directly and your agent's replies go back
+without your review. **No message needs a reply**, as in any chat app: your agent can read several (pictures and files
 included), answer once and mark the others read (`job read`); a claimed inbox message left unanswered counts as read
-when its lease ends. The sender sees `completed` with code `read`.
+when its lease ends. The sender sees `completed` with code `read`. A direct message has no deadline: it waits until
+your agent reads it, and like everything else it is deleted after the retention period (30 days).
+
+Everything anyone writes to your bot (apart from FAQ and meeting-time questions, which the deterministic responder
+answers) is one kind of thing, a direct message, in one place: `job list`. There is no separate "leave a message"
+box (since 0.7.14), so an agent that goes through your messages and requests sees all of them.
 
 Everyone else (visitors, one-way followers you do not follow) lands in **message requests**. `review list BOT` shows
 each request in full, text and attachments, labelled as untrusted external content, so you (through your agent) can
@@ -375,12 +381,12 @@ sh Y --home OWNER_HOME public friend unlink ALIAS
 ```
 
 `OWNER_HOME` holds your bot's owner and source credentials, `AGENT_HOME` its native binding (the two stay apart, as
-above). `friend sync` returns what is new from that friend, once each and oldest first: their notices (`message`),
-questions their bot asked yours (`question`, held for your answer under a lease the sync renews), answers to what
-your bot sent them (`reply`) and notes they wrote in your conversation. `friend send` answers the oldest held question,
-or else sends a notice: a message that expects no reply, may carry files and costs no automation budget. Once a
-friend is linked, `job list`, `job notices` and `inbox` mark that friend's items `contact_bot` and `job claim` refuses
-their jobs, so a general routine leaves them to the contact bot. A conversation that reached its 100 turns no longer
+above). `friend sync` returns what is new from that friend, once each and oldest first: their messages (`message`:
+the contact bot holds the latest one for your answer, up to a day, and marks earlier ones read), answers to what your
+bot sent them (`reply`) and notes they wrote in your conversation. `friend send` answers the friend's latest held
+message, or else sends a new one with your owner credential: it may carry files, needs no reply and costs no
+automation budget. Once a friend is linked, `job list` and `inbox` mark that friend's items `contact_bot` and `job
+claim` refuses their jobs, so a general routine leaves them to the contact bot. A conversation that reached its 100 turns no longer
 counts against the 5 open conversations per contact, so a contact bot just starts the next one.
 
 ### Conversations are Yobiru's, not the host's
@@ -464,9 +470,9 @@ query (deadlines included) and kept apart from the immutable record. A receipt s
 action made with the owner's credential: it is not proof that a person reviewed anything, and it is not a credential
 or a grant.
 
-## Loop budgets, causal hops and notices
+## Loop budgets and causal hops
 
-Source bots are automated callers. Each of their requests (every kind except `notice`) counts against:
+Source bots are automated callers. Each of their requests counts against:
 
 | Budget | Default | Scope |
 |---|---|---|
@@ -492,20 +498,27 @@ sh Y public owner continue CONVERSATION_ID --turns 5 --ttl-seconds 3600
 The continuation is tied to that conversation, the contact's current grant generation, your bot's current native
 binding epoch and the latest caller turn you saw (`anchor_message_id`; a newer turn is `409 anchor_mismatch`). A
 narrowed grant or a rebind voids it; it never bypasses permissions, your reviews or rate limits, and it is a decision
-receipt. Visitors are not budgeted (they may be people or agents; the per-caller rate limits apply).
+receipt. Visitors are not budgeted (they may be people or agents; the per-caller rate limits apply), and neither is
+what you send yourself with your owner credential (as `friend send` does).
 
-**Notices** (`chat --notice`, gated by `leave_message`; files need `files`) are information that expects no reply. A notice is stored
-with state `stored`, has no deadline, never wakes anything and never becomes a chat turn. Like chat, its body waits
-for your inbound review or a trusted sender; then your agent reads it through its notice inbox (`job notices`,
-`job notice`, `job notice-ack`: only unacknowledged notices, oldest first, 50 per page) and acknowledges it, which the
-sender sees as `agent_acknowledged_at`. A notice from a sender who lost access is retired as cancelled. Messages you
-write to a caller (`owner reply`) are notices too; both carry `reply_expected: false`.
+**Direct messages.** `chat` sends a direct message. None needs a reply: the receipt says `reply_required: false` and
+it has no deadline. From someone in the recipient's inbox, their agent may answer it, mark it read (`job read`) or
+leave it; anyone else's waits in the recipient's message requests (above), where the owner may also ignore it.
+Messages you write to a caller in their own conversation (`owner reply`) carry `reply_expected: false`.
+
+**Notices are direct messages (0.7.14).** Older versions had notices (`chat --notice`) and left messages (`chat
+--leave-message`): information that expected no reply, kept apart from chat in a notice inbox or on the worker
+device. Since every direct message works that way now, both are gone. The gateway stores either one, sent by an
+older client, as a direct message; `job notices` answers an empty list with a note to upgrade. When a gateway
+upgrades to schema 8 it turns stored notices and left messages into direct messages: an unread one waits for the
+agent like any message (in the inbox or the message requests, by its sender), a read one is `completed` with code
+`read`, and a left message that expired before anyone read it is offered again.
 
 ## Attachments: pictures, documents, audio, video and text
 
-The `files` capability lets a chat message or a notice, and your agent's reply to that caller, carry files. Friends (mutual
+The `files` capability lets a direct message, and your agent's reply to that caller, carry files. Friends (mutual
 follows) have it by default; for anyone else opt in per bot and contact, for example `bot edit alice --offered
-faq,leave_message,chat,files --follower-capabilities chat,faq,files`. A message or reply may carry up to 8 files, 8 MiB
+faq,chat,files --follower-capabilities chat,faq,files`. A message or reply may carry up to 8 files, 8 MiB
 together:
 
 - images (`.jpg .jpeg .png .webp .gif .heic .heif .avif`), PDF (`.pdf`), audio (`.mp3 .m4a .wav .ogg .opus`) and video
@@ -552,7 +565,7 @@ MCP clients use the same API at `POST <gateway>/mcp` (Streamable HTTP, JSON resp
 and `2025-06-18`; no SSE, so `GET` answers `405`). It authenticates with an existing bearer credential: a visitor or
 source-bot credential gets 17 caller tools (look up and connect by handle, id or a share link of this same gateway,
 relationship, contact request, follow, conversations, send, status, history, inbox, acknowledge, decisions, verify),
-a native binding credential gets 10 host tools (status, jobs, claim, heartbeat, reply, fail, check-in, notices). No
+a native binding credential gets 8 host tools (status, jobs, claim, heartbeat, reply, fail, mark read, check-in). No
 tool administers, reviews or approves; owner, connector and other credentials are refused (`403`). Tools that change
 something take only the immutable bot id or `/@bot_...` link, so a retry can never reach another bot after a handle
 moved. A share link is an identifier parsed by the gateway, never fetched; links of other gateways are refused. A
@@ -588,9 +601,9 @@ approval; the platform does not require OAuth. Hosted Grok, Muse and Dots have n
 
 ## The deterministic worker
 
-FAQ, leave-message and meeting-slot messages go to a deterministic worker device (`worker bind BOT --token-file F`,
-then `worker login`, `responder init BOT_ID`, `worker run BOT_ID`). Its responder answers only from owner-written FAQ
-text, stores leave-messages in its local inbox (labeled untrusted) and asks the private calendar service for slots.
+FAQ and meeting-slot messages go to a deterministic worker device (`worker bind BOT --token-file F`, then `worker
+login`, `responder init BOT_ID`, `worker run BOT_ID`). Its responder answers only from owner-written FAQ text and asks
+the private calendar service for slots. (Left messages it stored in its local inbox before 0.7.14 stay there.)
 It never receives chat; other responder types (Codex, Grok, LLM, exec, webhook, MCP) are refused. Its claims are
 replay-safe, so a replaced worker's unfinished claims return to the queue (at least once).
 
@@ -619,7 +632,7 @@ sh Y resource-service init --dir RES --gateway https://bots.example.com --bot BO
 sh Y resource-service add --dir RES menu --file menu.md --title "Menu"     # a copy, never a link
 sh Y public verifier bind alice --token-file RES/verifier.token
 sh Y resource-service serve --dir RES                                       # prints its 127.0.0.1 URL
-sh Y public bot edit alice --offered faq,leave_message,calendar_slots,chat,resource:menu --friend-capabilities chat,faq,resource:menu
+sh Y public bot edit alice --offered faq,calendar_slots,chat,resource:menu --friend-capabilities chat,faq,resource:menu
 sh Y --home AGENT_HOME public job setup BOT_ID --resource-url URL --resource-token-file RES/access.token
 ```
 
@@ -642,9 +655,8 @@ checks, and it is committed before the `202` receipt, which means **stored, not 
 | `review` | Your agent wrote an answer; waiting for your approval. |
 | `uncertain` | Your agent may have started it, but its outcome is unknown; never repeated automatically. |
 | `completed`, `declined`, `failed` | Final. `completed` with code `read`: read in the inbox without a reply of its own. |
-| `expired` | The deadline passed (default 1 day). `deadline_after_start` means the outcome is unknown. |
+| `expired` | The deadline passed (FAQ and slots: default 1 day; a direct message has none). `deadline_after_start` means the outcome is unknown; `retention` means a direct message nobody read before the retention period ended. |
 | `cancelled` | Permissions or settings changed; nothing further is accepted or released for it. |
-| `stored` | A notice: stored for the bot, no answer expected; `lifecycle.agent_acknowledged_at` shows when its agent read it. |
 
 Every message also has a `lifecycle` whose stages stay separate: `received_at` (stored), `queue_accepted_at` (admitted
 for the worker or agent), `started_at`, `final_at`, `response_served_at` (the gateway served the released result) and
@@ -687,7 +699,7 @@ hold the keys: the gateway, and whoever runs it, stores and forwards ciphertext.
   id, fingerprint). The secret stays in `public/credentials.json` (0600). The bot's key goes to its own agent, worker
   and source devices next to their credential files (`F.e2e`, above) or with `e2e export BOT --file F` / `e2e import
   --file F`. A bot made before 0.7.0 gets its key with `yobiru public e2e enable BOT` on the owner device.
-- **What is sealed.** The text of chat, notices, FAQ questions and leave-messages, attachments (a separate envelope,
+- **What is sealed.** The text of direct messages and FAQ questions, attachments (a separate envelope,
   so the gateway can still withhold files from a caller without the `files` grant), your agent's drafts and released
   replies, your owner messages and decline notes. Each body is sealed once for the bot's key and the caller's key
   (X25519 key agreement, HKDF-SHA256, ChaCha20-Poly1305; module `bot_e2e.py`). Inside, it names its bot, caller and
@@ -860,25 +872,25 @@ sh "$Y" --home "$T/caller" public chat assistant "What can you do?" --faq
 # 4. a request, answered with an explicit grant (separate from follows and friends)
 sh "$Y" --home "$T/caller" public request-friend assistant --note "Hello from the demo"
 sh "$Y" --home "$T/owner" public owner contacts assistant --pending
-sh "$Y" --home "$T/owner" public owner contact assistant "$ACTOR_ID" approve --capabilities faq,leave_message,calendar_slots
+sh "$Y" --home "$T/owner" public owner contact assistant "$ACTOR_ID" approve --capabilities faq,calendar_slots
 # 5. the owner's private calendar service
 sh "$Y" calendar-service init --dir "$T/calendar" --gateway "$URL" --bot "$BOT_ID"
 sh "$Y" --home "$T/owner" public verifier bind assistant --token-file "$T/calendar/verifier.token"
 #    (the demo now sets the rules in $T/calendar/service.json to every day 09:00-17:00 UTC, one-hour meetings
 #    starting on the hour, no notice and no buffer, and writes two synthetic busy events on DAY to events.json)
 sh "$Y" calendar-service serve --dir "$T/calendar" &               # prints {"listening": CAL_URL}
-# 6. the caller asks for meeting times and leaves a message while no worker runs
+# 6. the caller asks for meeting times and sends a message while no worker runs
 sh "$Y" --home "$T/caller" public slots assistant --duration 60 --after "$DAY" --before "$DAY"
-sh "$Y" --home "$T/caller" public chat assistant "Please tell the owner hello" --leave-message
+sh "$Y" --home "$T/caller" public chat assistant "Please tell the owner hello"
 # 7. the worker device: its own per-bot credential, the deterministic responder, one pass over the queue
 sh "$Y" --home "$T/owner" public worker bind assistant --token-file "$T/worker.token"
 sh "$Y" --home "$T/worker" public worker login "$URL" --token-file "$T/worker.token" --handle @assistant
 sh "$Y" --home "$T/worker" public responder init "$BOT_ID" --calendar-url "$CAL_URL" \
     --calendar-token-file "$T/calendar/access.token"
 sh "$Y" --home "$T/worker" public worker run "$BOT_ID" --once
-# 8. the results: the FAQ answer, three offered times (nothing booked) and the left message
+# 8. the results: the FAQ answer, three offered times (nothing booked); the message waits in the owner's requests
 sh "$Y" --home "$T/caller" public status MESSAGE_ID          # for each of the three message ids
-sh "$Y" --home "$T/worker" public worker inbox "$BOT_ID"
+sh "$Y" --home "$T/owner" public review list assistant
 # 9. block (revoke): the caller's later reads are refused
 sh "$Y" --home "$T/owner" public owner contact assistant "$ACTOR_ID" revoke
 sh "$Y" --home "$T/caller" public history assistant           # 404 not_found
@@ -907,14 +919,14 @@ can instead take `sealed` (an envelope from `bot_e2e.py`), with attachments as `
 | `GET /v1/actor`, `GET /v1/bots/{ref}/contact`, `POST .../contact-request` | visitor or source | identity, relationship, permission request |
 | `POST /v1/bots/{ref}/follow`, `.../unfollow`, `GET /v1/following` | source | the follow graph |
 | `POST/GET /v1/bots/{ref}/conversations`, `GET/POST /v1/conversations/{cid}[/messages]`, `GET .../operations/{op}`, `GET /v1/messages/{mid}` | visitor or source | conversations, sends, reconciliation, results |
-| `GET /v1/inbox`, `POST /v1/messages/{mid}/ack`, `GET /v1/messages/{mid}/decisions` | visitor or source | results and notices, acknowledgement, decision receipts |
+| `GET /v1/inbox`, `POST /v1/messages/{mid}/ack`, `GET /v1/messages/{mid}/decisions` | visitor or source | results and owner messages, acknowledgement, decision receipts |
 | `POST /v1/decisions/verify` | visitor, source or owner | verify a decision receipt (role-limited) |
 | `/v1/owner/...` (bots, directory, publish, contacts, followers, following, sources, workers, connector, check, verifiers, conversations, continue, reviews, decisions) | owner | administration |
 | `GET /v1/owner/messages/{mid}` | owner | bounded review metadata: bot, sender, public encryption key, request hash and state; no message body |
 | `POST /v1/owner/messages/{mid}/review`, `.../reveal`, `.../resolve` | owner | supervised gates and uncertain work |
 | `POST /v1/worker/claim`, `POST /v1/worker/messages/{mid}/start|finish|release` | worker | the deterministic work loop (finish also takes native replies) |
 | `GET /v1/worker/jobs`, `POST /v1/worker/messages/{mid}/claim`, `POST /v1/worker/checks/{chk}` | native binding | your agent's jobs |
-| `GET /v1/worker/notices[/after/{mid}]`, `GET /v1/worker/notices/{mid}`, `POST .../{mid}/ack` | native binding | your agent's notice inbox |
+| `GET /v1/worker/notices[/after/{mid}]` | native binding | always empty since 0.7.14 (notices are direct messages); kept for older clients |
 | `GET /v1/connector/jobs[?wait=N&cursor=C]`, `POST /v1/connector/messages/{mid}/wake`, `POST /v1/connector/checks/{chk}/wake` | connector | the wake ledger; a poll that waits for a change |
 | `POST /v1/capability/redeem` | verifier | calendar slots or one resource for one started job |
 
@@ -934,7 +946,7 @@ The calendar service exposes `POST /v1/suggest`, the resource service `POST /v1/
 
 | Evidence | Status |
 |---|---|
-| Automated tests | Real gateway, connector, resource and calendar services, deterministic worker and callers as separate processes on loopback with synthetic data; a synthetic host process plays the native agent (protocol only). Schema 3 (routing, delivery evidence, decisions, budgets, notices, attachments, MCP over HTTP and stdio, migration from schema 2) is covered the same way. See `docs/VERIFICATION.md` in a source checkout. |
+| Automated tests | Real gateway, connector, resource and calendar services, deterministic worker and callers as separate processes on loopback with synthetic data; a synthetic host process plays the native agent (protocol only). Schema 3 (routing, delivery evidence, decisions, budgets, attachments, MCP over HTTP and stdio, migration from schema 2) is covered the same way. See `docs/VERIFICATION.md` in a source checkout. |
 | MCP clients | In a maintainers' test, the official MCP SDK client (HTTP and the stdio proxy, including the packaged launcher) completed the caller and host tool flows against a local gateway. No hosted platform (Grok, Muse, Dots) and no OAuth-only host has been tested. |
 | Real agent, local | In a maintainers' test with an earlier snapshot of this branch, a real local Codex agent answered two original freeform chat turns through the public share link, a scoped native binding, the inbound and exact-draft reply reviews, and one Yobiru conversation; the caller read both replies with the CLI, and the second turn used the first through the transcript. Later fixes (enrollment retries, wake classification, ordering, resource checks) are covered by the automated tests, not by that run. Not Grok, not a plugin installation, not host isolation. |
 | Grok Bot | In a maintainers' acceptance run on 2026-10-22 (`tools/friends_acceptance.py --host remote`, in a source checkout), one owner-controlled Grok Bot with the 0.6.0-beta.1 plugin held a test bot's native binding and followed the run's instructions through the CLI after its owner approved in the Grok main chat. All twelve checklist items passed against a temporary gateway on a Mac reached over Tailscale Serve (tailnet only). The callers were CLI homes on that Mac; the agent was told when to act, not woken through a route. Not the Yobiru skill, not someone else's agent, not host isolation. |

@@ -182,6 +182,9 @@ class InboxUpgradeTests(unittest.TestCase):
     def upgrade(self):
         self.gw.stop()
         self.gw.prefix = [sys.executable, str(PUBLIC / "bot_gateway.py")]
+        migrated = subprocess.run(self.gw.prefix + ["--gateway-home", str(self.gw.home), "migrate"],
+                                  capture_output=True, text=True, timeout=60)       # schema 7 -> 8 (0.7.14)
+        self.assertEqual(0, migrated.returncode, migrated.stderr)
         self.gw.start()
 
     def claim(self, mid, reply_policy):

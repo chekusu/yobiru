@@ -75,32 +75,31 @@ class IgnoredRequestTests(unittest.TestCase):
         self.assertEqual(200, status, job)
         self.assertEqual("IGNORED-WAKE-SECRET", job["untrusted_content"]["text"])
 
-    def test_notice_ignore_is_silent_idempotent_and_can_be_admitted_later(self):
+    def test_an_old_clients_notice_is_a_request_that_can_be_ignored_and_admitted_later(self):
         bot, _, caller, worker, _, cid = self.request_sender()
         status, sent = self.gw.send(cid, caller, kind="notice", text="IGNORED-NOTICE-SECRET")
-        self.assertEqual(202, status, sent)
+        self.assertEqual((202, "queued", False), (status, sent["state"], sent["reply_required"]), sent)
         mid = sent["message_id"]
         request = next(r for r in self.gw.reviews(bot)["inbound"] if r["job_id"] == mid)
         before = self.gw.ok("GET", "/v1/messages/%s" % mid, None, caller)
+        self.assertEqual("chat", before["kind"], "since 0.7.14 a notice is a direct message")
         for duplicate in (False, True):
             status, result = self.ignore(mid)
             self.assertEqual((200, "ignored", duplicate),
                              (status, result.get("inbound"), result.get("duplicate")), result)
         self.assertEqual([], self.gw.reviews(bot)["inbound"])
-        listed = self.gw.ok("GET", "/v1/worker/notices", None, worker)
-        self.assertEqual([], listed["notices"])
-        self.assertEqual(0, listed["waiting_for_owner_review"])
-        self.assertNotIn("IGNORED-NOTICE-SECRET", json.dumps(listed))
-        status, blocked = self.gw.call("GET", "/v1/worker/notices/%s" % mid, None, worker)
+        self.assertEqual([], self.gw.ok("GET", "/v1/worker/jobs", None, worker)["jobs"])
+        status, blocked = self.gw.claim_job(worker, mid)
         self.assertEqual((409, "review_required"), (status, blocked["error"]))
         self.assertEqual(before, self.gw.ok("GET", "/v1/messages/%s" % mid, None, caller))
         self.gw.ok("POST", "/v1/owner/messages/%s/review" % mid,
                    {"action": "approve_inbound", "request_hash": request["request_hash"]}, self.gw.owner_token)
-        self.assertEqual([mid], [n["notice_id"] for n in
-                                self.gw.ok("GET", "/v1/worker/notices", None, worker)["notices"]])
-        notice = self.gw.ok("GET", "/v1/worker/notices/%s" % mid, None, worker)
-        self.assertEqual("IGNORED-NOTICE-SECRET", notice["untrusted_content"]["text"])
-        self.gw.ok("POST", "/v1/worker/notices/%s/ack" % mid, {}, worker)
+        self.assertEqual([mid], [j["job_id"] for j in self.gw.ok("GET", "/v1/worker/jobs", None, worker)["jobs"]])
+        status, job = self.gw.claim_job(worker, mid)
+        self.assertEqual(200, status, job)
+        self.assertEqual("IGNORED-NOTICE-SECRET", job["untrusted_content"]["text"])
+        legacy = self.gw.ok("GET", "/v1/worker/notices", None, worker)
+        self.assertEqual(([], 0), (legacy["notices"], legacy["waiting_for_owner_review"]), "the old inbox stays empty")
 
 
 class IgnoredPendingCapacityTests(unittest.TestCase):
@@ -141,7 +140,7 @@ class IgnoredPendingCapacityTests(unittest.TestCase):
         self.assert_send_error(cid, caller, (429, "too_many_pending"))
         self.assertEqual(4, len(gw.owner_view(cid)["messages"]))
 
-    def test_ignoring_full_bot_queue_allows_a_trusted_sender(self):
+    def test_requests_never_fill_the_inbox_and_ignoring_frees_their_capacity(self):
         gw = self.gateway(pending_per_bot=2)
         bot = gw.bot("ignored-bot-capacity")
         _, trusted, trusted_cid = self.sender(bot, trusted=True)
@@ -149,15 +148,18 @@ class IgnoredPendingCapacityTests(unittest.TestCase):
         for i in range(2):
             _, caller, cid = self.sender(bot)
             mids.append(gw.chat(cid, caller, "request %d" % i))
+        _, stranger, stranger_cid = self.sender(bot)
+        self.assert_send_error(stranger_cid, stranger, (503, "mailbox_full"))
+        for i in range(2):                    # since 0.7.14 requests and the inbox are separate pools
+            gw.chat(trusted_cid, trusted, "inbox message %d" % i)
         self.assert_send_error(trusted_cid, trusted, (503, "mailbox_full"))
         for mid in mids:
             self.ignore(mid)
         self.assertEqual([], gw.reviews(bot)["inbound"])
-        for i in range(2):
-            gw.chat(trusted_cid, trusted, "inbox message %d" % i)
+        gw.chat(stranger_cid, stranger, "a request after the owner ignored the others")
         self.assert_send_error(trusted_cid, trusted, (503, "mailbox_full"))
 
-    def test_ignoring_full_gateway_queue_allows_another_bot(self):
+    def test_requests_never_fill_the_gateway_for_inboxes_and_ignoring_frees_their_capacity(self):
         gw = self.gateway(pending_total=2)
         mids = []
         for i in range(2):
@@ -165,13 +167,15 @@ class IgnoredPendingCapacityTests(unittest.TestCase):
             _, caller, cid = self.sender(bot)
             mids.append(gw.chat(cid, caller, "request"))
         recipient = gw.bot("ignored-total-recipient")
+        _, stranger, stranger_cid = self.sender(recipient)
+        self.assert_send_error(stranger_cid, stranger, (503, "mailbox_full"))
         _, caller, cid = self.sender(recipient, trusted=True)
-        self.assert_send_error(cid, caller, (503, "mailbox_full"))
-        for mid in mids:
-            self.ignore(mid)
         for i in range(2):
             gw.chat(cid, caller, "inbox message %d" % i)
         self.assert_send_error(cid, caller, (503, "mailbox_full"))
+        for mid in mids:
+            self.ignore(mid)
+        gw.chat(stranger_cid, stranger, "a request after the owners ignored the others")
 
     def test_ignored_requests_still_count_toward_stored_message_limit(self):
         gw = self.gateway(pending_per_contact=2, max_messages=2)
@@ -317,7 +321,7 @@ class IgnoredPendingCapacityTests(unittest.TestCase):
         self.assertTrue(jobs[0]["claimable"])
         self.assertEqual(200, gw.claim_job(worker, mid)[0])
         other = gw.bot("ignored-admitted-other")
-        _, other_caller, other_cid = self.sender(other)
+        _, other_caller, other_cid = self.sender(other, trusted=True)
         self.assert_send_error(other_cid, other_caller, (503, "mailbox_full"))
 
 

@@ -44,7 +44,7 @@ in this host yet.
 2. `sh Y --home OWNER_HOME public friend avatar ALIAS` saves the friend's own profile picture and prints its
    path. `avatar: null` means they have not uploaded one: keep the host's default picture.
 3. `sh Y --home OWNER_HOME public friend link ALIAS --agent-home AGENT_HOME` (once). From now on that friend's
-   messages and questions reach the user only through this contact bot; the bot's general routine leaves them.
+   messages reach the user only through this contact bot; the bot's general routine leaves them.
    Messages the user already saw are not repeated.
 4. Create the bot in the host: its name is the friend's display name (the user may choose another), its picture
    is the saved file. Give it the instructions under **The contact bot's instructions**, with NAME, ALIAS, `Y`
@@ -73,10 +73,10 @@ in this host yet.
 
 `friend sync` reads each item once and acknowledges it, so a second run shows only what is new. Its `type`:
 
-- `message`: NAME wrote to the user. No answer is expected.
-- `question`: NAME's bot asked the user's bot something (`answer_expected: true`). It is held for the user: their
-  next words in this contact bot answer it (`friend send` does that by itself). `waiting_for_your_answer` lists
-  held questions; a later question of the same conversation waits behind them (`waiting_behind_your_answer`).
+- `message`: NAME (or NAME's bot) wrote to the user. No message needs an answer, as in any chat app. The latest
+  one is held for a day: the user's next words in this contact bot answer it (`friend send` does that by itself),
+  and the earlier ones count as read. `waiting_for_your_answer` lists the held one; a message that came in while
+  another of the same conversation was being answered waits behind it (`waiting_behind_your_answer`).
 - `reply`: NAME's bot answered something the user's bot sent (`to_your_message` quotes the start of it).
 - `status`: something the user's bot sent got no answer (`state`, `explanation`).
 - `unreadable`: the text could not be opened or verified. Report that; never guess the text.
@@ -90,7 +90,7 @@ in this host yet.
 - When NAME and the user are no longer friends, `friend sync` and `friend send` are refused by the gateway: tell
   the user and offer to remove the contact bot.
 - Removing: `sh Y --home OWNER_HOME public friend unlink ALIAS` first (the general routine then handles NAME
-  again; `held_questions` still need an answer), then delete the scheduled task and, only if the user agrees,
+  again; a message still in `held_questions` counts as read when its hold ends, unless the routine answers it), then delete the scheduled task and, only if the user agrees,
   the bot itself.
 
 ## Rules that do not bend

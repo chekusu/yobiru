@@ -267,7 +267,7 @@ def html_lang(lang):
 # ---------------------------------------------------------------- icons (24 px line icons, drawn by the page's CSS)
 _ICONS = {
     "chat": '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
-    "leave_message": '<rect width="20" height="16" x="2" y="4" rx="2"/>'
+    "mail": '<rect width="20" height="16" x="2" y="4" rx="2"/>'
                      '<path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
     "follow": '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>'
               '<path d="M19 8v6M22 11h-6"/>',
@@ -298,7 +298,7 @@ def _icon(name, cls="i"):
     return '<svg class="%s" viewBox="0 0 24 24" aria-hidden="true">%s</svg>' % (cls, _ICONS[name])
 
 
-_GENERIC_MARKS = {"email": "leave_message", "phone": "phone"}
+_GENERIC_MARKS = {"email": "mail", "phone": "phone"}
 
 
 def _display_links(card):
@@ -622,7 +622,7 @@ def _access_state(card, cap):
     return _ACCESS_STATES[allowed]
 
 
-ACTS = ("chat", "leave_message", "follow", "calendar_slots", "files")
+ACTS = ("chat", "follow", "calendar_slots", "files")
 _BADGE = {"visitor": "user", "follower_only": "user", "visitor_follower": "user", "visitor_friend": "user",
           "follower": "user", "friend": "lock"}
 
