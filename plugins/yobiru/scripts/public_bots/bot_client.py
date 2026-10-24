@@ -2211,9 +2211,13 @@ def link_arg(value):
         if bare and bare.startswith("mailto:"):
             die("--link: ambiguous email with '='; use mailto:alice=work@example.com for an address "
                 "or Mail=mailto:me@example.com for a labeled link")
-        # Even an invalid bare host/path must not be split into a different destination.
-        if re.match(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:[/?#]|\Z)", value):
-            label, url = "", value
+        if re.match(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:[:/?#]|\Z)", value):
+            # Preserve URL-shaped labels when the destination has an explicit scheme.
+            # A query/fragment assignment belongs to the bare URL instead; keep even
+            # unsupported inputs (such as bare ports) whole so validation can reject them.
+            explicit = url.strip().lower().startswith(("https://", "http://", "mailto:", "tel:"))
+            if not explicit or "?" in label or "#" in label:
+                label, url = "", value
     if not url.strip():
         die("--link: use 'Label=https://example.com/...' or just the URL")
     return link_item(url, label)

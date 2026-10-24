@@ -574,7 +574,9 @@ def agent_note(card):
 
 def _comment(text):
     """An HTML comment for agents that read the people's page: never shown, and it cannot end early."""
-    return "<!--\n%s\n-->" % text.replace("--", "- -").replace("<", "&lt;").replace(">", "&gt;")
+    # Escaping angle brackets prevents comment delimiters without changing URL
+    # characters such as the double hyphen in punycode hosts and path prefixes.
+    return "<!--\n%s\n-->" % text.replace("<", "&lt;").replace(">", "&gt;")
 
 
 _ACCESS_STATES = {

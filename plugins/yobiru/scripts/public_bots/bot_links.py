@@ -237,6 +237,10 @@ def normalize(value):
     elif re.match(r"^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+([/?#]|\Z)", v):
         if _EMAIL_RE.match(v):
             raise ValueError("links: ambiguous address; use https:// for a URL or mailto: for an email")
+        if re.fullmatch(r"[0-9][0-9.-]+", v) and len(re.sub(r"\D", "", v)) >= 6:
+            # Dotted phone numbers can also look like numeric hosts (including IPv4).
+            # Require a scheme instead of choosing the wrong kind of destination.
+            raise ValueError("links: ambiguous number; use https:// for a URL or tel: for a phone number")
         v = "https://" + v
     elif _EMAIL_RE.match(v):
         v = "mailto:" + urllib.parse.quote(v, safe="@.!$&'*+=^_`{|}~-")

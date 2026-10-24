@@ -10,6 +10,7 @@ import re
 import tempfile
 import unittest
 import urllib.parse
+from html.parser import HTMLParser
 from pathlib import Path
 
 from support.public_harness import FriendsGateway
@@ -57,6 +58,45 @@ class ProfilePageCase(unittest.TestCase):
 
     def stats(self, ref):
         return self.gw.ok("GET", "/@" + ref)["stats"]
+
+
+class AgentCommentTests(unittest.TestCase):
+    def card(self, gateway):
+        address = gateway + "/@alice"
+        return {"display_name": "Alice", "handle": "@alice", "bot_id": "bot_profile_comment",
+                "address": address, "connect": "yobiru public connect " + address,
+                "api": {"mcp": gateway + "/mcp"}}
+
+    def comments(self, page):
+        parser = HTMLParser()
+        comments = []
+        parser.handle_comment = comments.append
+        parser.feed(page)
+        parser.close()
+        return comments
+
+    def test_agent_comment_preserves_gateway_urls(self):
+        for gateway in ("https://xn--bcher-kva.example", "https://my--gateway.example",
+                        "https://bots.example/profile--gateway"):
+            with self.subTest(gateway=gateway):
+                card = self.card(gateway)
+                page = P.render_profile(card, "en", "/@alice", "test-nonce").decode()
+                comments = self.comments(page)
+                self.assertEqual(1, len(comments))
+                self.assertIn(card["connect"], comments[0])
+                self.assertIn(card["address"] + ".json", comments[0])
+                self.assertIn(card["api"]["mcp"], comments[0])
+
+    def test_agent_comment_cannot_end_early_or_expose_markup(self):
+        for delimiter in ("-->", "--!>", "<!--nested-->"):
+            with self.subTest(delimiter=delimiter):
+                card = self.card("https://bots.example")
+                card["connect"] += delimiter + '<b>comment-breakout-marker</b>'
+                page = P.render_profile(card, "en", "/@alice", "test-nonce").decode()
+                comments = self.comments(page)
+                self.assertEqual(1, len(comments))
+                self.assertEqual(P.agent_note(card), html.unescape(comments[0]).strip())
+                self.assertNotIn("comment-breakout-marker", visible(page))
 
 
 class StatsTests(ProfilePageCase):
@@ -449,6 +489,20 @@ class AgentTests(ProfilePageCase):
             self.assertIn("%s", I18N.T[lang]["agent_badge"], lang)
 
 class LinkValidationTests(unittest.TestCase):
+    def test_dotted_numbers_require_an_explicit_destination_type(self):
+        for value in ("202.555.0123", "1.202.555.0123", "202-555.0123", "192.168.0.1"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "https://.*tel:"):
+                    L.normalize(value)
+        for value, expected in (("tel:202.555.0123", "tel:202-555-0123"),
+                                ("TEL:1.202.555.0123", "tel:1-202-555-0123"),
+                                ("tel:192.168.0.1", "tel:192-168-0-1"),
+                                ("https://192.168.0.1", "https://192.168.0.1"),
+                                ("http://192.168.0.1", "https://192.168.0.1"),
+                                ("192.168.0.1/help", "https://192.168.0.1/help")):
+            with self.subTest(value=value):
+                self.assertEqual(expected, L.normalize(value))
+
     def test_tel_normalization_rejects_parameters_and_nonformatting_characters(self):
         for value in ("tel:+1-555-123-4567;ext=89", "tel:5550123;phone-context=+1-212",
                       "TEL:+1-555-123-4567;ext=89", "tel:+1-555-123-4567?ext=89",
