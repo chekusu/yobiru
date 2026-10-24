@@ -240,15 +240,15 @@ class RetryIdentityTests(ClientFlowCase):
 
     def test_same_op_key_never_becomes_a_second_message(self):
         self.enroll()
-        code, first, _ = cli(self.caller, "chat", "assistant", "repeat me", "--leave-message", "--op-key", "retry_same_0001",
+        code, first, _ = cli(self.caller, "chat", "assistant", "repeat me", "--op-key", "retry_same_0001",
                              "--new-conversation")
         self.assertEqual(0, code)
-        code, second, _ = cli(self.caller, "chat", "assistant", "repeat me", "--leave-message", "--op-key", "retry_same_0001",
+        code, second, _ = cli(self.caller, "chat", "assistant", "repeat me", "--op-key", "retry_same_0001",
                               "--new-conversation")
         self.assertEqual(0, code)
         self.assertEqual((first["message_id"], first["conversation_id"], True),
                          (second["message_id"], second["conversation_id"], second["duplicate"]))
-        code, out, err = cli(self.caller, "chat", "assistant", "different text", "--leave-message", "--op-key", "retry_same_0001")
+        code, out, err = cli(self.caller, "chat", "assistant", "different text", "--op-key", "retry_same_0001")
         self.assertEqual(2, code)
         self.assertIn("different message", err)
         conversations = self.gw.ok("GET", "/v1/owner/bots/%s/conversations" % self.bot_id, None, self.gw.owner_token)
@@ -261,7 +261,7 @@ class RetryIdentityTests(ClientFlowCase):
         self.enroll(proxy.url)
         # response lost after the gateway committed
         proxy.mode = "drop_response"
-        code, lost, _ = cli(self.caller, "chat", "assistant", "committed but unanswered", "--leave-message")
+        code, lost, _ = cli(self.caller, "chat", "assistant", "committed but unanswered")
         self.assertEqual((2, "unknown_outcome"), (code, lost["error"]))
         op = lost["op_key"]
         self.assertIn("status --op-key %s" % op, lost["next"])
@@ -277,7 +277,7 @@ class RetryIdentityTests(ClientFlowCase):
         self.assertEqual([], cli(self.caller, "pending")[1]["operations"])
         # request lost before it reached the gateway
         proxy.mode = "drop_request"
-        code, lost, _ = cli(self.caller, "chat", "assistant", "never arrived", "--leave-message")
+        code, lost, _ = cli(self.caller, "chat", "assistant", "never arrived")
         self.assertEqual("unknown_outcome", lost["error"])
         proxy.mode = "pass"
         code, status, _ = cli(self.caller, "status", "--op-key", lost["op_key"])
@@ -294,7 +294,7 @@ class RetryIdentityTests(ClientFlowCase):
         self.addCleanup(proxy.close)
         actor = self.enroll(proxy.url)
         proxy.mode = "drop_response"
-        op = cli(self.caller, "chat", "assistant", "stored, then revoked", "--leave-message")[1]["op_key"]
+        op = cli(self.caller, "chat", "assistant", "stored, then revoked")[1]["op_key"]
         proxy.mode = "pass"
         self.assertEqual(200, self.gw.contact(self.bot_id, actor["actor_id"], "revoke")[0])
         code, status, _ = cli(self.caller, "status", "--op-key", op)
@@ -306,7 +306,7 @@ class RetryIdentityTests(ClientFlowCase):
         # a definite refusal on the very first attempt does mean nothing was stored
         self.gw.contact(self.bot_id, actor["actor_id"], "approve", ["faq"])
         self.gw.contact(self.bot_id, actor["actor_id"], "restrict", ["faq"])     # exactly faq, nothing else
-        code, refused, _ = cli(self.caller, "chat", "assistant", "leave a message", "--leave-message", "--new-conversation")
+        code, refused, _ = cli(self.caller, "chat", "assistant", "leave a message", "--new-conversation")
         self.assertEqual((2, "capability_not_granted", "refused"), (code, refused["error"], refused["outcome"]))
         # and an unpublished bot keeps an unknown op unknown, too
         proxy.mode = "drop_response"
@@ -328,7 +328,7 @@ class RetryIdentityTests(ClientFlowCase):
                   "        os._exit(9)          # the gateway committed; this process never records the answer\n"
                   "    return result\n"
                   "C.api_call = commit_then_die\n"
-                  "P.main(['--home', sys.argv[1], 'chat', 'assistant', 'committed, then crashed', '--leave-message', "
+                  "P.main(['--home', sys.argv[1], 'chat', 'assistant', 'committed, then crashed', "
                   "'--op-key', 'crash_window_01'])\n") % str(PUBLIC)
         r = subprocess.run([sys.executable, "-c", script, str(self.caller)], capture_output=True, text=True,
                            env=plain_env(self.root), timeout=60)
@@ -348,7 +348,7 @@ class RetryIdentityTests(ClientFlowCase):
         self.addCleanup(proxy.close)
         self.enroll(proxy.url)
         proxy.mode = "drop_request"
-        op = cli(self.caller, "chat", "assistant", "never arrived at first", "--leave-message")[1]["op_key"]
+        op = cli(self.caller, "chat", "assistant", "never arrived at first")[1]["op_key"]
         proxy.mode = "pass"
         real, resent = C.api_call, []
 
@@ -374,7 +374,7 @@ class RetryIdentityTests(ClientFlowCase):
         actor = self.enroll(proxy.url)
         proxy.mode = "hold"
         sender = subprocess.Popen([sys.executable, str(PUBLIC / "bot_client.py"), "--home", str(self.caller), "chat",
-                                   "assistant", "slow but real", "--leave-message", "--op-key", "inflight_op_01"],
+                                   "assistant", "slow but real", "--op-key", "inflight_op_01"],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=plain_env(self.root), text=True)
         self.addCleanup(lambda: sender.poll() is None and sender.kill())
         self.assertTrue(proxy.holding.wait(20), "the POST reached the proxy")
@@ -401,7 +401,7 @@ class RetryIdentityTests(ClientFlowCase):
                        "alias": "assistant", "conversation_id": "cnv_aaaaaaaaaaaaaaaa", "kind": "faq",
                        "payload": {"kind": "faq", "text": str(i)}, "payload_hash": str(i), "sent_at": C.iso(0)})
         before = self.gw.ok("GET", "/v1/owner/bots/%s/conversations" % self.bot_id, None, self.gw.owner_token)
-        code, out, err = cli(self.caller, "chat", "assistant", "one more", "--leave-message", "--new-conversation")
+        code, out, err = cli(self.caller, "chat", "assistant", "one more", "--new-conversation")
         self.assertEqual(2, code)
         self.assertIn("Nothing was sent", err)
         self.assertEqual(before, self.gw.ok("GET", "/v1/owner/bots/%s/conversations" % self.bot_id, None,
@@ -414,7 +414,7 @@ class SentLogTests(ClientFlowCase):
         big = "漢字テキスト" * 666                       # 3996 characters, about 12 KB as UTF-8
         ops = []
         for i in range(130):
-            code, sent, err = cli(self.caller, "chat", "assistant", "%03d %s" % (i, big), "--leave-message")
+            code, sent, err = cli(self.caller, "chat", "assistant", "%03d %s" % (i, big))
             self.assertEqual(0, code, err)
             ops.append(sent["op_key"])
         first = {"op_key": ops[0], "message_id": P.SentLog(P.State(self.caller)).get(ops[0])["message_id"]}
@@ -429,7 +429,7 @@ class SentLogTests(ClientFlowCase):
         old_keep = P.SentLog.KEEP_RESOLVED
         P.SentLog.KEEP_RESOLVED = 5
         try:
-            code, latest, _ = cli(self.caller, "chat", "assistant", "after pruning", "--leave-message")
+            code, latest, _ = cli(self.caller, "chat", "assistant", "after pruning")
         finally:
             P.SentLog.KEEP_RESOLVED = old_keep
         rows = [r[0] for r in log.db.execute("SELECT op_key FROM ops ORDER BY seq")]
@@ -445,10 +445,10 @@ class SentLogTests(ClientFlowCase):
         P.SentLog.MAX_OPEN = 2
         try:
             for i in range(2):
-                self.assertEqual("unknown_outcome", cli(self.caller, "chat", "assistant", "lost %d" % i, "--leave-message")[1]["error"])
+                self.assertEqual("unknown_outcome", cli(self.caller, "chat", "assistant", "lost %d" % i)[1]["error"])
             proxy.mode = "pass"
             forwarded = proxy.forwarded
-            code, out, err = cli(self.caller, "chat", "assistant", "one more", "--leave-message")
+            code, out, err = cli(self.caller, "chat", "assistant", "one more")
         finally:
             P.SentLog.MAX_OPEN = old
         self.assertEqual(2, code)
@@ -529,7 +529,7 @@ class WorkerExclusivityTests(ClientFlowCase):
 
     def test_a_locally_started_lease_is_revalidated_before_anything_is_computed(self):
         actor = self.enroll()
-        code, sent, _ = cli(self.caller, "chat", "assistant", "please deliver this note", "--leave-message")
+        code, sent, _ = cli(self.caller, "chat", "assistant", "hours?", "--faq")
         home = self.worker_home()
         cli(home, "worker", "claim", self.bot_id)
         self.assertEqual(0, cli(home, "worker", "start", self.bot_id, sent["message_id"])[0])

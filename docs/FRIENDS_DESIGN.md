@@ -1,6 +1,6 @@
 # Friends: routing, delivery evidence, decisions, loop budgets, attachments and MCP
 
-**Status: shipped in 0.6.0 (first in 0.6.0-beta.1 as gateway schema 3; schema 4 since 0.6.0-beta.2, schema 5 with end-to-end encryption since 0.7.0, schema 6 with files for friends since 0.7.1, schema 7 with the blob store since 0.7.3; files in notices and contact bots since 0.7.4; an X-style inbox and message requests since 0.7.5); tested with
+**Status: shipped in 0.6.0 (first in 0.6.0-beta.1 as gateway schema 3; schema 4 since 0.6.0-beta.2, schema 5 with end-to-end encryption since 0.7.0, schema 6 with files for friends since 0.7.1, schema 7 with the blob store since 0.7.3; files in notices and contact bots since 0.7.4; an X-style inbox and message requests since 0.7.5; schema 8 with one kind of direct message, notices and left messages included, since 0.7.14); tested with
 local processes, loopback HTTP and synthetic data, and one native Grok Bot acceptance run.** This note describes six additions to public bots and Friends
 (`docs/PUBLIC_BOTS.md` is the user guide). Each one extends something that already existed, rather than adding a
 second system beside it:
@@ -21,7 +21,7 @@ nothing in its repository was run.
 - **Contacts.** They stay pinned to `(gateway, bot_id)`. No local agent session is scanned, and nothing is rebound by
   name or working directory.
 - **Supervised chat.** It is unchanged:
-  - every chat or notice body waits for the owner's inbound review or a trusted sender (or, for a friend, the
+  - every chat body waits for the owner's inbound review or a trusted sender (or, for a friend, the
     friendship itself: the owner followed back; see section 7);
   - every reply waits for the owner's exact-hash approval (same exception);
   - automatic native answering stays blocked;
@@ -126,9 +126,9 @@ status) and `evidence_ttl_days`. Clients never call a bot online.
 - `queue_accepted_at`: admitted for the worker or agent;
 - `started_at`;
 - `final_at`;
-- `response_served_at`: the gateway served the released result or owner notice;
+- `response_served_at`: the gateway served the released result or owner message;
 - `response_acknowledged_at`: only an explicit `POST /v1/messages/{mid}/ack`, never a GET;
-- for a notice to a bot, `agent_acknowledged_at`.
+- for a notice to a bot, `agent_acknowledged_at` (until 0.7.14; see section 7).
 
 ## 3. Decision receipts
 
@@ -178,7 +178,8 @@ not a credential and not a grant. No signed token exists.
 
 ## 4. Loop budgets, causal hops and notices
 
-The budgets apply to source-bot callers (bots are automated by definition), for every kind except `notice`:
+The budgets apply to source-bot callers (bots are automated by definition), for every kind (until 0.7.14 `notice`
+was exempt; since then what an owner sends as their bot with the owner credential is, see section 7):
 - `automation_turns_per_conversation` (20): consecutive automated turns in one conversation;
 - `automation_turns_per_pair_per_day` (100): a counter keyed by `(source bot, bot)`, so new or deleted
   conversations and restarts never reset it.
@@ -212,7 +213,7 @@ contents, kind or cause) is `409 op_key_conflict`, before any charge.
   is recorded as a `continue_automation` decision.
 - The same `op_key` with changed turns, TTL or anchor is `409`.
 
-**Notices.** `kind: notice` is gated by `leave_message`:
+**Notices (until 0.7.14; since then direct messages, see section 7).** `kind: notice` was gated by `leave_message`:
 - It is stored with state `stored`, with no deadline, worker or wake, and it is never a chat turn.
 - Like chat, its body waits for the owner's admission or a trusted sender.
 - The bot's native binding reads admitted notices through its own notice inbox:
@@ -319,7 +320,7 @@ credentials answer `403` with no tools. This is not MCP OAuth: hosts that requir
 | Role | Tools |
 |---|---|
 | Caller (17) | `yobiru_whoami`, `yobiru_lookup_bot`, `yobiru_connect`, `yobiru_relationship`, `yobiru_request_contact`, `yobiru_follow`, `yobiru_unfollow`, `yobiru_following`, `yobiru_conversations`, `yobiru_send_message`, `yobiru_message_status`, `yobiru_operation_status`, `yobiru_history`, `yobiru_inbox`, `yobiru_ack`, `yobiru_message_decisions`, `yobiru_verify_decision` |
-| Native binding (10) | `yobiru_host_status`, `yobiru_host_jobs`, `yobiru_host_claim`, `yobiru_host_heartbeat`, `yobiru_host_reply`, `yobiru_host_fail`, `yobiru_host_check_in`, `yobiru_host_notices`, `yobiru_host_read_notice`, `yobiru_host_ack_notice` |
+| Native binding (8) | `yobiru_host_status`, `yobiru_host_jobs`, `yobiru_host_claim`, `yobiru_host_heartbeat`, `yobiru_host_reply`, `yobiru_host_fail`, `yobiru_host_mark_read`, `yobiru_host_check_in` (the three notice tools went with notices in 0.7.14) |
 
 No tool administers, reviews, grants, trusts or approves.
 
@@ -371,6 +372,35 @@ so it leaves the review list; the sender sees it stay queued until its deadline.
 lifted (`turn_blocker`), the agent can end a turn as read (`completed`, code `read`, no result; the transcript keeps
 it as a caller turn), and an expired lease there counts as read instead of uncertain: the reply would have been
 released without review anyway, so nothing is left for the owner to decide.
+
+**Since 0.7.14 (schema 8): one kind of direct message, and none needs a reply.** A notice (`kind: notice`) and a
+left message (`kind: message`, capability `leave_message`) were a message from outside the conversation that
+expected no reply, kept apart from chat: notices in their own inbox for the agent, left messages on the
+deterministic worker. That split meant an agent going through the bot's messages and requests could miss them,
+and since no chat message needs a reply either (the inbox can end a turn as read), they were the same thing. Now:
+
+- The gateway stores both kinds, sent by an older client, as `chat`, and reads `leave_message` as `chat` in policies,
+  grants and ceilings. A send's receipt says `reply_required: false`. `/v1/worker/notices` answers an empty list
+  with a note; reading or acknowledging a notice is `404`. The card's `messages` says `notices:
+  "merged_into_chat"`.
+- A direct message has no deadline unless its sender gives one (FAQ and slot questions keep the default day): it
+  waits until it is answered or read (ignored or not), and the retention sweep ends an open one at `retention_days` from
+  its arrival (`expired`, code `retention`; a partial index keeps that sweep off the full table).
+- Because requests no longer expire within a day, message requests and admitted work fill separate pools of
+  `pending_per_bot` and `pending_total` each: strangers cannot fill a bot's mailbox for the people in its inbox.
+  `pending_per_contact` counts both.
+- Notices were exempt from the loop budgets because they never woke an agent; a direct message does, so an old
+  client's notice is charged like any message. What the owner of a source bot sends as that bot with the owner
+  credential (`POST /v1/owner/bots/{bid}/conversations/{cid}/messages`, used by `friend send`) is the owner's own
+  words and is not charged; everything else (permissions, inbox and requests, rate limits, quotas) applies as to the
+  bot's own sends.
+- The migration (`merge_direct_messages`, in the same transaction as every step): unread notices wait like any
+  message, keeping their admission (in the inbox, in the requests, or ignored); read ones end as `completed` with
+  code `read`; left messages no worker handled (still queued or held, or expired before a worker started them) wait
+  again, admitted only when their sender is preapproved or in the inbox; those a worker answered stay as history.
+  The E2E binding is `{bot, caller, conversation}`, not the kind, so sealed bodies still open.
+- A contact bot holds only its friend's latest message for the owner's next words (`friend send` answers it), for a
+  day at most; earlier ones are marked read. Its sync still reads an older gateway's notice inbox.
 
 **Email verification.** `enrollment.email_verification` makes a new self-enrolled owner prove control of a mailbox:
 `POST /v1/enroll/email` queues a 6-digit code (15 minutes, 5 tries, one use) and answers the same whether or not the

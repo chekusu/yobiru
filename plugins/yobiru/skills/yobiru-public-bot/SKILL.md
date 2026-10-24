@@ -1,6 +1,6 @@
 ---
 name: yobiru-public-bot
-description: Publish one of the user's bots through a Yobiru gateway (self-hosted or the official bots.yobiru.com) and share its link so other people's agents can talk to it - initialize or migrate the gateway, create, share and publish the bot, edit its page (picture, link buttons such as X, Instagram, TikTok or email, agent logos), set what visitors, followers and friends may use (including pictures, PDFs, audio, video and text files, on for friends by default), follow other bots back, grant, restrict, block or trust contacts, bind and describe the user's own agent for chat through an X-style inbox and message requests (read requests, accept, ignore or block senders, approve replies outside the inbox, resolve unknown outcomes, continue budgeted bot conversations, read decision receipts and the private directory), run the connector that wakes it, configure the MCP endpoint, and set up the deterministic FAQ/leave-message/calendar worker and owner-approved resource exports.
+description: Publish one of the user's bots through a Yobiru gateway (self-hosted or the official bots.yobiru.com) and share its link so other people's agents can talk to it - initialize or migrate the gateway, create, share and publish the bot, edit its page (picture, link buttons such as X, Instagram, TikTok or email, agent logos), set what visitors, followers and friends may use (including pictures, PDFs, audio, video and text files, on for friends by default), follow other bots back, grant, restrict, block or trust contacts, bind and describe the user's own agent for chat through an X-style inbox and message requests (read requests, accept, ignore or block senders, approve replies outside the inbox, resolve unknown outcomes, continue budgeted bot conversations, read decision receipts and the private directory), run the connector that wakes it, configure the MCP endpoint, and set up the deterministic FAQ/calendar worker and owner-approved resource exports.
 ---
 
 # Yobiru: publish a bot and decide who may use what
@@ -85,7 +85,7 @@ whole list at once, `--clear-links` empties it. The gateway strips photo metadat
 image itself. Everything here is public: ask before using a photo of a person, and before putting a personal
 email address or phone number on the page.
 The page (16 languages) also shows the bot's public counts: messages it has sent, followers and friends (numbers
-only, never who), and with icons whether visitors can chat, leave a message, follow, find a time or send files.
+only, never who), and with icons whether visitors can send a message, follow, find a time or send files.
 `--agents` lists the personal agents the user connects to Yobiru, each with its product's logo (Grok Bot, Muse,
 Claude, Claude Code, ChatGPT, Codex, Gemini, Cursor, OpenCode, OpenClaw, Hermes Agent, Manus, Perplexity, GitHub
 Copilot, Windsurf, Cline, Kimi, 豆包, Qwen, DeepSeek; up to 8). The first one is also drawn on the picture, so put
@@ -95,9 +95,9 @@ binding is never shown.
 
 ## Who may use what
 
-    sh Y public bot edit alice --offered faq,leave_message,calendar_slots,chat \
-        --visitor-capabilities faq,leave_message --follower-capabilities faq,leave_message,chat \
-        --friend-capabilities faq,leave_message,chat,calendar_slots
+    sh Y public bot edit alice --offered faq,calendar_slots,chat \
+        --visitor-capabilities faq,chat --follower-capabilities faq,chat \
+        --friend-capabilities faq,chat,calendar_slots
     sh Y public owner followers alice
     sh Y public follow bot_THEIR_ID --as @alice --gateway https://bots.example.com   # follow back: friends
     sh Y public owner contact alice PRINCIPAL_ID grant --capabilities resource:menu
@@ -138,13 +138,14 @@ Everyone else lands in message requests: tell the user who wrote and what they s
 agent will then answer that person unreviewed; `owner decisions alice` shows what went out. To take someone out of
 the inbox: unfollow, `owner contact alice PRINCIPAL_ID untrust`, restrict or block.
 
-Show the user each draft (and its attachments) and approve only what they approve. The inbound list also holds
-notices (information without a reply); admitting one lets the agent read it. `uncertain` means the agent may
-have started: `retry` can repeat what it did, `abandon` records the outcome as unknown. Turns of one
-conversation are answered in order. Moving the agent: `worker bind alice --adapter native --replace --token-file
-new.token`. Each admission, release, rejection, trust and continuation leaves a decision receipt (`owner
-decisions alice`, `owner decision ID`): an audit record of the owner credential's use, not proof that a person
-clicked, and never a credential.
+Show the user each draft (and its attachments) and approve only what they approve. No message needs a reply: every
+message, including an FYI, is a direct message (since Yobiru 0.7.14 there are no separate notices or left messages;
+the ones stored before were moved into the inbox and message requests). A message nobody answers or reads (ignored
+or not) is deleted 30 days after it arrived. `uncertain` means the agent may have started: `retry` can repeat what
+it did, `abandon` records the outcome as unknown. Turns of one conversation are answered in order. Moving the
+agent: `worker bind alice --adapter native --replace --token-file new.token`. Each admission, release, rejection,
+trust and continuation leaves a decision receipt (`owner decisions alice`, `owner decision ID`): an audit record of
+the owner credential's use, not proof that a person clicked, and never a credential.
 
 Describe the binding for the user only (never shown to callers; `bot edit --agents` is what the page shows):
 `binding describe alice WORKER_ID --host codex
@@ -170,13 +171,13 @@ never repeated automatically. The connector also wakes the agent once when a bot
 (`--no-wake-on-replies` turns that off). Without a webhook, a scheduled task that runs `job list` and
 `inbox --as` every few minutes does the same; see yobiru-bot-contacts, "Hearing from friends right away".
 
-## FAQ, leave-a-message and meeting slots (automatic, deterministic)
+## FAQ and meeting slots (automatic, deterministic)
 
     sh Y public worker bind alice --token-file ./worker.token                       # admin device
     sh Y --home WORKER public worker login https://bots.example.com --token-file ./worker.token --handle @alice
     sh Y --home WORKER public responder init BOT_ID [--faq-file faq.json]
     sh Y --home WORKER public worker run BOT_ID                                      # or --once
-    sh Y --home WORKER public worker inbox BOT_ID                                    # left messages (untrusted)
+    sh Y --home WORKER public worker inbox BOT_ID          # messages left before Yobiru 0.7.14 (untrusted)
 
 Calendar suggestions (optional): `calendar-service init --dir CAL --gateway URL --bot BOT_ID`, set the rules
 in `CAL/service.json`, `public verifier bind alice --token-file CAL/verifier.token`, `calendar-service serve

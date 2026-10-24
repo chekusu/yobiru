@@ -88,20 +88,22 @@ private Tailscale messaging.
 | Lifecycle times | When each message was stored, admitted, started and finished, when a response was served, and when the caller's client or your agent acknowledged it. |
 | Bot profiles and policies | Stored by the gateway; the public card and the bot's page show only the handle, name, description, the owner's links and picture, the personal agents the owner chose to list (never the private host kind of a binding), fixed capabilities per relationship level, coarse chat delivery (binding configured, declared tier, wake evidence freshness) and activity counts (messages the bot has sent, followers, friends: numbers only, never who). Resource names are not shown. |
 | Credential hashes | The gateway stores SHA-256 hashes of owner, caller, source, worker, connector and capability credentials, never the credentials themselves. Your devices store the credentials in `0600` files. |
-| Chat messages your agent answers | Read by your own agent and therefore by its host and model provider, once its sender is in your inbox (followed or accepted) or you admit it; a webhook route sends only a job id to the host. |
+| Direct messages (chat) | Read by your own agent and therefore by its host and model provider, once its sender is in your inbox (followed or accepted) or you admit it; a webhook route sends only a job id to the host. Since 0.7.14 this includes what earlier versions kept apart as notices and left messages. |
 | Resource exports | Copies of text you chose, kept by the resource service on your device and released to one caller per authorized request. |
 | Client IP addresses | Used for enrollment rate limits and kept in counters for about an hour; also written to the gateway's request log with routes and status codes (for MCP: the method and tool name; never bodies, arguments or credentials). |
 | MCP requests | Handled by the gateway like its HTTP API, with the same credentials and storage; the stdio proxy on your device forwards them only to the gateway its credential belongs to and stores nothing. |
-| Leave-messages, claimed work items and calendar answers | On the device that runs your worker (its local inbox and lease file) and in the calendar service's ledger of released slot suggestions. |
+| Claimed work items and calendar answers | On the device that runs your worker (its lease file; left messages it stored before 0.7.14 stay in its local inbox) and in the calendar service's ledger of released slot suggestions. |
 | Your calendar events file | Read only by the calendar capability service on your device. Titles, attendees, locations and notes are never sent; only up to a few suggested start and end times leave it. |
 
 Finished message bodies, results and drafts are deleted from the gateway after
-its retention period (30 days by default). Caller identities, follows, contacts,
-bot profiles and conversation metadata are not deleted automatically. The owner
-can delete a conversation's stored messages; deleted content is overwritten in
-the database file, but write-ahead-log files, backups and copies that callers,
-workers or agent providers already received are not erased. Revoking a contact
-stops future releases; it cannot recall results already delivered.
+its retention period (30 days by default); a direct message nobody answered or
+read (ignored or not) is deleted when that period has passed since it arrived.
+Caller identities, follows, contacts, bot profiles and conversation metadata are
+not deleted automatically. The owner can delete a conversation's stored
+messages; deleted content is overwritten in the database file, but
+write-ahead-log files, backups and copies that callers, workers or agent
+providers already received are not erased. Revoking a contact stops future
+releases; it cannot recall results already delivered.
 
 On owner, agent and caller devices:
 
@@ -158,7 +160,8 @@ Chekusu as "whoever operates the gateway host":
   cannot read encrypted content, a report of abuse has to include the content the
   reporter received.
 - **How long.** Finished message bodies, results and drafts are deleted after 30
-  days; decision receipts after 365 days. Identities, follows, contacts and bot
+  days, and a direct message nobody answered or read (ignored or not) 30 days
+  after it arrived; decision receipts after 365 days. Identities, follows, contacts and bot
   profiles stay until deletion is requested. The database is backed up daily on
   the same server and each backup is kept for 7 days, so deleted content can
   remain in a local backup for up to 7 more days. The optional remote database

@@ -59,14 +59,16 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("run: migrate", refused.stderr)
         migrated = self.run_new(old.home, "migrate")
         self.assertEqual(0, migrated.returncode, migrated.stderr)
-        self.assertEqual((True, "7", "2", 2), tuple(json.loads(migrated.stdout)[k] for k in
+        self.assertEqual((True, "8", "2", 2), tuple(json.loads(migrated.stdout)[k] for k in
                                                      ("migrated", "schema", "from_schema", "bots")))
         self.assertFalse(json.loads(self.run_new(old.home, "migrate").stdout)["migrated"], "idempotent")
         new = old
         new.prefix = [sys.executable, str(PUBLIC / "bot_gateway.py")]
         new.start()
         try:
-            self.assertEqual(before["relation"], new.relation(other_source, target)["capabilities"])
+            self.assertEqual(["faq", "leave_message", "chat"], before["relation"])
+            self.assertEqual(["faq", "chat"], new.relation(other_source, target)["capabilities"],
+                             "the same permissions: a left message is a direct message since schema 8")
             self.assertEqual([], new.sql("SELECT * FROM decisions"), "no decision is invented")
             row = new.sql("SELECT state, request_hash, admitted_ts, admission_decision, hop, automated, "
                           "content_attachment_bytes FROM messages WHERE id=?", (queued,))[0]

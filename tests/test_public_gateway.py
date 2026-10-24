@@ -638,23 +638,23 @@ class IsolationTests(GatewayCase):
 
     def test_a_grant_is_per_bot(self):
         x, y = self.published("x"), self.published("y")
-        actor_id, token = self.friend(x, ["faq", "leave_message", "calendar_slots"])
+        actor_id, token = self.friend(x, ["faq", "calendar_slots"])
         cid_y = self.gw.conversation(y, token)
         status, obj = self.gw.send(cid_y, token, kind="slots", text=None, query={"duration_minutes": 30})
         self.assertEqual((403, "capability_not_granted"), (status, obj["error"]))
         rel = self.gw.ok("GET", "/v1/bots/%s/contact" % y, None, token)
-        self.assertEqual(("visitor", ["faq", "leave_message", "chat"]), (rel["relationship"], rel["capabilities"]))
+        self.assertEqual(("visitor", ["faq", "chat"]), (rel["relationship"], rel["capabilities"]))
         self.assertEqual([], rel["explicit_grants"])
 
     def test_two_friends_receive_exactly_their_own_capabilities(self):
         bot_id = self.published()
-        a_id, a = self.friend(bot_id, ["faq", "leave_message", "calendar_slots"], "Friend A")
+        a_id, a = self.friend(bot_id, ["faq", "calendar_slots"], "Friend A")
         b_id, b = self.friend(bot_id, ["faq"], "Friend B")
         # no visitor preset: what each contact gets is exactly the owner's explicit grant
         self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"policy": {"visitor": []}}, self.gw.owner_token)
         self.assertEqual(["faq"], self.gw.ok("GET", "/v1/bots/%s/contact" % bot_id, None, b)["capabilities"])
         cid_b = self.gw.conversation(bot_id, b)
-        for kind, extra in (("slots", {"query": {"duration_minutes": 30}, "text": None}), ("message", {"text": "hi"})):
+        for kind, extra in (("slots", {"query": {"duration_minutes": 30}, "text": None}), ("chat", {"text": "hi"})):
             status, obj = self.gw.send(cid_b, b, kind=kind, **extra)
             self.assertEqual((403, "capability_not_granted"), (status, obj["error"]), kind)
         self.assertEqual(202, self.gw.send(cid_b, b, kind="faq", text="hours?")[0])
@@ -713,7 +713,7 @@ class GrantChangeTests(GatewayCase):
 
     def test_revoke_cancels_queued_and_inflight_work_and_closes_reads(self):
         bot_id = self.published()
-        actor_id, token = self.friend(bot_id, ["faq", "leave_message", "calendar_slots"])
+        actor_id, token = self.friend(bot_id, ["faq", "calendar_slots"])
         worker = self.gw.worker(bot_id)
         verifier = self.gw.ok("POST", "/v1/owner/bots/%s/verifiers" % bot_id, {}, self.gw.owner_token)["token"]
         cid, done_mid = self.completed_slots(bot_id, token, worker)
@@ -770,13 +770,13 @@ class GrantChangeTests(GatewayCase):
         c_id, c = self.friend(bot_id, ["faq", "calendar_slots"], "C")
         cid_c, mid_c = self.completed_slots(bot_id, c, worker)
         _, queued = self.gw.send(cid_c, c, kind="slots", text=None, query={"duration_minutes": 30})
-        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"policy": {"offered": ["faq", "leave_message", "chat"]}},
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"policy": {"offered": ["faq", "chat"]}},
                    owner)
         self.assert_withheld(c, cid_c, mid_c, "grant_changed")
         state = {m["message_id"]: m for m in self.gw.owner_view(cid_c)["messages"]}[queued["message_id"]]
         self.assertEqual(("cancelled", "policy_changed"), (state["state"], state["code"]))
         self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id,
-                   {"policy": {"offered": ["faq", "leave_message", "calendar_slots", "chat"]}}, owner)
+                   {"policy": {"offered": ["faq", "calendar_slots", "chat"]}}, owner)
         contacts = {x["actor_id"]: x for x in self.gw.ok("GET", "/v1/owner/bots/%s/contacts" % bot_id, None, owner)["contacts"]}
         self.assertEqual(["faq"], contacts[c_id]["granted"], "re-offering regrants nobody")
         self.assertNotIn("calendar_slots", contacts[c_id]["effective_capabilities"])

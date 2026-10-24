@@ -26,7 +26,7 @@ LIMITS = {"min_deadline_seconds": 1, "read_timeout_seconds": 5, "messages_per_mi
           "bot_enroll_per_hour": 1000, "bot_enroll_per_hour_per_ip": 1000, "agent_messages_per_hour_per_bot": 1000,
           "conversations_per_contact": 50, "attachment_bytes_per_day_per_caller": 500,
           "attachment_retained_bytes_per_caller": 300, "attachment_total_bytes": 32768}
-FILES_POLICY = {"offered": ["faq", "leave_message", "chat", "files"], "visitor": ["faq", "leave_message", "chat", "files"]}
+FILES_POLICY = {"offered": ["faq", "chat", "files"], "visitor": ["faq", "chat", "files"]}
 
 
 def item(name="notes.md", content="hello", size=None):
@@ -174,7 +174,7 @@ class GatewayTests(AttachmentCase):
         self.assertEqual(200, self.gw.approve_reply(bot_id, mid)[0])
         self.assertEqual("A-CONTENT", self.gw.ok("GET", "/v1/messages/%s" % mid, None,
                                                  token)["result"]["attachments"][0]["content"])
-        self.assertEqual(200, self.gw.contact(bot_id, actor_id, "restrict", ["faq", "leave_message", "chat"])[0])
+        self.assertEqual(200, self.gw.contact(bot_id, actor_id, "restrict", ["faq", "chat"])[0])
         view = self.gw.ok("GET", "/v1/messages/%s" % mid, None, token)
         self.assertIn("result_withheld", view)
         self.assertEqual({"count": 1, "reason": "files_not_granted"}, view["content"]["attachments_withheld"])
@@ -320,8 +320,8 @@ class CliRoundtripTests(AttachmentCase):
         y("owner", "owner", "login", self.gw.url, "--token-file", str(self.gw.home / "owner.token"))
         bot_id = y("owner", "bot", "create", "--handle", handle, "--name", "Files bot")["bot_id"]
         y("owner", "bot", "publish", handle)
-        y("owner", "bot", "edit", handle, "--offered", "faq,leave_message,chat,files",
-          "--visitor-capabilities", "faq,leave_message,chat,files")
+        y("owner", "bot", "edit", handle, "--offered", "faq,chat,files",
+          "--visitor-capabilities", "faq,chat,files")
         token_file = homes["owner"] / "native.token"
         y("owner", "worker", "bind", handle, "--adapter", "native", "--token-file", str(token_file))
         y("host", "worker", "login", self.gw.url, "--token-file", str(token_file))

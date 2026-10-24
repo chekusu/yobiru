@@ -19,8 +19,8 @@ BUNDLED_CLIENT = PUBLIC.parent / "plugins" / "yobiru" / "scripts" / "public_bots
 class ReviewAttachmentTests(FriendsClientCase):
     def prepare(self):
         bot = self.owner_bot("review-files")
-        self.gw.policy(bot, offered=["chat", "leave_message", "files"],
-                       visitor=["chat", "leave_message", "files"])
+        self.gw.policy(bot, offered=["chat", "files"],
+                       visitor=["chat", "files"])
         return bot
 
     def plain_request(self, bot, kind="chat", attachments=True):
@@ -109,9 +109,9 @@ class ReviewAttachmentTests(FriendsClientCase):
                 self.assertIsNone(self.y(role, "status", mid).get("result"))
         self.assert_no_credentials_printed()
 
-    def test_notice_files_are_exported_without_admitting_the_notice(self):
+    def test_an_old_clients_notice_files_are_exported_without_admitting_it(self):
         bot = self.prepare()
-        mid, _ = self.plain_request(bot, kind="notice")
+        mid, _ = self.plain_request(bot, kind="notice")             # since 0.7.14 a direct message like any other
         before = self.request_state(mid)
         self.assert_saved(self.export(mid), bot, mid)
         self.assertEqual(before, self.request_state(mid))

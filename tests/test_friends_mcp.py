@@ -73,8 +73,7 @@ class McpCase(unittest.TestCase):
 
     def files_bot(self, tag=""):
         bot_id = self.gw.bot(self.handle(tag))
-        self.gw.policy(bot_id, offered=["faq", "leave_message", "chat", "files"],
-                       visitor=["faq", "leave_message", "chat", "files"])
+        self.gw.policy(bot_id, offered=["faq", "chat", "files"], visitor=["faq", "chat", "files"])
         return bot_id
 
 
@@ -150,7 +149,8 @@ class ToolTests(McpCase):
         _, token = self.gw.actor()
         caller_tools = self.rpc(token, "tools/list")[2]["result"]["tools"]
         host_tools = self.rpc(wtoken, "tools/list")[2]["result"]["tools"]
-        self.assertEqual((17, 11), (len(caller_tools), len(host_tools)))
+        self.assertEqual((17, 8), (len(caller_tools), len(host_tools)))
+        self.assertFalse([t["name"] for t in host_tools if "notice" in t["name"]], "notices are messages (0.7.14)")
         names = {t["name"] for t in caller_tools} | {t["name"] for t in host_tools}
         for word in ("review", "approve", "owner", "admin", "grant", "trust", "publish", "exec", "shell", "file_path"):
             self.assertFalse([n for n in names if word in n], word)
@@ -196,7 +196,7 @@ class ToolTests(McpCase):
         b_conv = self.ok_tool(token, "yobiru_send_message", {"bot": b, "op_key": "op-key-0002",
                                                              "text": "for B"})["conversation_id"]
         for args in ({"bot": a, "op_key": "op-key-0003", "text": "For A only", "conversation_id": b_conv},
-                     {"bot": a, "op_key": "op-key-0004", "text": "For A only", "kind": "notice",
+                     {"bot": a, "op_key": "op-key-0004", "text": "For A only", "kind": "faq",
                       "conversation_id": b_conv},
                      {"bot": a, "op_key": "op-key-0001", "text": "for A only", "conversation_id": b_conv}):
             self.assertEqual("not_found", self.error_of(self.tool(token, "yobiru_send_message", args)), args)
@@ -258,20 +258,12 @@ class FlowTests(McpCase):
         self.assertEqual((True, True), (verified["matches"]["subject_hash"], verified["current"]["authorized_now"]))
         chk = self.gw.ok("POST", "/v1/owner/bots/%s/workers/%s/check" % (bot_id, wid), {}, self.owner)["check_id"]
         self.assertTrue(self.ok_tool(wtoken, "yobiru_host_check_in", {"check_id": chk})["acknowledged"])
-        notice = self.ok_tool(token, "yobiru_send_message", {"bot": bot_id, "op_key": "flow-0002", "kind": "notice",
-                                                             "text": "fyi"})
-        self.assertFalse(notice["reply_expected"])
-        self.assertEqual(1, self.ok_tool(wtoken, "yobiru_host_notices", {})["waiting_for_owner_review"])
-        self.assertEqual(200, self.gw.admit(bot_id, notice["message_id"])[0])
-        listed = self.ok_tool(wtoken, "yobiru_host_notices", {})["notices"]
-        self.assertEqual([notice["message_id"]], [n["notice_id"] for n in listed])
-        read = self.ok_tool(wtoken, "yobiru_host_read_notice", {"notice_id": notice["message_id"]})
-        self.assertEqual(("fyi", False), (read["untrusted_content"]["text"], read["reply_expected"]))
-        self.assertTrue(self.ok_tool(wtoken, "yobiru_host_ack_notice", {"notice_id": notice["message_id"]})
-                        ["acknowledged_at"])
-        self.assertEqual([], self.ok_tool(wtoken, "yobiru_host_notices", {})["notices"])
-        self.assertTrue(self.ok_tool(token, "yobiru_message_status", {"message_id": notice["message_id"]})
-                        ["lifecycle"]["agent_acknowledged_at"])
+        fyi = self.ok_tool(token, "yobiru_send_message", {"bot": bot_id, "op_key": "flow-0002", "text": "fyi"})
+        self.assertEqual((False, None), (fyi["reply_required"], fyi["deadline"]), "no message needs a reply")
+        jobs = {j["job_id"]: j for j in self.ok_tool(wtoken, "yobiru_host_jobs", {})["jobs"]}
+        self.assertEqual("pending", jobs[fyi["message_id"]]["review"]["inbound"], "a message request, as a job")
+        self.assertEqual("invalid_arguments", self.error_of(self.tool(
+            token, "yobiru_send_message", {"bot": bot_id, "op_key": "flow-0003", "kind": "notice", "text": "fyi"})))
 
     def test_withdrawn_files_are_withheld_from_mcp_reads(self):
         bot_id = self.files_bot()
@@ -286,7 +278,7 @@ class FlowTests(McpCase):
                                                    "fence": job["lease"]["fence"], "text": "a",
                                                    "attachments": [{"name": "a.md", "content": "A-SECRET"}]})
         self.assertEqual(200, self.gw.approve_reply(bot_id, mid)[0])
-        self.assertEqual(200, self.gw.contact(bot_id, actor_id, "restrict", ["faq", "leave_message", "chat"])[0])
+        self.assertEqual(200, self.gw.contact(bot_id, actor_id, "restrict", ["faq", "chat"])[0])
         for name, args in (("yobiru_message_status", {"message_id": mid}), ("yobiru_inbox", {}),
                            ("yobiru_history", {"conversation_id": job["conversation_id"]})):
             text = json.dumps(self.ok_tool(token, name, args))

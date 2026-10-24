@@ -819,7 +819,7 @@ class MigrationTests(unittest.TestCase):
         migrated = self.run_new(old.home, "migrate")
         self.assertEqual(0, migrated.returncode, migrated.stderr)
         summary = json.loads(migrated.stdout)
-        self.assertEqual((True, "7", "1", 2), (summary["migrated"], summary["schema"], summary["from_schema"],
+        self.assertEqual((True, "8", "1", 2), (summary["migrated"], summary["schema"], summary["from_schema"],
                                                 summary["bots"]))
         self.assertFalse(json.loads(self.run_new(old.home, "migrate").stdout)["migrated"], "idempotent")
         new = old                                     # the same home and port, now served by the new gateway
@@ -868,6 +868,8 @@ class SweepIndexTests(FriendsCase):
                 ("messages", "SELECT 1 FROM messages WHERE author='caller' AND state='started' AND lease_expires<=1 "
                              "LIMIT 1"),
                 ("messages", "SELECT id FROM messages WHERE finished_ts IS NOT NULL AND finished_ts<1"),
+                ("messages", "SELECT id FROM messages WHERE finished_ts IS NULL AND deadline_ts IS NULL AND "
+                             "created_ts<1 AND author='caller'"),          # direct messages at the retention end
                 ("counters", "SELECT key FROM counters WHERE expires_ts<1"),
                 ("messages", "SELECT * FROM messages WHERE actor_id='bot_x' AND author='caller' AND caller_ack_ts IS "
                              "NULL AND result IS NOT NULL AND state IN ('completed','declined','failed') AND "

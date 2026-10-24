@@ -1,6 +1,6 @@
 ---
 name: yobiru-bot-contacts
-description: Talk to someone's published Yobiru bot from a share link such as https://gateway.example/@alice, without Tailscale or a browser - resolve the link, connect as a visitor or as your own bot, follow it (two follows make friends, then offer a contact bot per friend), chat in freeform with the owner's agent, use its FAQ, leave a message or a notice, send and receive pictures, PDFs, audio, video and text files when allowed, ask for meeting times, read replies, your inbox and history, acknowledge and verify replies, recover a send whose outcome is unknown, or serve these tools to an MCP client.
+description: Talk to someone's published Yobiru bot from a share link such as https://gateway.example/@alice, without Tailscale or a browser - resolve the link, connect as a visitor or as your own bot, follow it (two follows make friends, then offer a contact bot per friend), chat in freeform with the owner's agent, use its FAQ, send and receive pictures, PDFs, audio, video and text files when allowed, ask for meeting times, read replies, your inbox and history, acknowledge and verify replies, recover a send whose outcome is unknown, or serve these tools to an MCP client.
 ---
 
 # Yobiru: talk to a bot from its share link
@@ -87,10 +87,9 @@ do not hand the user steps they cannot do.
    The connector wakes the routine for a friend's new message and for an answer to a message your bot sent,
    once each, with ids only. Start `connector run` again after the computer restarts.
 2. **Without a webhook**: create a scheduled task (for example a Grok Bot routine on a schedule, every 2 to 5
-   minutes) that runs `sh Y public job list BOT` (then answers with yobiru-friends-host),
-   `sh Y public job notices BOT` (messages friends wrote; read, acknowledge and tell the user, never answer) and
-   `sh Y public inbox --as BOT` (which also acknowledges what it read), and tells the user only about new
-   items. Do not create more than one such task per bot.
+   minutes) that runs `sh Y public job list BOT` (every message for the bot, from friends too; then answers or
+   marks read with yobiru-friends-host) and `sh Y public inbox --as BOT` (which also acknowledges what it read),
+   and tells the user only about new items. Do not create more than one such task per bot.
 
 Items marked `contact_bot` belong to a friend who has a **contact bot**: a separate bot in the user's host, named
 after that friend, that shows the friend's messages and sends the user's words back (the yobiru-contact-bots
@@ -104,12 +103,13 @@ answer friends within the friends-host rules and report to the user.
 
     sh Y public chat alice "Your message" --wait 600          # freeform, answered by the owner's agent
     sh Y public chat alice "What are your hours?" --faq --wait 30
-    sh Y public chat alice "Please tell the owner ..." --leave-message
     sh Y public slots alice --duration 30 --wait 60            # meeting suggestions, nothing is booked
     sh Y public status MESSAGE_ID --wait 600
     sh Y public history alice
 
-- In the owner's inbox (they follow you, or accepted you) chat is like a direct message: their agent reads it and
+- Every message is a direct message, and none needs a reply (the receipt says `reply_required: false`). To pass
+  something on to the owner, just say so in a message. In the owner's inbox (they follow you, or accepted you)
+  their agent reads it and
   answers directly, and may read several of your messages and answer once (the others show `completed` with code
   `read`). Otherwise your message is a request: `queued` can mean the owner has not decided yet; `review` means an
   answer waits for the owner's approval.
@@ -121,12 +121,12 @@ answer friends within the friends-host rules and report to the user.
 - `result_withheld` or `content_withheld`: the owner changed your permissions; earlier answers are no longer
   released.
 - Several identities on one gateway: pass `--as visitor` or `--as @my-agent`.
-- `chat alice "..." --notice` sends information that expects no reply (state `stored`; the owner's agent may
-  read and acknowledge it). Use it for an FYI, not for a question. A notice may carry files too.
+- An FYI is a message like any other: since Yobiru 0.7.14 there are no separate notices or left messages (the old
+  `--notice` and `--leave-message` flags still work and send a plain message). It may carry files too.
 - If you write because of a message you received, add `--cause MESSAGE_ID`. `hop_limit_exceeded` or
   `automation_budget_exhausted` (your bot's automated turns with this bot are used up; only its owner can
   continue) means stop and tell the user. Never start an automated back-and-forth with another bot.
-- `inbox` lists final replies and owner notices for you; `status` and `inbox` acknowledge what they received
+- `inbox` lists final replies and the owner's own messages for you; `status` and `inbox` acknowledge what they received
   (`--no-ack` to skip; `ack MESSAGE_ID...` by hand). A response counts as delivered only once acknowledged.
 
 ## Pictures, documents and other files (when the bot grants `files`; friends do by default)

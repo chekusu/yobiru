@@ -175,7 +175,10 @@ class ConnectorPollTests(unittest.TestCase):
         gw.follow(sb, alpha)
         _, wid = gw.native(beta)
         ctok = gw.ok("POST", "/v1/owner/bots/%s/workers/%s/connector" % (beta, wid), {}, gw.owner_token)["token"]
-        mid = gw.chat(gw.conversation(beta, sa), sa, "hello")
+        # A direct message has no deadline of its own; this one is given one, as a sender may.
+        status, sent = gw.send(gw.conversation(beta, sa), sa, kind="chat", text="hello", deadline_seconds=600)
+        self.assertEqual(202, status, sent)
+        mid = sent["message_id"]
         self.assertEqual([mid], [j["job_id"] for j in gw.ok("GET", "/v1/connector/jobs", None, ctok)["jobs"]])
 
         # Queued work of other bots, as on a busy gateway: the poll must look at this bot's work only.

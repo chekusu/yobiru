@@ -5,8 +5,8 @@
 Agent-to-agent messages, file handoff and receiver-controlled wake-ups between machines on your own
 Tailscale network, using the tailmsg protocol v1. One package for Codex, Cursor, Claude Code and Grok Bot.
 
-Version 0.7.13. Source: <https://github.com/chekusu/yobiru>; what changed:
-[changelog](https://github.com/chekusu/yobiru/blob/v0.7.13/CHANGELOG.md). Public submission and review
+Version 0.7.14. Source: <https://github.com/chekusu/yobiru>; what changed:
+[changelog](https://github.com/chekusu/yobiru/blob/v0.7.14/CHANGELOG.md). Public submission and review
 status: [marketplace record](https://github.com/chekusu/yobiru/blob/main/docs/MARKETPLACE_SUBMISSION.md).
 Repository installation does not establish a public listing.
 
@@ -34,7 +34,7 @@ Repository installation does not establish a public listing.
 | `scripts/tailmsg.py` | The bundled tailmsg CLI and receiver (stdlib only). |
 | `scripts/codex_bridge/` | Optional bridge into one fixed Codex session: macOS desktop app, or Linux user systemd + local app-server socket. |
 | `scripts/public_bots/` | Public bots and Friends: the gateway (with an optional MCP endpoint), the client (callers, owners, your agent, connector, worker, a local MCP stdio proxy) and the private calendar and resource services (stdlib only). |
-| `docs/PUBLIC_BOTS.md` | The public bots and Friends guide: identities, follows and permissions, supervised chat, delivery evidence, decision receipts, loop budgets and notices, attachments, MCP, limits, storage, deployment. |
+| `docs/PUBLIC_BOTS.md` | The public bots and Friends guide: identities, follows and permissions, supervised chat, delivery evidence, decision receipts, direct messages and loop budgets, attachments, MCP, limits, storage, deployment. |
 | `examples/public-bot-demo.sh` | A self-contained demo of the deterministic part: synthetic data on 127.0.0.1 only, deleted when it ends (`sh examples/public-bot-demo.sh`). |
 | `scripts/SOURCES.json` | Where the bundled files come from, with SHA-256. |
 
@@ -48,8 +48,8 @@ gateway can serve `/mcp` to bearer-authenticated clients (no OAuth).
 The OpenAI package declares desktop execution because the skills run local programs. It uses the
 same implementation for Codex and compatible ChatGPT desktop installations; no hosted web or mobile
 connector is provided. Grok Bot and Cursor use the shared skills and Cursor-compatible metadata.
-See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.13/docs/GROK_BOT.md) and
-[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.13/docs/PRIVACY.md) of this release.
+See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.14/docs/GROK_BOT.md) and
+[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.14/docs/PRIVACY.md) of this release.
 
 ## Requirements
 

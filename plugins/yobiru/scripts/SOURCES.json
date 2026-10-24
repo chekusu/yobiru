@@ -4,7 +4,7 @@
   "files": {
     "scripts/tailmsg.py": {
       "source": "tailmsg.py",
-      "sha256": "eef850e8adcb7dd6deca8e4f5ab5c299c63e728bd82863d4c64d8d45649ef5cb"
+      "sha256": "6e555c5b829235b13380f6da3a20c9da13f2eb5253c3297741128a7fb57cd6d2"
     },
     "scripts/codex_bridge/CODEX_DISPATCHER.md": {
       "source": "CODEX_DISPATCHER.md",
@@ -36,7 +36,7 @@
     },
     "docs/PUBLIC_BOTS.md": {
       "source": "docs/PUBLIC_BOTS.md",
-      "sha256": "587f1ede5148b1967b3c11b2a94e358779dd31a981599dc566f95c10366a49bf"
+      "sha256": "5b27757a60ee594b2f7a2b2492df6feeedaef7793d0a0be5ed027607a26b3a20"
     },
     "scripts/public_bots/bot_agents.py": {
       "source": "public_bots/bot_agents.py",
@@ -52,7 +52,7 @@
     },
     "scripts/public_bots/bot_client.py": {
       "source": "public_bots/bot_client.py",
-      "sha256": "d0dd7b10d262ed0ff3386918df2182b3d564ecd3bd576d3a3bc742e483d118d6"
+      "sha256": "cf55972595d263ee480c505a7d75ef7268f7febf0203a0f022b8b63f5fc26376"
     },
     "scripts/public_bots/bot_common.py": {
       "source": "public_bots/bot_common.py",
@@ -64,7 +64,7 @@
     },
     "scripts/public_bots/bot_gateway.py": {
       "source": "public_bots/bot_gateway.py",
-      "sha256": "d91f9f5447f0f010ee775c7b94fb4160c3178c2efa583b40d0f8e9eee3955027"
+      "sha256": "fa4366e33f549909592b6e19a9691fb61727421ef0f9c7ccf4260691cbc5577f"
     },
     "scripts/public_bots/bot_links.py": {
       "source": "public_bots/bot_links.py",
@@ -72,15 +72,15 @@
     },
     "scripts/public_bots/bot_mcp.py": {
       "source": "public_bots/bot_mcp.py",
-      "sha256": "ae14a306e23690b57729125b2ac0b9270da0866761c191239d771cd1564e391c"
+      "sha256": "22f08503404b5b57a41cdd3abbf1c6cf867802c8136e60a68c4853a0778c359b"
     },
     "scripts/public_bots/bot_profile.py": {
       "source": "public_bots/bot_profile.py",
-      "sha256": "5f5472bc8f1b5eadc556018c0c22e81c6282abf5c28b21a27fd61f29f8b85a13"
+      "sha256": "2f021d8d2b7d307b6251560af051adb29827c93d5941488f6944758a90f0feb5"
     },
     "scripts/public_bots/bot_profile_i18n.py": {
       "source": "public_bots/bot_profile_i18n.py",
-      "sha256": "10e3a2413d9482e224eb273a6928f95214b2a745e38a39ab18d429e71ca89c35"
+      "sha256": "d392c2ae72a8de0af3b273910b6649e3248b403ddf0365a954dc22699af42bf7"
     },
     "scripts/public_bots/bot_resources.py": {
       "source": "public_bots/bot_resources.py",

@@ -219,15 +219,13 @@ class SealedFlowTests(E2ECase):
         self.y("host", "worker", "login", self.gw.url, "--token-file", str(token_file))
         self.y("host", "responder", "init", bot_id)
         self.y("caller", "connect", "%s/@%s" % (self.gw.url, self.handle))
-        mid = self.y("caller", "chat", self.handle, "call me at 555-0100", "--leave-message")["message_id"]
+        mid = self.y("caller", "chat", self.handle, "call me at 555-0100?", "--faq")["message_id"]
         run = self.y("host", "worker", "run", bot_id, "--once")
         self.assertEqual(["completed"], [p["outcome"] for p in run["processed"]], run)
-        self.assert_opaque(self.stored(mid), "555-0100", "delivered to the owner")
+        self.assert_opaque(self.stored(mid), "555-0100", "send the owner a message")
         status = self.y("caller", "status", mid)
-        self.assertIn("delivered to the owner", status["result"]["text"])
+        self.assertIn("send the owner a message", status["result"]["text"])
         self.assertTrue(status["result"]["e2e"]["opened"])
-        left = self.y("host", "worker", "inbox", bot_id)["messages"]
-        self.assertEqual(["call me at 555-0100"], [m["untrusted_text"] for m in left])
 
     def test_a_self_enrolled_bot_and_a_visitor_get_keys_at_enrollment(self):
         made = self.y("caller", "enroll-bot", self.gw.url, "--handle", self.handle, "--name", "Self enrolled")

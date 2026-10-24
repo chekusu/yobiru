@@ -96,8 +96,8 @@ echo "3. caller $ACTOR_ID asked a visitor question: $STATE (stored, not answered
 P caller request-friend assistant --note "Hello from the demo" > /dev/null
 PENDING=$(P owner owner contacts assistant --pending | j contacts.0.actor_id)
 expect "pending contact" "$PENDING" "$ACTOR_ID"
-P owner owner contact assistant "$PENDING" approve --capabilities faq,leave_message,calendar_slots > /dev/null
-echo "4. owner granted $PENDING faq, leave_message and calendar_slots explicitly"
+P owner owner contact assistant "$PENDING" approve --capabilities faq,calendar_slots > /dev/null
+echo "4. owner granted $PENDING faq and calendar_slots explicitly"
 
 # 5. The owner's private calendar service: owner rules, synthetic busy events two days from today, and
 #    its own per-bot verifier credential. Event details stay in this service's directory.
@@ -124,32 +124,34 @@ sh "$Y" calendar-service serve --dir "$T/calendar" > "$T/calendar.out" 2> "$T/ca
 CAL_URL=$(listening calendar $!)
 echo "5. calendar service on $CAL_URL; synthetic busy times on $DAY: 09:00-10:00 and 10:30-11:00 UTC"
 
-# 6. The caller asks for meeting times and leaves a message while the owner's worker is still offline.
+# 6. The caller asks for meeting times and sends a message while the owner's worker is still offline.
 SLOTS_ID=$(P caller slots assistant --duration 60 --after "$DAY" --before "$DAY" | j message_id)
-NOTE_ID=$(P caller chat assistant "Please tell the owner hello" --leave-message | j message_id)
+NOTE_ID=$(P caller chat assistant "Please tell the owner hello" | j message_id)
 STATES=$(P caller history assistant | j messages.*.state)
 expect "states before the worker runs" "$STATES" '["queued", "queued", "queued"]'
-echo "6. caller asked for times on $DAY and left a message; all three messages: $STATES"
+echo "6. caller asked for times on $DAY and sent a message; all three messages: $STATES"
 
 # 7. The worker device gets its own per-bot worker credential (never the owner's), the deterministic
-#    responder connected to the calendar service, and makes one pass over the queued work.
+#    responder connected to the calendar service, and makes one pass over the queued work. The message is
+#    not for the worker: it is a direct message for the owner's own agent.
 P owner worker bind assistant --token-file "$T/worker.token" > /dev/null
 P worker worker login "$URL" --token-file "$T/worker.token" --handle @assistant > /dev/null
 P worker responder init "$BOT_ID" --calendar-url "$CAL_URL" --calendar-token-file "$T/calendar/access.token" > /dev/null
 OUTCOMES=$(P worker worker run "$BOT_ID" --once | j processed.*.outcome)
-expect "worker outcomes" "$OUTCOMES" '["completed", "completed", "completed"]'
+expect "worker outcomes" "$OUTCOMES" '["completed", "completed"]'
 echo "7. one worker pass: $OUTCOMES"
 
-# 8. What the caller and the owner's worker device have now.
+# 8. What the caller has now, and the message in the owner's message requests (the caller is not in the inbox).
 ANSWER=$(P caller status "$FAQ_ID" | j result.text)
 SLOTS=$(P caller status "$SLOTS_ID" | j result.slots.*.start)
 expect "offered times" "$SLOTS" "[\"${DAY}T11:00:00Z\", \"${DAY}T12:00:00Z\", \"${DAY}T13:00:00Z\"]"
 NOTE=$(P caller status "$NOTE_ID" | j state)
-LEFT=$(P worker worker inbox "$BOT_ID" | j messages.*.untrusted_text)
-expect "left message" "$LEFT" '["Please tell the owner hello"]'
+expect "the message's state" "$NOTE" queued
+REQUEST=$(P owner review list assistant | j inbound.*.message.text)
+expect "message request" "$REQUEST" '["Please tell the owner hello"]'
 echo "8. caller got the FAQ answer: $ANSWER"
 echo "   offered times (nothing booked): $SLOTS"
-echo "   left message: $NOTE; on the worker device, labeled untrusted: $LEFT"
+echo "   the message: $NOTE, in the owner's message requests: $REQUEST (no message needs a reply)"
 
 # 9. Where the synthetic private event details ended up, then the owner revokes the caller.
 FOUND=$(cd "$T" && grep -rl SYNTHETIC-PRIVATE . | sort)

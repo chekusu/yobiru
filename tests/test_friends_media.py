@@ -289,13 +289,16 @@ class MigrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="yobiru migration 5-6 ") as tmp:
             gw = FriendsGateway(Path(tmp)).start()
             try:
-                plain = gw.bot("plain-old", policy={"offered": ["faq", "leave_message", "chat"],
-                                                    "friend": ["faq", "leave_message", "chat"]})
+                plain = gw.bot("plain-old")
                 tuned = gw.bot("tuned-old", policy={"offered": ["faq", "chat"], "friend": ["faq"]})
             finally:
                 gw.stop()
             db = gw.db()
             try:
+                # the schema-5 default, which still had leave_message (today's API reads that name as chat)
+                pol = json.loads(gw.sql("SELECT policy FROM bots WHERE id=?", (plain,))[0]["policy"])
+                pol.update(offered=["faq", "leave_message", "chat"], friend=["faq", "leave_message", "chat"])
+                db.execute("UPDATE bots SET policy=? WHERE id=?", (json.dumps(pol), plain))
                 db.execute("UPDATE meta SET value='5' WHERE key='schema_version'")
             finally:
                 db.close()
@@ -303,9 +306,10 @@ class MigrationTests(unittest.TestCase):
                                    "migrate"], capture_output=True, text=True, env=plain_env(Path(tmp)), timeout=60)
             self.assertEqual(0, done.returncode, done.stderr)
             summary = json.loads(done.stdout)
-            self.assertEqual(("7", "5", 1), (summary["schema"], summary["from_schema"], summary["friend_files_bots"]))
+            self.assertEqual(("8", "5", 1), (summary["schema"], summary["from_schema"], summary["friend_files_bots"]))
             pols = {r["id"]: json.loads(r["policy"]) for r in gw.sql("SELECT id, policy FROM bots")}
-            self.assertIn("files", pols[plain]["friend"])
+            self.assertEqual((["faq", "chat", "files"], ["faq", "chat", "files"]),
+                             (pols[plain]["friend"], pols[plain]["offered"]), "files added, then leave_message merged")
             self.assertEqual(["faq"], pols[tuned]["friend"])
 
 

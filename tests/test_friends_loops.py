@@ -1,11 +1,12 @@
-"""Loop budgets, causal hops, owner continuation and notices over real HTTP.
+"""Loop budgets, causal hops, owner continuation and direct messages over real HTTP.
 
 Source bots are automated callers: consecutive turns per conversation and turns per (source bot, bot) pair per day
 are checked before anything is charged and charged only on admission; identical op-key retries are free even when
 a budget is exhausted, changed ones are refused first; the pair budget survives new and deleted conversations and
 restarts; concurrent admissions are charged exactly; causes are validated by the gateway; an owner continuation is
-bounded, exact and voided by a rebind or a narrowed grant; notices are stored, never answered or woken for, and
-drain from the agent's inbox without starvation. Real bot_gateway.py subprocesses with synthetic homes on loopback.
+bounded, exact and voided by a rebind or a narrowed grant; an old client's notice is a direct message, charged like
+one, and what an owner sends as their bot is never charged. Real bot_gateway.py subprocesses with synthetic homes on
+loopback.
 """
 import hashlib
 import tempfile
@@ -201,7 +202,7 @@ class ContinuationTests(LoopCase):
                              self.owner)["current"]
         self.assertEqual("binding_replaced", current["reason"])
         renewed = self.gw.ok("POST", path, {"op_key": self.op(), "turns": 2, "anchor_message_id": ids[-1]}, self.owner)
-        self.assertEqual(200, self.gw.contact(target, source, "restrict", ["faq", "leave_message"])[0])
+        self.assertEqual(200, self.gw.contact(target, source, "restrict", ["faq"])[0])
         fresh = self.gw.conversation(target, token)            # same budget scope: the pair, and this new conversation
         self.assertNotEqual(cid, fresh)
         current = self.gw.ok("GET", "/v1/owner/decisions/%s" % renewed["decision"]["decision_id"], None,
@@ -234,62 +235,63 @@ class HopTests(LoopCase):
         self.assertEqual((400, "unknown_field"), (status, obj["error"]))
 
 
-class NoticeTests(LoopCase):
-    def test_notices_are_stored_never_charged_answered_or_woken(self):
+class DirectMessageTests(LoopCase):
+    def test_an_old_clients_notice_is_a_direct_message_and_charged_like_one(self):
         target, source, token = self.pair()
         wtoken, wid = self.gw.native(target)
         ctoken = self.gw.ok("POST", "/v1/owner/bots/%s/workers/%s/connector" % (target, wid), {}, self.owner)["token"]
         cid = self.gw.conversation(target, token)
         self.exhaust(cid, token)
-        status, notice = self.send(cid, token, "for your information", kind="notice")
-        self.assertEqual((202, "stored", False), (status, notice["state"], notice["reply_expected"]))
-        self.assertEqual((3, 3), self.charged(source, target, cid), "a notice is never charged to the budgets")
-        self.assertEqual((400, "invalid_deadline"), self.err(self.send(cid, token, "x", kind="notice",
-                                                                       deadline_seconds=60)))
-        self.assertNotIn(notice["message_id"], str(self.gw.ok("GET", "/v1/worker/jobs", None, wtoken)))
-        self.assertNotIn(notice["message_id"], str(self.gw.ok("GET", "/v1/connector/jobs", None, ctoken)))
+        status, obj = self.send(cid, token, "for your information", kind="notice")
+        self.assertEqual((429, "conversation"), (status, obj.get("scope")), "since 0.7.14 a notice is a message")
+        fresh = self.gw.conversation(target, token)
+        status, sent = self.send(fresh, token, "for your information", kind="notice")
+        self.assertEqual((202, "queued", None, False),
+                         (status, sent["state"], sent["deadline"], sent["reply_required"]), sent)
+        self.assertEqual((4, 1), self.charged(source, target, fresh))
+        mid = sent["message_id"]
+        self.assertIn(mid, [j["job_id"] for j in self.gw.ok("GET", "/v1/worker/jobs", None, wtoken)["jobs"]])
+        self.assertIn(mid, [j["job_id"] for j in self.gw.ok("GET", "/v1/connector/jobs", None, ctoken)["jobs"]])
+        self.assertEqual(("chat", "agent", None), tuple(self.gw.sql(
+            "SELECT kind, route, deadline_ts FROM messages WHERE id=?", (mid,))[0].values()))
+
+    def test_what_an_owner_sends_as_their_bot_is_never_charged(self):
+        target, source, token = self.pair()
+        cid = self.gw.conversation(target, token)
+        self.exhaust(cid, token)
+        path = "/v1/owner/bots/%s/conversations/%s/messages" % (source, cid)
+        for i in range(3):
+            status, sent = self.gw.call("POST", path, {"op_key": self.op(), "kind": "chat",
+                                                       "text": "my own words %d" % i}, self.owner)
+            self.assertEqual((202, "queued"), (status, sent.get("state")), sent)
+        self.assertEqual((3, 3), self.charged(source, target, cid), "the owner's words are not automated turns")
+        authors = self.gw.sql("SELECT actor_id FROM messages WHERE conversation_id=? AND author='caller'", (cid,))
+        self.assertEqual({source}, {row["actor_id"] for row in authors}, "sent as the bot, into its conversation")
         _, visitor = self.gw.actor()
         vcid = self.gw.conversation(target, visitor)
-        self.send(vcid, visitor, "NOTICE-TEXT-ONLY", kind="notice")
-        mid = self.gw.chat(vcid, visitor, "now a question")
-        self.assertEqual(200, self.gw.admit(target, mid)[0])
-        status, job = self.gw.claim_job(wtoken, mid)
-        self.assertEqual(200, status, job)
-        self.assertNotIn("NOTICE-TEXT-ONLY", str(job["transcript"]), "notices never become chat turns")
+        status, refused = self.gw.call("POST", "/v1/owner/bots/%s/conversations/%s/messages" % (source, vcid),
+                                       {"op_key": self.op(), "kind": "chat", "text": "not my conversation"},
+                                       self.owner)
+        self.assertEqual((404, "not_found"), (status, refused.get("error")))
 
-    def test_the_notice_inbox_drains_oldest_first_without_starvation(self):
+    def test_the_old_notice_inbox_is_empty_and_says_why(self):
         target = self.gw.bot(self.handle("t"))
         wtoken, _ = self.gw.native(target)
         actor_id, token = self.gw.actor()
         self.gw.contact(target, actor_id, "trust")
-        sent = []
-        for cid, count in ((self.gw.conversation(target, token), 60), (self.gw.conversation(target, token), 41)):
-            for i in range(count):
-                status, obj = self.send(cid, token, "notice %d" % len(sent), kind="notice")
-                self.assertEqual(202, status, obj)
-                sent.append(obj["message_id"])
-        first = self.gw.ok("GET", "/v1/worker/notices", None, wtoken)
-        self.assertEqual((sent[:50], True), ([n["notice_id"] for n in first["notices"]], first["more"]))
-        paged = self.gw.ok("GET", "/v1/worker/notices/after/%s" % first["next_after"], None, wtoken)
-        self.assertEqual(sent[50:100], [n["notice_id"] for n in paged["notices"]])
-        drained = []
-        while True:
-            page = self.gw.ok("GET", "/v1/worker/notices", None, wtoken)
-            if not page["notices"]:
-                break
-            for n in page["notices"]:
-                self.assertEqual("notice %d" % sent.index(n["notice_id"]), self.gw.ok(
-                    "GET", "/v1/worker/notices/%s" % n["notice_id"], None, wtoken)["untrusted_content"]["text"])
-                self.gw.ok("POST", "/v1/worker/notices/%s/ack" % n["notice_id"], {}, wtoken)
-                drained.append(n["notice_id"])
-        self.assertEqual(sent, drained, "every notice once, oldest first")
-        other_id, other = self.gw.actor()
-        self.gw.contact(target, other_id, "trust")
-        ocid = self.gw.conversation(target, other)
-        stale = self.send(ocid, other, "from an older grant", kind="notice")[1]["message_id"]
-        self.assertEqual(200, self.gw.contact(target, other_id, "restrict", ["faq", "chat"])[0])
-        self.assertEqual([], self.gw.ok("GET", "/v1/worker/notices", None, wtoken)["notices"])
-        self.assertEqual("cancelled", self.gw.ok("GET", "/v1/messages/%s" % stale, None, other)["state"])
+        cid = self.gw.conversation(target, token)
+        sent = [self.send(cid, token, "notice %d" % i, kind="notice")[1]["message_id"] for i in range(3)]
+        legacy = self.gw.ok("GET", "/v1/worker/notices", None, wtoken)
+        self.assertEqual(([], False, 0), (legacy["notices"], legacy["more"], legacy["waiting_for_owner_review"]))
+        self.assertIn("job list", legacy["note"])
+        for path in ("/v1/worker/notices/after/%s" % sent[0],):
+            self.assertEqual([], self.gw.ok("GET", path, None, wtoken)["notices"])
+        for method, path in (("GET", "/v1/worker/notices/%s" % sent[0]),
+                             ("POST", "/v1/worker/notices/%s/ack" % sent[0])):
+            status, obj = self.gw.call(method, path, None if method == "GET" else {}, wtoken)
+            self.assertEqual((404, "not_found"), (status, obj.get("error")), path)
+        jobs = [j["job_id"] for j in self.gw.ok("GET", "/v1/worker/jobs", None, wtoken)["jobs"]]
+        self.assertEqual(sent, jobs, "every one is a job, oldest first")
 
 
 if __name__ == "__main__":
