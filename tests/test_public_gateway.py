@@ -415,6 +415,73 @@ class ProfilePageTests(GatewayCase):
                 self.assertIn("mailto:", err)
                 self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"])
 
+    def test_cli_generated_link_labels_fit_gateway_limit(self):
+        from support.public_harness import cli
+        h = self.handle()
+        self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        email40, email41 = "a" * 28 + "@example.com", "a" * 29 + "@example.com"
+        host40, host41 = "a" * 28 + ".example.com", "a" * 29 + ".example.com"
+        for value, url, label in ((email40, "mailto:" + email40, email40),
+                                  (email41, "mailto:" + email41, "Email"),
+                                  (host40 + "/profile", "https://" + host40 + "/profile", host40),
+                                  (host41 + "/profile", "https://" + host41 + "/profile", "Website")):
+            for args in (("link", "add", "@" + h, value), ("edit", "@" + h, "--link", value)):
+                with self.subTest(value=value, command=args[0]):
+                    code, out, err = cli(home, "bot", *args)
+                    self.assertEqual(0, code, err)
+                    links = [{"label": item["label"], "url": item["url"]} for item in out["links"]]
+                    self.assertEqual({"label": label, "url": url}, links[-1])
+                    self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"])
+
+    def test_cli_explicit_link_labels_keep_gateway_limit(self):
+        from support.public_harness import cli
+        h = self.handle()
+        self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        address = "a" * 29 + "@example.com"
+        for length in (40, 41):
+            label = "L" * length
+            for args in (("link", "add", "@" + h, address, "--label", label),
+                         ("edit", "@" + h, "--link", label + "=mailto:" + address)):
+                with self.subTest(length=length, command=args[0]):
+                    code, out, err = cli(home, "bot", *args)
+                    if length == 40:
+                        self.assertEqual(0, code, err)
+                        self.assertEqual(label, out["links"][0]["label"])
+                    else:
+                        self.assertNotEqual(0, code, "explicit labels must not be silently shortened")
+                        self.assertEqual("invalid_links", out["error"])
+                    self.assertEqual([{"label": "L" * 40, "url": "mailto:" + address}],
+                                     self.gw.ok("GET", "/@" + h)["links"])
+
+    def test_cli_rejects_tel_parameters_without_changing_links(self):
+        from support.public_harness import cli
+        h = self.handle()
+        bot_id = self.published()
+        home = self.root / ("cli-%s" % h)
+        self.assertEqual(0, cli(home, "owner", "login", self.gw.url, "--token-file",
+                                str(self.gw.home / "owner.token"))[0])
+        links = [{"label": "Website", "url": "https://example.com/profile"}]
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot_id, {"links": links}, self.gw.owner_token)
+        for value in ("tel:+1-555-123-4567;ext=89", "tel:5550123;phone-context=+1-212"):
+            for args in (("link", "add", "@" + h, value), ("edit", "@" + h, "--link", value)):
+                with self.subTest(value=value, command=args[0]):
+                    code, _, err = cli(home, "bot", *args)
+                    self.assertNotEqual(0, code, "unsupported tel parameters must not become subscriber digits")
+                    self.assertIn("tel:", err)
+                    self.assertEqual(links, self.gw.ok("GET", "/@" + h)["links"])
+        value = "tel:+1 (555) 123-4567"
+        for args in (("link", "add", "@" + h, value), ("edit", "@" + h, "--link", value)):
+            code, out, err = cli(home, "bot", *args)
+            self.assertEqual(0, code, err)
+            self.assertEqual("tel:+1-555-123-4567", out["links"][-1]["url"])
+            self.assertEqual("tel:+1-555-123-4567", self.gw.ok("GET", "/@" + h)["links"][-1]["url"])
+
     def test_cli_changes_one_link_at_a_time(self):
         from support.public_harness import cli
         h = self.handle()

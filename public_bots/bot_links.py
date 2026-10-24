@@ -12,6 +12,7 @@ import re
 import urllib.parse
 
 URL_MAX = 300
+LABEL_MAX = 40
 
 # (id, default label, mark, hosts). A host matches itself and every subdomain; the longest match wins, so
 # music.youtube.com is YouTube Music and www.youtube.com is YouTube. Labels are the names people know the service
@@ -210,13 +211,15 @@ def shown(url):
 
 
 def default_label(url):
-    """The label a link gets when its owner gives none: the service's name, else the address, number or host."""
+    """The service name, address, number or host; use a short service name if the label would exceed LABEL_MAX."""
     platform = platform_of(url)
     if platform in ("email", "phone"):
-        return shown(url)
-    if platform == "website":
-        return shown(url).partition("/")[0]
-    return LABELS[platform]
+        label = shown(url)
+    elif platform == "website":
+        label = shown(url).partition("/")[0]
+    else:
+        label = LABELS[platform]
+    return label if len(label) <= LABEL_MAX else LABELS[platform]
 
 
 def platform_named(name):
@@ -242,7 +245,11 @@ def normalize(value):
     elif v.lower().startswith("http://"):
         v = "https://" + v[7:]
     if v.startswith("tel:"):
-        digits = re.findall(r"[0-9]+", v)
+        # Only remove visual separators; URI parameters and dial modifiers must not
+        # be folded into a different subscriber number.
+        if not re.fullmatch(r"\+?[0-9 ().-]+", v[4:]):
+            raise ValueError("links: tel: takes a number, such as tel:+81-90-1234-5678")
+        digits = re.findall(r"[0-9]+", v[4:])
         v = "tel:" + ("+" if v[4:5] == "+" else "") + "-".join(digits)
     return check_url(v)
 

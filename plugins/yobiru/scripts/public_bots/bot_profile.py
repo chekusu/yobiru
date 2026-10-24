@@ -23,7 +23,7 @@ LANGS = I18N.LANGS
 SITE = "https://yobiru.com"
 AVATAR_MAX_BYTES = 65536                    # decoded; its base64 JSON body fits the attachment body limit
 AVATAR_MIN_PX, AVATAR_MAX_PX = 32, 2048
-MAX_LINKS, LINK_LABEL_MAX, LINK_URL_MAX = 12, 40, L.URL_MAX
+MAX_LINKS, LINK_LABEL_MAX, LINK_URL_MAX = 12, L.LABEL_MAX, L.URL_MAX
 REPO = "https://github.com/chekusu/yobiru"
 
 

@@ -361,6 +361,33 @@ class LinkTests(ProfilePageCase):
 
 
 class LinkValidationTests(unittest.TestCase):
+    def test_tel_normalization_rejects_parameters_and_nonformatting_characters(self):
+        for value in ("tel:+1-555-123-4567;ext=89", "tel:5550123;phone-context=+1-212",
+                      "TEL:+1-555-123-4567;ext=89", "tel:+1-555-123-4567?ext=89",
+                      "tel:+1-555-123-4567#89", "tel:+1-555-123-4567%2389",
+                      "tel:+1-555-123-4567x89", "tel:+1-555-123-4567/89",
+                      "tel:+1-555-123-4567,89", "tel:+1-555-123-4567*89",
+                      "tel:+1-555-123-4567+89", "tel:++1-555-123-4567",
+                      "tel:+1-555-123\t4567", "tel:+1-555-123\n4567",
+                      "tel:+1-555-123-4567\u0668\u0669"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "tel:"):
+                    L.normalize(value)
+
+    def test_tel_normalization_preserves_formatted_subscriber_numbers(self):
+        for value, expected in (("+1 (555) 123-4567", "tel:+1-555-123-4567"),
+                                ("tel:+1 (555) 123-4567", "tel:+1-555-123-4567"),
+                                ("TEL:+1.555.123.4567", "tel:+1-555-123-4567"),
+                                ("tel:(555) 0123", "tel:555-0123"),
+                                ("tel:090-1234-5678", "tel:090-1234-5678"),
+                                ("tel:+15551234567", "tel:+15551234567")):
+            with self.subTest(value=value):
+                self.assertEqual(expected, L.normalize(value))
+        for value in ("tel:12345", "tel:+123456789012345678901"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    L.normalize(value)
+
     def test_mailto_rejects_headers_and_decoded_recipient_delimiters(self):
         for url in ("mailto:owner%40example.com?bcc=hidden@example.net",
                     "mailto:owner%40example.com#hidden@example.net",
