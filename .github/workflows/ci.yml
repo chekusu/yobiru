@@ -30,7 +30,9 @@ jobs:
           python-version: "3.12"
       - name: Plugin check
         run: python3 tools/build_plugin.py check
+      - name: Gateway startup diagnostics
+        run: python3 -u tools/ci_gateway_startup.py
       - name: Tests
         run: |
-          python3 -u -m unittest discover -s tests -v
-          python3 -u -m unittest -v test_codex_bridge test_codex_queue_client test_codex_resident test_install_codex_bridge test_install_codex_bridge_linux
+          python3 -u -m unittest discover -s tests -v -f
+          python3 -u -m unittest -v -f test_codex_bridge test_codex_queue_client test_codex_resident test_install_codex_bridge test_install_codex_bridge_linux

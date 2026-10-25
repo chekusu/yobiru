@@ -15,7 +15,8 @@ import sys
 import tempfile
 import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from support.numeric_http import ThreadingHTTPServer
 from pathlib import Path
 
 from support.public_harness import PUBLIC, FriendsGateway, plain_env

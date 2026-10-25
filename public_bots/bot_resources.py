@@ -31,7 +31,7 @@ import stat
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -318,7 +318,7 @@ def cmd_serve(a):
         service = Service(service_dir(a.dir))
     except ValueError as e:
         die(str(e))
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port or 0), make_handler(service))
+    srv = C.NumericHTTPServer(("127.0.0.1", a.port or 0), make_handler(service))
     srv.daemon_threads = True
     print(json.dumps({"listening": "http://127.0.0.1:%d" % srv.server_address[1], "service": "yobiru-resources"}),
           flush=True)

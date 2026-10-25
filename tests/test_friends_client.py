@@ -17,7 +17,8 @@ import threading
 import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
+from support.numeric_http import HTTPServer
 from pathlib import Path
 
 from support.public_harness import C, PUBLIC, FriendsGateway, Service, plain_env

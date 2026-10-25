@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from support.pkg import REPO
+from support.numeric_http import HTTPServer
 
 spec = importlib.util.spec_from_file_location("tailmsg_core_under_test", str(REPO / "tailmsg.py"))
 core = importlib.util.module_from_spec(spec)
@@ -112,7 +113,7 @@ class WebhookDiagnosticsTests(unittest.TestCase):
 
             def log_message(self, *a):
                 pass
-        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        srv = HTTPServer(("127.0.0.1", 0), H)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)

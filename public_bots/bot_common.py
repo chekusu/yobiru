@@ -21,7 +21,9 @@ import threading
 import time
 import unicodedata
 import urllib.parse
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 
 API_VERSION = 1
 SERVICE = "yobiru-bot-gateway"
@@ -58,6 +60,14 @@ MEDIA_MAX_BYTES = 4 * 1024 * 1024           # one media file, raw bytes (the def
 NAME_RESERVED_CHARS = set('/\\:*?"<>|')
 WINDOWS_DEVICE_RE = re.compile("^(?:con|prn|aux|nul|clock\\$|conin\\$|conout\\$|com[0-9\u00b9\u00b2\u00b3]|"
                                "lpt[0-9\u00b9\u00b2\u00b3])\\Z", re.I)
+
+
+class NumericHTTPServer(ThreadingHTTPServer):
+    """Use the bound address for HTTP metadata without a blocking reverse DNS lookup."""
+
+    def server_bind(self):
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class StrictJSONError(ValueError):

@@ -10,6 +10,7 @@ per-machine access policy. Python 3.8+ stdlib only. See SPEC.md.
 import argparse, datetime as dt, errno, hashlib, http.client, ipaddress, json, mimetypes, os
 import re, secrets, shlex, shutil, socket, sqlite3, ssl, stat, subprocess, sys, threading, time, unicodedata, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 from pathlib import Path
 
 VERSION = 1                     # wire protocol version (unchanged)
@@ -2734,6 +2735,14 @@ def health_payload(ctx, me):
     return body
 
 
+class NumericHTTPServer(ThreadingHTTPServer):
+    """Bind normally, but do not require reverse DNS for HTTP server metadata."""
+
+    def server_bind(self):
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+
 def cmd_serve(ctx, a):
     me = ctx.self_node()
     ctx.receiver_identity = ReceiverIdentity(ctx, me)
@@ -2752,7 +2761,7 @@ def cmd_serve(ctx, a):
         log("wake adapter%s:" % tag, desc)
     if ctx.cfg.get("self_agent"):
         log("self_agent (sent as from_agent):", ctx.cfg["self_agent"])
-    srv = ThreadingHTTPServer((bind, port), make_handler(ctx, me["node"]))
+    srv = NumericHTTPServer((bind, port), make_handler(ctx, me["node"]))
     srv.daemon_threads = True
     # Request lifecycle, response delivery and attachment cleanup run as supervised workers; the serving loop
     # restarts only a worker whose thread has ended (see Maintenance).

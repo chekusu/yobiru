@@ -19,7 +19,8 @@ import unittest
 import urllib.error
 import urllib.request
 import uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from support.numeric_http import ThreadingHTTPServer
 
 import test_e2e_loopback as loopback
 from support.pkg import Package, SUPPORT, free_port

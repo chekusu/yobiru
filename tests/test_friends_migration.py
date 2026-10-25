@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from support.pkg import REPO
+from support.public_harness import legacy_gateway_prefix
 from support.public_harness import PUBLIC, FriendsGateway, plain_env
 
 
@@ -25,7 +26,7 @@ class MigrationTests(unittest.TestCase):
         shutil.copy(str(REPO / "tests" / "fixtures" / "bot_common_v2.py"), str(self.v2dir / "bot_common.py"))
 
     def v2_gateway(self):
-        return FriendsGateway(self.root, prefix=[sys.executable, str(self.v2dir / "bot_gateway.py")],
+        return FriendsGateway(self.root, prefix=legacy_gateway_prefix(self.v2dir / "bot_gateway.py"),
                               limits={"min_deadline_seconds": 1})
 
     def run_new(self, home, *args):
