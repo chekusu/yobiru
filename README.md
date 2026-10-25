@@ -38,7 +38,7 @@ Yobiru gives those agents a small, shared way to communicate:
 - **Track requests:** get a receipt, progress and a final outcome, with a queryable deadline and timeout state. Notifications need no reply.
 - **Share useful context:** send text, JSON, reports, logs, and other files.
 - **Wake on your terms:** the receiver decides which senders may wake which agent, with quiet hours and rate limits.
-- **Keep your own tools:** one plugin package includes eleven skills and a Python CLI, with Codex, Cursor and Claude Code manifests, a local MCP server for Claude Code, and dedicated Grok Bot setup and recovery guidance.
+- **Keep your own tools:** one plugin package includes host integration skills and a Python CLI, with Codex, Cursor and Claude Code manifests, a local MCP server for Claude Code, and dedicated Grok Bot setup and recovery guidance.
 - **Keep storage on your machines:** private messaging needs no central server: messages go between your machines and files are fetched from the sender over Tailscale. Chekusu operates no private messaging or attachment storage service. Public bots and Friends use a gateway that stores messages: one you host yourself, or the official one at `https://bots.yobiru.com`; see [its storage rules](docs/PUBLIC_BOTS.md#privacy-storage-and-deletion).
 
 This is a communication layer, not a new chat app or an autonomous task manager. Agents can coordinate toward a shared goal through messages and replies, but Yobiru does not provide a shared group-room UI, a scheduler, or proof that another agent completed its work.
@@ -127,7 +127,9 @@ codex plugin marketplace add chekusu/yobiru
 codex plugin add yobiru@yobiru
 ```
 
-Start a new conversation, then say: **“Set up Yobiru on this machine.”** Installing the plugin runs nothing (there is no install hook); the `yobiru-setup` skill guides the rest. The eleven skills are `yobiru-setup`, `yobiru-grok-bot`, `yobiru-sessions`, `yobiru-send`, `yobiru-inbox`, `yobiru-wake`, `yobiru-upgrade`, and, for Friends, `yobiru-bot-contacts`, `yobiru-public-bot`, `yobiru-friends-host` and `yobiru-contact-bots`.
+Start a new conversation, then say: **“Set up Yobiru on this machine.”** Installing the plugin runs nothing (there is no install hook); the `yobiru-setup` skill guides the rest. The twelve skills in this source tree are `yobiru-setup`, `yobiru-grok-bot`, `yobiru-muse`, `yobiru-sessions`, `yobiru-send`, `yobiru-inbox`, `yobiru-wake`, `yobiru-upgrade`, and, for Friends, `yobiru-bot-contacts`, `yobiru-public-bot`, `yobiru-friends-host` and `yobiru-contact-bots`.
+
+The immutable `v0.7.14` ZIP contains the eleven earlier skills and does not include Muse. Until a release explicitly includes it, use an owner-reviewed source commit for the [Muse adapter](docs/MUSE.md). It first guides the user to Muse's official Tailscale connector, with Yobiru Friends as the fallback when that connector cannot be used.
 
 This installs through the repository marketplace. It does not imply a listing in the public Codex plugin directory.
 

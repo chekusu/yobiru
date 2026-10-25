@@ -38,7 +38,7 @@ Yobiru 为这些 agents 提供了一套轻量、共通的通信方式：
 - **跟踪请求：** 接收回执、进度和最终结果，随时查询期限及超时状态；普通通知无需回复。
 - **交换有用的上下文：** 发送文字、JSON、报告、日志和其他文件。
 - **按你的规则唤醒：** 收件方决定哪些发送方可以唤醒哪个 agent，并设置静默时间和频率限制。
-- **继续使用自己的工具：** 同一个插件包包含十一个 skills 和 Python CLI，提供 Codex、Cursor 和 Claude Code 插件清单、供 Claude Code 使用的本地 MCP 服务器，以及 Grok Bot 专用的配置与恢复指引。
+- **继续使用自己的工具：** 同一个插件包包含宿主接入 skills 和 Python CLI，提供 Codex、Cursor 和 Claude Code 插件清单、供 Claude Code 使用的本地 MCP 服务器，以及 Grok Bot 专用的配置与恢复指引。
 - **数据保存在自己的机器上：** 私有消息不需要中央服务器，消息在你的机器之间传递，文件通过 Tailscale 从发送方获取。Chekusu 不运营私有消息或附件存储服务。公开 bot 与 Friends 使用会保存消息的网关：可以自己托管，也可以使用官方网关 `https://bots.yobiru.com`，见[其存储规则](docs/PUBLIC_BOTS.md#privacy-storage-and-deletion)。
 
 这是通信层，不是新的聊天应用或自主任务管理器。Agents 可以通过消息与回复围绕共同目标协作，但 Yobiru 不提供共享群聊界面、调度器，也不能证明对方已经完成工作。
@@ -127,9 +127,11 @@ codex plugin marketplace add chekusu/yobiru
 codex plugin add yobiru@yobiru
 ```
 
-新开一个会话，然后说：**“在这台机器上配置 Yobiru。”** 安装插件本身不会运行任何东西（没有安装钩子），后续由 `yobiru-setup` skill 引导完成。十一个 skills 分别是 `yobiru-setup`、`yobiru-grok-bot`、`yobiru-sessions`、`yobiru-send`、`yobiru-inbox`、`yobiru-wake`、`yobiru-upgrade`，以及 Friends 所用的 `yobiru-bot-contacts`、`yobiru-public-bot`、`yobiru-friends-host` 和 `yobiru-contact-bots`。
+新开一个会话，然后说：**“在这台机器上配置 Yobiru。”** 安装插件本身不会运行任何东西（没有安装钩子），后续由 `yobiru-setup` skill 引导完成。当前源码的十二个 skills 分别是 `yobiru-setup`、`yobiru-grok-bot`、`yobiru-muse`、`yobiru-sessions`、`yobiru-send`、`yobiru-inbox`、`yobiru-wake`、`yobiru-upgrade`，以及 Friends 所用的 `yobiru-bot-contacts`、`yobiru-public-bot`、`yobiru-friends-host` 和 `yobiru-contact-bots`。
 
 这里使用的是仓库插件市场，并不意味着已经进入 Codex 的公共插件目录。
+
+不可变的 `v0.7.14` ZIP 包含之前的十一个技能，没有 Muse 适配器。在明确包含它的新版本发布之前，请使用主人审阅过的准确源码提交，按 [Muse 接入说明](docs/MUSE.md) 配置。优先引导用户安装 Muse 官方 Tailscale 连接器；无法使用时，再引导使用 Yobiru Friends。
 
 ### Claude Code
 
