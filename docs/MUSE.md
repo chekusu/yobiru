@@ -33,6 +33,20 @@ Private receiver permissions and Tailscale identity are authoritative. The adapt
 
 This is an executable custom-connector adapter plus setup instructions, not a claim that Meta's directory already lists Yobiru. Meta's public guidance supports asking Muse to create a custom connector; it does not establish that a Python adapter is accepted in every account. If the current account accepts only remote APIs, the existing Friends gateway MCP is an alternative when its static bearer flow is supported. The local Friends client preserves its own encryption keys; a remote-only MCP client does not provide the same client-side encryption boundary. No shared OAuth or new public MCP service is added here.
 
+## Muse review documentation
+
+The [official connector guidelines](https://platform.muse.ai/docs) require a complete task flow, documented permissions and errors, and a dedicated test account/demo for directory review. The adapter supplies submission, original-ID status, same-ID recovery and result/file retrieval. A private self-created connector and a directory-reviewed API/MCP connector are separate distribution paths. This source package does not by itself constitute a directory submission.
+
+| Operation | Classification and side effects |
+| --- | --- |
+| `check`, `list`, `status --cached`, `read` | Read: inspect local state; peer check also reads authenticated receiver health. |
+| `status ID` | Reads the original remote outcome and updates the local request ledger; document both effects. |
+| `send`, `resume` | Sensitive write: submits a message/task and optional files to the explicitly authorized peer; may request a wake. Resume uses the original ID, never a fresh task. |
+| `fetch` | Reads authorized remote files and writes hash-verified copies locally. |
+| Initial setup | Writes an isolated local configuration; official Tailscale enrollment/permissions remain a separate user-controlled connector flow. |
+
+No shared credential should be embedded in a Muse prompt, connector description or this repository. A directory submission using Friends must document the actual per-user static-bearer flow, approved tools, plaintext gateway boundary and available revocation; it must not claim OAuth. Reviewers need their own scoped test identity and representative synthetic data. Describe rate/size limits as those advertised by the chosen receiver or gateway and preserve its explicit permission/deadline errors. Unknown submission or execution outcomes must be reconciled under the original ID.
+
 ## Evidence and comparator decisions
 
 The transport tests use a real local receiver and synthetic Tailscale identities, with reverse connections forbidden. They exercise the adapter's one-way request/result flow and same-ID recovery. These tests do not verify a live Muse account, its secure credential store, background execution, regional availability or marketplace review. User-reported Japan availability remains an account observation, not a universal availability promise.
