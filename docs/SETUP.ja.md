@@ -15,7 +15,7 @@ Y="/absolute/path/to/yobiru/scripts/yobiru"     # インストール済みプラ
 sh "$Y" onboard
 ```
 
-Windows では `py -3 "C:\path\to\yobiru\scripts\yobiru.py" onboard`。既定以外のデータディレクトリはコマンドの前に指定します：`sh "$Y" --home /workspace/.tailmsg onboard`。
+Windows では `py -3 "C:\path\to\yobiru\scripts\yobiru.py" onboard`。既定以外のデータディレクトリはコマンドの前に指定します：`sh "$Y" --home /workspace/yobiru-data onboard`。
 
 ## 役割分担
 

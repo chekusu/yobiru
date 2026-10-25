@@ -45,15 +45,17 @@ On that computer, use the verified plugin's absolute launcher path, represented 
 
 ```sh
 sh "$Y" paths
-sh "$Y" --home /workspace/.tailmsg onboard
-sh "$Y" --home /workspace/.tailmsg doctor
+sh "$Y" --home /workspace/yobiru-data onboard
+sh "$Y" --home /workspace/yobiru-data doctor
 ```
 
-`/workspace/.tailmsg` is a suggested new data home; preserve an existing installation's actual
-home. These checks identify missing Python, Tailscale, sign-in, receiver or delivery configuration.
-They do not install software or change permissions. Yobiru needs a usable Tailscale interface,
-not just a userspace proxy. If the computer lacks the required privileges or `/dev/net/tun`, follow
-the reported administrator action instead of bypassing the host's restrictions.
+`/workspace/yobiru-data` is a suggested home for a new installation, kept apart from the package folder
+`/workspace/yobiru-<version>/` (see [visible folders](#prefer-visible-folders-under-workspace));
+preserve an existing installation's actual home. These checks identify missing Python, Tailscale,
+sign-in, receiver or delivery configuration. They do not install software or change permissions. Yobiru
+needs a usable Tailscale interface, not just a userspace proxy. If the computer lacks the required
+privileges or `/dev/net/tun`, follow the reported administrator action instead of bypassing the host's
+restrictions.
 
 When the owner has asked for setup, use the setup skill to install the official prerequisites,
 register the intended agent, install a durable runtime and configure its supported service manager.
@@ -143,6 +145,48 @@ suitable for private daemon state. `/home/box` may be used only with that confir
 installation; the cited official guidance does not guarantee it. Existing Yobiru data homes remain
 unchanged: `--home DIR` overrides `$TAILMSG_HOME`, otherwise the default is `~/.tailmsg`. Always pass
 the selected absolute home in recovery commands; a different shell user can have a different default.
+
+### Prefer visible folders under `/workspace`
+
+The [workspace guidance](https://cursor.com/docs/grok-bot/work#files-and-the-workspace) recommends clear
+project folders under `/workspace` and says normal updates and recovery keep its files. It does not say
+how folders whose names start with a dot are treated. On 2026-10-21 a sender reported one event: after a
+restart, visible folders under `/workspace` remained while hidden ones there (`.tailscale-state`,
+`.tailmsg-backup`, `.config`) were gone. The kind of maintenance action was not independently
+established, and no platform-wide rule about hidden paths has been verified. The sender also reports
+moving its state and backup to visible folders and leaving a marker file. That change has not yet been
+through another restart and has not been verified independently.
+
+Until the host documents this, prefer visible names for what must survive. These are conditional
+suggestions, not an automatic migration:
+
+- A new Yobiru data home such as `/workspace/yobiru-data`, separate from the package folder
+  `/workspace/yobiru-<version>/`.
+- Within an authorized migration only: Tailscale state such as `/workspace/tailscale-state`, and a backup
+  such as `/workspace/tailmsg-backup`.
+- A visible name does not make data public. Create new private-data directories as 0700, and make state,
+  secret and data files 0600 where applicable; this is no recursive `chmod` of a whole home or backup.
+  When copying, preserve existing ownership and the executable modes that referenced adapters need, and
+  leave the permissions of a live home unchanged. Keep secrets out of messages and repositories.
+- Do not rename or move an existing running home (for example `~/.tailmsg`) or live daemon state blindly.
+  Change paths only through the sequence below.
+
+A temporary runtime home is not a durable backup. A backup is a complete, consistent copy taken while
+nothing writes to the home: the request ledger, attachments and results, every agent's settings, the
+webhook and other files they reference, and the permissions. Never run a second receiver on a backup, and
+never overwrite a healthy home with an older copy. A restore script must name the original home, the
+backup source and the state paths explicitly. Yobiru provides no migration or restore script.
+
+The next rebuild the owner would perform anyway is the time to check the result. Do not restart only to
+test. Verify that:
+
+- the chosen folders, including any marker file, survived intact;
+- Tailscale kept the old node's stable identity;
+- every configured agent and permission is unchanged;
+- startup ran the intended processes;
+- a harmless tracked request completes.
+
+A restarted daemon or a surviving marker alone is not that acceptance.
 
 For an existing installation, use this sequence only within the owner's migration/repair authorization:
 

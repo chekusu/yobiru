@@ -140,7 +140,7 @@ claude plugin marketplace add chekusu/yobiru
 claude plugin install yobiru@yobiru
 ```
 
-新开一个会话，然后说：**“在这台机器上配置 Yobiru。”** Claude Code 会得到同样的七个 skills，外加一个本地 MCP 服务器 `yobiru`：它的工具可以查看收件箱，阅读、下载附件并确认消息，发送消息和可追踪请求，回复或报告请求状态，以及查看配置、机器和请求状态。这个服务器就是插件自带的 CLI，通过 stdio 运行（`sh scripts/yobiru mcp`）：使用同一个数据目录（`$TAILMSG_HOME` 或 `~/.tailmsg`），不监听任何端口，也不单独存储任何数据。收到的文字以“另一个 agent 发来的数据”交给模型，从不作为指令。
+新开一个会话，然后说：**“在这台机器上配置 Yobiru。”** Claude Code 会得到同样的随附 skills，外加一个本地 MCP 服务器 `yobiru`：它的工具可以查看收件箱，阅读、下载附件并确认消息，发送消息和可追踪请求，回复或报告请求状态，以及查看配置、机器和请求状态。这个服务器就是插件自带的 CLI，通过 stdio 运行（`sh scripts/yobiru mcp`）：使用同一个数据目录（`$TAILMSG_HOME` 或 `~/.tailmsg`），不监听任何端口，也不单独存储任何数据。收到的文字以“另一个 agent 发来的数据”交给模型，从不作为指令。
 
 请给 Claude Code 一个独立的 agent 名称，这样回复会回到它这里，而不是同一台机器上的其他 agent：`sh "$Y" setup --agent claude`（先看计划，再加 `--apply`；见[为 agents 命名](#1-为-agents-命名)）。配置里有名为 `claude` 的 agent 时，MCP 服务器以 `claude` 的身份发送，并只列出 `claude` 的收件箱；否则使用本机的 `self_agent` 并列出所有 agent 的消息。插件不会唤醒空闲的 Claude Code 会话：消息会留在收件箱里，直到某个会话去查看（“查看我的 Yobiru 收件箱”），除非你为 `claude` 配置了本地程序作为唤醒适配器（见[唤醒与投递状态](#唤醒与投递状态)）。在 Windows 上，服务器需要 `PATH` 中有 `sh`（例如 Git for Windows 自带的）；否则请手动注册：`claude mcp add yobiru -- py -3 "<plugin>\scripts\yobiru.py" mcp`。
 
@@ -162,7 +162,7 @@ agent --plugin-dir "$PWD/plugins/yobiru"
 
 在账户可用的市场提供 Yobiru 后，从 Grok Bot 的 **Connect apps** 添加；Cursor 团队管理员可能控制市场访问范围。参见 [Grok Bot 插件文档](https://cursor.com/help/grok-bot/connect-plugins)。[官方提交页面](https://x.ai/bot/marketplace/submit-a-plugin)同时覆盖 Grok Bot 和 Cursor。提交之后仍需审核，实际进度以[提交记录](docs/MARKETPLACE_SUBMISSION.md)为准。
 
-可以对 Grok Bot 说：**“使用 yobiru-grok-bot，把当前会话的云电脑连接到我的其他 agents。”** 新安装使用 `/workspace/.tailmsg` 这样的持久目录；已有安装保留原数据目录。该 skill 引导确认当前电脑、校验官方安装包、处理脚本缺失，并检查固定设备名与恢复方式。接收进程正在运行、请求已经完成、原生插件已经安装，是三种不同的验证结果。参见 [Grok Bot 指南](docs/GROK_BOT.md)和[平台说明](docs/PLATFORMS.md)。
+可以对 Grok Bot 说：**“使用 yobiru-grok-bot，把当前会话的云电脑连接到我的其他 agents。”** 新安装把数据放在 `/workspace/yobiru-data` 这样不隐藏、仅本人可访问的目录，与安装包分开；已有安装保留原数据目录（[原因](docs/GROK_BOT.md#prefer-visible-folders-under-workspace)）。该 skill 引导确认当前电脑、校验官方安装包、处理脚本缺失，并检查固定设备名与恢复方式。接收进程正在运行、请求已经完成、原生插件已经安装，是三种不同的验证结果。参见 [Grok Bot 指南](docs/GROK_BOT.md)和[平台说明](docs/PLATFORMS.md)。
 
 ### 不通过插件宿主，直接使用 CLI
 
@@ -176,9 +176,9 @@ sh "$Y" doctor
 
 如果已通过宿主安装插件，将 `Y` 换成安装位置下 `scripts/yobiru` 的绝对路径。路径应保留引号，因为插件缓存路径可能含有空格。Windows 使用 `py -3 "path\to\yobiru\scripts\yobiru.py"`。`doctor` 只读；新机器上会报告配置和接收进程尚未就绪。
 
-### 升级到 0.6
+### 升级
 
-上面的各种安装方式得到的都是稳定版 0.6.1。[升级指南](docs/UPGRADING-0.6.md)（英文）介绍用 `SHA256SUMS` 校验的 release 压缩包、Cursor 与 Grok Bot、常驻接收端、已有网关的迁移、回滚限制和验收清单。运行开发版的机器请保持其运行时和桥接不变；指南说明了如何在它们旁边试用正式版。
+当前稳定版是 0.7.14。Release 压缩包固定于对应标签；从仓库安装会跟随 `main`，其中也可能包含尚未发布的修复。[升级指南](docs/UPGRADING-0.6.md)（英文）介绍用 `SHA256SUMS` 校验的 release 压缩包、Cursor 与 Grok Bot、常驻接收端、已有网关的迁移、回滚限制和验收清单。运行开发版的机器请保持其运行时和桥接不变；指南说明了如何在它们旁边试用正式版。
 
 ## 首次配置（即使还没有 Tailscale）
 

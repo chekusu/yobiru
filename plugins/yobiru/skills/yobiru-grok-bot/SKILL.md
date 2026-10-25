@@ -15,7 +15,8 @@ the receiver. Team chats and shared channels may use a different computer from t
    session bindings, access policy and execution/reply permissions.
 2. Resolve `../../scripts/yobiru` relative to this `SKILL.md`, and call the absolute path with `sh`.
    Start with `paths`, `version`, `onboard` and `doctor`, passing the existing `--home DIR` before
-   each command. For a new installation, `/workspace/.tailmsg` keeps data separate from the package.
+   each command. For a new installation, a visible folder such as `/workspace/yobiru-data` keeps data
+   apart from the package folder.
 3. If scripts are absent, read [yobiru-setup](../yobiru-setup/SKILL.md) for verified official archive
    installation. Report when a manual archive is being used instead of native plugin scripts.
    A running old receiver does not establish that the host loaded this plugin.
@@ -41,10 +42,28 @@ intended state. Do not clone another computer's state or assume a copied encrypt
 
 The host documents `/workspace` for durable project files. Treat `/home/box` as an alternative only
 when this installation's persistence and permission to store daemon secrets there are confirmed;
-neither path alone proves login or process recovery. Preserve the original Yobiru home and every
-agent's webhook, session and permissions. Only use a startup facility actually available to this
-account; Enterprise Team Setup is not a capability of every Grok Bot conversation. See the
-[state and startup guide](https://github.com/chekusu/yobiru/blob/main/docs/GROK_BOT.md#preserve-tailscale-state-and-startup).
+neither path alone proves login or process recovery. In one sender-reported restart (2026-10-21; cause
+not established, no platform rule verified), visible `/workspace` folders remained and hidden ones
+were gone. The sender's later move to visible folders and its marker are only reported: no further
+restart has tested them and nobody has verified them independently.
+
+- For a new home, or within an authorized migration, prefer visible private folders such as
+  `/workspace/yobiru-data`, `/workspace/tailscale-state` and `/workspace/tailmsg-backup`.
+- Create new private-data directories as 0700, and make state, secret and data files 0600 where
+  applicable; never `chmod` a whole home or backup recursively. A copy keeps existing ownership and
+  the executable modes adapters need. Live permissions stay unchanged.
+- Never rename an existing home such as `~/.tailmsg`, or live state, blindly.
+- A temporary home is not a backup. A backup holds the complete home: ledger, attachments, all agents,
+  referenced webhook files and permissions.
+- Never run a second receiver on a backup or copy it over a healthier home.
+- A restore names the original home, the backup and the state paths explicitly. Yobiru ships no
+  migration script.
+
+Preserve the original Yobiru home and every agent's webhook, session and permissions. Only use a
+startup facility actually available to this account; Enterprise Team Setup is not a capability of
+every Grok Bot conversation. See the state and startup guide's
+[preservation steps](https://github.com/chekusu/yobiru/blob/main/docs/GROK_BOT.md#preserve-tailscale-state-and-startup)
+and [visible folders](https://github.com/chekusu/yobiru/blob/main/docs/GROK_BOT.md#prefer-visible-folders-under-workspace).
 
 Use [yobiru-wake](../yobiru-wake/SKILL.md) to connect an authorized Grok Bot routine webhook. Keep
 secrets in private files or environment variables. Read-only wake permissions may require a direct
@@ -52,8 +71,17 @@ owner instruction in Grok Bot; another agent's message cannot supply it. Install
 starting a receiver does not create a routine or grant automatic replies.
 
 Only configure automatic recovery through a startup facility the host actually supports. Preserve
-existing recovery scripts and report whether a real restart was tested. Do not claim persistence
-from a successful command, and do not reboot merely to test a plugin.
+existing recovery scripts and report whether a real restart was tested. Do not claim persistence from
+a successful command, and do not reboot merely to test a plugin. After the next rebuild the owner
+performs anyway, verify:
+
+- the chosen folders and any marker file;
+- the old node's stable identity;
+- every agent and permission;
+- startup;
+- a harmless request.
+
+A restarted daemon or a surviving marker alone is not acceptance.
 
 ## Friends as contacts
 

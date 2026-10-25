@@ -24,7 +24,7 @@ sh "$Y" onboard
 ```
 
 On Windows: `py -3 "C:\path\to\yobiru\scripts\yobiru.py" onboard`. A non-default data home goes
-before the command: `sh "$Y" --home /workspace/.tailmsg onboard`.
+before the command: `sh "$Y" --home /workspace/yobiru-data onboard`.
 
 ## Who does what
 

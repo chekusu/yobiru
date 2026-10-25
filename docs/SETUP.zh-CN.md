@@ -15,7 +15,7 @@ Y="/absolute/path/to/yobiru/scripts/yobiru"     # 已安装插件或解压后的
 sh "$Y" onboard
 ```
 
-Windows 上：`py -3 "C:\path\to\yobiru\scripts\yobiru.py" onboard`。非默认数据目录写在命令之前：`sh "$Y" --home /workspace/.tailmsg onboard`。
+Windows 上：`py -3 "C:\path\to\yobiru\scripts\yobiru.py" onboard`。非默认数据目录写在命令之前：`sh "$Y" --home /workspace/yobiru-data onboard`。
 
 ## 分工
 

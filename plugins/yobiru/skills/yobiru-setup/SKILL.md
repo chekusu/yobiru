@@ -153,10 +153,13 @@ state location, storage persistence or recovery after an image update.
   its state directory; `--state` can select a separate file or backend. Preserve the complete actual
   directory and any separately configured state, not just an executable or one guessed file.
 - Choose a destination only after the host's documentation or an administrator confirms that it
-  survives the relevant rebuild and permits private daemon state. `/workspace` is documented for
-  Grok Bot project files; that alone does not configure Tailscale or startup. `/home/box` is an option
-  only if this installation confirms its persistence and suitability; it is not a Yobiru default or
-  an official Grok Bot guarantee. Directory existence or a successful write is not that evidence.
+  survives the relevant rebuild and permits private daemon state. `/workspace` is documented for Grok
+  Bot project files; that alone does not configure Tailscale or startup. Prefer visible names there,
+  such as `/workspace/tailscale-state`. One sender-reported restart lost hidden `/workspace` folders,
+  though neither a platform rule nor the sender's later fix has been verified. `/home/box` is an
+  option only if this installation confirms its persistence and suitability; it is not a Yobiru
+  default or an official Grok Bot guarantee. Directory existence or a successful write is not that
+  evidence.
 - For an authorized migration, first record the current identity and a local rollback plan. Coordinate
   the network interruption, stop the existing daemon through its actual manager, prevent competing
   startup, and back up/copy the full state while stopped, preserving ownership and restrictive modes.
@@ -166,8 +169,10 @@ state location, storage persistence or recovery after an image update.
   with it. Do not move a managed or external state backend using this file-copy procedure.
 - Preserve the existing Yobiru home and all agents, webhook files, sessions, permissions and request
   records. Its resolution remains `--home DIR`, then `$TAILMSG_HOME`, then `~/.tailmsg`; selecting a
-  Tailscale state directory does not move it. Restore the intended receiver with that explicit home;
-  if its reported node is stale after a name/identity change, restart only that receiver and recheck.
+  Tailscale state directory does not move it. A backup of it must be complete (ledger, attachments,
+  all agents, referenced files, permissions). Never serve a backup with a second receiver or copy it
+  over a healthier home. Restore the intended receiver with that explicit home; if its reported node
+  is stale after a name/identity change, restart only that receiver and recheck.
 - Persist a recovery definition only through a supported, authorized host startup facility. Reinstalling
   missing binaries must reuse the selected state and must not silently create a fresh identity. Do not
   automatically log out, inject an auth key, disable key expiry, change ACLs or reboot for verification.
@@ -200,14 +205,15 @@ an automatic state-migration command or an install hook.
 
 - Codex or Cursor on a desktop: commands run on that computer. A sandbox may block network access to
   the tailnet; request it through the host's normal approval flow. Never work around host permissions.
-- Grok Bot: commands run on the computer the current conversation uses (the owner's chat: the
-  owner's computer; a teammate's chat with a Team Bot: usually that teammate's; Slack channels and
-  group chats: a shared computer). Each is its own machine, tailnet node and data home: never copy
-  another computer's identity or config. These Debian-based computers may lack `/dev/net/tun`, sudo
-  or a service manager; `onboard` reports which, and an administrator may provide Tailscale through
-  Enterprise Team Setup. For a new setup use `--home /workspace/.tailmsg`; preserve an existing
-  data home. Persistent files do not imply that a receiver restarts after a rebuild. For computer
-  selection, plugin verification and recovery, use [yobiru-grok-bot](../yobiru-grok-bot/SKILL.md).
+- Grok Bot: commands run on the computer the current conversation uses (the owner's chat: the owner's
+  computer; a teammate's chat with a Team Bot: usually that teammate's; Slack channels and group
+  chats: a shared computer). Each is its own machine, tailnet node and data home: never copy another
+  computer's identity or config. These Debian-based computers may lack `/dev/net/tun`, sudo or a
+  service manager; `onboard` reports which, and an administrator may provide Tailscale through
+  Enterprise Team Setup. For a new setup use a visible private folder such as
+  `--home /workspace/yobiru-data`; preserve an existing data home. Persistent files do not imply that
+  a receiver restarts after a rebuild. For computer selection, plugin verification and recovery, use
+  [yobiru-grok-bot](../yobiru-grok-bot/SKILL.md).
 
 ## Uninstall
 

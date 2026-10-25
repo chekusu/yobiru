@@ -1,11 +1,12 @@
 # Marketplace submission and reviewer guide
 
-Yobiru uses one plugin directory, `plugins/yobiru`, for Grok Bot, Cursor, Codex
+Yobiru uses one plugin directory, `plugins/yobiru`, for Grok Bot, Cursor, Claude Code, Codex
 and compatible ChatGPT desktop execution. The portable manifest and host
-overlays are generated from `packaging/product.json`. There is no separate
-hosted MCP service, hosted messaging account, or duplicate ChatGPT codebase. The
-plugin registers no MCP server; the optional `/mcp` endpoint of the public bots
-(0.6.0) runs only on a gateway: one the user hosts, or the official bots.yobiru.com.
+overlays are generated from `packaging/product.json`. Desktop plugin installation needs no separate
+hosted MCP service or hosted messaging account; there is no duplicate ChatGPT codebase. The
+Codex and Cursor overlays register no MCP server. The Claude Code overlay registers the bundled local
+stdio server (`yobiru mcp`), which calls the same CLI and opens no network port. The optional public-bot
+`/mcp` endpoint is separate and runs on a gateway: one the user hosts, or the official bots.yobiru.com.
 
 Official submission routes checked on October 15, 2026:
 
@@ -38,7 +39,8 @@ Suggested short description:
 > Connect your personal agents across home computers and cloud machines over
 > Tailscale. Exchange messages and files, send requests with receipts and final
 > results, and wake configured receivers. Works with the host's local command
-> execution and your own network; Yobiru has no central message or file store.
+> execution and your own network. Private messaging has no central message or file store; public bots
+> and Friends use a gateway.
 
 Provide the publisher's actual name and reachable work email in private
 submission fields. Do not put personal contact details, credentials, reviewer
@@ -72,7 +74,7 @@ portable OpenAI extension is present, it takes precedence over that legacy file.
 Submit the ordinary plugin ZIP through the
 [desktop-only route](https://developers.openai.com/plugins/deploy/desktop-only).
 Do not invent a remote MCP URL (a self-hosted public bot gateway's `/mcp` is the
-user's own, part of a prerelease and not of a submission) or mark Yobiru as working in a
+user's own service and not part of the desktop plugin submission) or mark Yobiru as working in a
 cloud conversation that cannot run Python and join the user's tailnet. Directory review, publisher
 business verification and portal permissions are managed by OpenAI. Local
 installation does not grant publishing access.

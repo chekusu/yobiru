@@ -20,8 +20,8 @@ Not shipped: a shared MCP file (`mcp.json` / `.mcp.json`), hooks, rules, command
 skills plus the bundled command already cover every operation. The one MCP server lives in the Claude Code
 manifest only, because Claude Code expands `${CLAUDE_PLUGIN_ROOT}` and no other host reads that file; a
 shared `mcp.json` would reach Cursor, which does not expand the standard `${PLUGIN_ROOT}` variable. Other
-MCP clients can register `yobiru mcp` by hand. A remote MCP endpoint would need a server this project
-deliberately does not run.
+MCP clients can register `yobiru mcp` by hand. Private Tailscale messaging does not expose a hosted MCP
+endpoint. Friends has a separate gateway endpoint, described below.
 
 For public bots and Friends, a user may also add the local stdio proxy `yobiru public mcp` to an MCP client by
 hand, and a gateway serves the same API at `/mcp` to bearer-authenticated clients (no OAuth); see
@@ -184,3 +184,15 @@ verifies official release checksums before using an archive in `/workspace`.
    installation (`codex plugin marketplace add chekusu/yobiru`) and Cursor team import. Record
    actual host tests, submission receipts, review decisions and public listing links separately in
    [MARKETPLACE_SUBMISSION.md](MARKETPLACE_SUBMISSION.md). Preparing a valid archive is not a submission.
+
+## macOS gateway interpreter
+
+For a multiprocessing Friends gateway on macOS, use a standalone modern CPython installation.
+During the October 26, 2026 maintenance run, Apple's system Python 3.9 crashed in its SQLite
+`openDatabase` path after `fork` (`_os_log_preferences_refresh`); the single-process connector tests
+passed on the same machine. CI selects CPython 3.12 explicitly on both macOS and Linux so this host
+interpreter is not selected by PATH accident. The CI result for a particular commit remains the
+acceptance evidence; selecting that interpreter is not itself a passing test.
+
+This limitation concerns the multiprocessing gateway and Apple's bundled interpreter. It does not
+change the Python 3.8+ requirement for the private messaging CLI or imply all Python 3.9 builds fail.
