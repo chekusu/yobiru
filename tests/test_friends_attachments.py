@@ -260,6 +260,25 @@ class SenderPathTests(AttachmentCase):
         self.assertEqual(2, code)
         self.assertIn("replaced", err)
 
+    def test_a_symlinked_spelling_of_the_root_is_accepted_and_stays_bounded(self):
+        """Reads through an alias spelling of an allowed root come from inside the root (#47, on macOS the
+        raw /var/... spelling never string-matches the stored /private/var/... root): the alias itself is
+        fine, a link escaping through the root and a genuinely outside file stay refused."""
+        self.assertEqual(0, cli(self.home, "attachments", "allow", str(self.project))[0])
+        alias = self.work / "project-alias"
+        os.symlink(str(self.project), str(alias))
+        code, obj, err = self.send(alias / "notes.md")
+        self.assertEqual(0, code, err)
+        code, obj, err = self.send(alias / "sub" / "deep.md")
+        self.assertEqual(0, code, err)
+        code, obj, err = self.send(alias / "link-out.md")
+        self.assertEqual(2, code, obj)
+        self.assertIn("symbolic link", err)
+        self.assertIn("nothing was sent", err)
+        code, obj, err = self.send(self.outside / "plain.md")
+        self.assertEqual(2, code, obj)
+        self.assertIn("outside the allowed roots", err)
+
 
 class ExportTests(AttachmentCase):
     def setUp(self):

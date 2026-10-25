@@ -1377,8 +1377,10 @@ def read_attachment(st, raw, roots, max_bytes, media_max_bytes=C.MEDIA_MAX_BYTES
         # in its raw spelling so the component checks and the O_NOFOLLOW walk still police each one.
         parts, root, suffix = None, None, []
         probe2 = probe
-        while probe2 != os.sep:
+        while True:
             parent = os.path.dirname(probe2)
+            if parent == probe2:
+                break
             rp = os.path.realpath(parent)
             hit = next((r for r in roots if rp == r["path"]), None)
             if hit is not None:
@@ -1603,8 +1605,10 @@ def cmd_attachments(st, a):
             below = target.split(os.sep)
             # macOS realpaths top-level symlinked roots (/tmp, /var, /etc) into /private/<name>, so the
             # leading "private" is a filesystem artifact, not a folder the user chose (issue #47). Drop it
-            # only in that case; a deliberate /private/... over a real directory keeps being rejected.
-            if len(below) > 2 and below[1] == "private" and os.path.islink(os.sep + below[2]):
+            # only when /<name> is a symlink resolving right back to /private/<name>; a deliberate
+            # /private/... over a real directory keeps being rejected.
+            if len(below) > 2 and below[1] == "private" and \
+                    os.path.realpath(os.sep + below[2]) == os.sep + os.path.join("private", below[2]):
                 below = below[:1] + below[2:]
         for part in below:
             if part.startswith(".") or part.lower() in SECRET_DIRS or part in ("Library", "AppData"):
