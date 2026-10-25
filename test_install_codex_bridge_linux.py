@@ -73,6 +73,14 @@ def snapshot(path):
     return out
 
 
+def python_env(values):
+    """Keep isolated test settings and the selected Linux interpreter's loader path."""
+    env = dict(values)
+    if sys.platform.startswith("linux") and os.environ.get("LD_LIBRARY_PATH"):
+        env.setdefault("LD_LIBRARY_PATH", os.environ["LD_LIBRARY_PATH"])
+    return env
+
+
 class LinuxInstallerTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="yobiru-linux-")).resolve()
@@ -135,9 +143,9 @@ class LinuxInstallerTests(unittest.TestCase):
         (home or self.home).joinpath("config.json").write_text(json.dumps(config, indent=2))
 
     def run_installer(self, *args, env=None, home=None, path_dirs=None):
-        environment = {"HOME": str(self.user), "PATH": os.pathsep.join([str(self.fakes)] + (path_dirs or []) +
-                                                                       ["/usr/bin", "/bin"]),
-                       "LANG": "C.UTF-8"}
+        environment = python_env({"HOME": str(self.user), "PATH": os.pathsep.join([str(self.fakes)] + (path_dirs or []) +
+                                                                                   ["/usr/bin", "/bin"]),
+                                  "LANG": "C.UTF-8"})
         environment.update(env or {})
         cmd = [sys.executable, str(INSTALLER), "--tailmsg-home", str(home or self.home)] + list(args)
         return subprocess.run(cmd, env=environment, capture_output=True, text=True, timeout=60)
@@ -247,7 +255,7 @@ class LinuxInstallerTests(unittest.TestCase):
         empty.mkdir()
         result = subprocess.run([sys.executable, str(INSTALLER), "--tailmsg-home", str(self.home), "--thread-id",
                                  self.thread, "--codex-remote", self.remote, "--dry-run"],
-                                env={"HOME": str(self.user), "PATH": str(empty)}, capture_output=True, text=True)
+                                env=python_env({"HOME": str(self.user), "PATH": str(empty)}), capture_output=True, text=True)
         self.refused(result, "--codex-path")
         self.assertEqual(before, snapshot(self.user))
         self.assertEqual([], self.calls())
@@ -339,7 +347,7 @@ class LinuxInstallerTests(unittest.TestCase):
         self.clear_calls()
         upgrade = subprocess.run([sys.executable, str(source / "install_codex_bridge_linux.py"), "--tailmsg-home",
                                   str(self.home), "--thread-id", self.thread, "--codex-remote", self.remote],
-                                 env={"HOME": str(self.user), "PATH": str(self.fakes) + ":/usr/bin:/bin"},
+                                 env=python_env({"HOME": str(self.user), "PATH": str(self.fakes) + ":/usr/bin:/bin"}),
                                  capture_output=True, text=True)
         second = self.ok(upgrade)
         self.assertIn(["restart", SERVICE], self.calls())
@@ -485,7 +493,7 @@ class LinuxInstallerTests(unittest.TestCase):
             f.write("\nnew template paragraph\n")
         with open(str(source / "codex_bridge.py"), "a") as f:
             f.write("# version two\n")
-        env = {"HOME": str(self.user), "PATH": str(self.fakes) + ":/usr/bin:/bin"}
+        env = python_env({"HOME": str(self.user), "PATH": str(self.fakes) + ":/usr/bin:/bin"})
         base = [sys.executable, str(source / "install_codex_bridge_linux.py"), "--tailmsg-home", str(self.home),
                 "--thread-id", self.thread, "--codex-remote", self.remote, "--no-start"]
         plan = self.ok(subprocess.run(base + ["--dry-run"], env=env, capture_output=True, text=True))

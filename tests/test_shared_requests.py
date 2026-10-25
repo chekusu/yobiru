@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler
 from support.numeric_http import ThreadingHTTPServer
 from pathlib import Path
 
-from support.pkg import REPO, SUPPORT, free_port
+from support.pkg import REPO, SUPPORT, free_port, python_env
 
 
 ALPHA_ID = "shared-alpha-stable"
@@ -194,7 +194,7 @@ class SharedRequestTests(unittest.TestCase):
         user_home.mkdir()
         empty_path = self.root / "empty PATH"
         empty_path.mkdir()
-        self.env = {"HOME": str(user_home), "PATH": str(empty_path), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
+        self.env = python_env({"HOME": str(user_home), "PATH": str(empty_path), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"})
         self.env["TEST_CLOCK"] = str(self.root / "test clock")
         self.harness = self.root / "one_way_harness.py"
         self.harness.write_text(HARNESS)

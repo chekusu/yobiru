@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler
 from support.numeric_http import ThreadingHTTPServer
 from pathlib import Path
 
-from support.pkg import REPO, SUPPORT, free_port
+from support.pkg import REPO, SUPPORT, free_port, python_env
 
 
 def node(name, peer):
@@ -45,8 +45,8 @@ class RequestWorkflowTests(unittest.TestCase):
         user.mkdir()
         no_tools = self.root / "empty PATH"
         no_tools.mkdir()
-        self.env = {"HOME": str(user), "PATH": str(no_tools),
-                    "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
+        self.env = python_env({"HOME": str(user), "PATH": str(no_tools),
+                               "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"})
         self.port = {"alpha": free_port(), "bravo": free_port()}
         while self.port["alpha"] == self.port["bravo"]:
             self.port["bravo"] = free_port()

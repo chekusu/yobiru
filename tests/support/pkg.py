@@ -15,6 +15,14 @@ REPO = Path(__file__).resolve().parents[2]
 SUPPORT = Path(__file__).resolve().parent
 
 
+def python_env(values):
+    """Keep isolated test settings and the selected Linux interpreter's loader path."""
+    env = dict(values)
+    if sys.platform.startswith("linux") and os.environ.get("LD_LIBRARY_PATH"):
+        env.setdefault("LD_LIBRARY_PATH", os.environ["LD_LIBRARY_PATH"])
+    return env
+
+
 def load_builder():
     spec = importlib.util.spec_from_file_location("build_plugin", str(REPO / "tools" / "build_plugin.py"))
     mod = importlib.util.module_from_spec(spec)
@@ -96,7 +104,7 @@ class Package(object):
 
     def env(self, user_home, tailscale=False, extra=None):
         path = str(self.bin) + (os.pathsep + str(self.fakebin) if tailscale else "")
-        e = {"HOME": str(user_home), "PATH": path, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
+        e = python_env({"HOME": str(user_home), "PATH": path, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"})
         e.update(extra or {})
         return e
 

@@ -11,7 +11,7 @@ import subprocess
 import unittest
 import zipfile
 
-from support.pkg import REPO, Package, load_builder
+from support.pkg import REPO, Package, load_builder, python_env
 
 B = load_builder()
 P = B.load_product()
@@ -165,8 +165,8 @@ class DemoFromArchiveTests(unittest.TestCase):
         self.addCleanup(pkg.cleanup)
         user_home = pkg.new_home("demo user home")
         tmp = pkg.new_home("demo tmp")
-        env = {"HOME": str(user_home), "PATH": str(pkg.bin) + os.pathsep + "/usr/bin:/bin", "LANG": "C.UTF-8",
-               "LC_ALL": "C.UTF-8", "TMPDIR": str(tmp), "PYTHONDONTWRITEBYTECODE": "1"}
+        env = python_env({"HOME": str(user_home), "PATH": str(pkg.bin) + os.pathsep + "/usr/bin:/bin", "LANG": "C.UTF-8",
+                          "LC_ALL": "C.UTF-8", "TMPDIR": str(tmp), "PYTHONDONTWRITEBYTECODE": "1"})
         r = subprocess.run(["/bin/sh", str(pkg.plugin / DEMO)], env=env, cwd=str(pkg.work),
                            capture_output=True, text=True, timeout=240)
         self.assertEqual(0, r.returncode, r.stdout + r.stderr)

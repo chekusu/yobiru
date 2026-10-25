@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from support.pkg import REPO, free_port
+from support.pkg import REPO, free_port, python_env
 
 PUBLIC = REPO / "public_bots"
 if str(PUBLIC) not in sys.path:
@@ -38,8 +38,10 @@ def cli(home, *args):
 
 
 def plain_env(home):
-    return {"HOME": str(home), "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    # Linux setup-python builds need their own shared libpython, while HOME and
+    # all other test settings remain isolated from the user's configuration.
+    return python_env({"HOME": str(home), "PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8",
+                       "LC_ALL": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"})
 
 
 class Service(object):
