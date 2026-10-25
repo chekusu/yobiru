@@ -380,6 +380,19 @@ class RuntimeAndServiceTests(Base):
                          plist["ProgramArguments"][1:])
         self.assertIn("install-runtime", r.stderr)
         self.assertIn("LaunchAgents", r.stderr)
+        self.assertNotIn("EnvironmentVariables", plist, "no tailscale on PATH here: nothing to add")
+
+    def test_launchd_template_adds_the_tailscale_directory_to_path(self):
+        # launchd runs jobs with PATH=/usr/bin:/bin:/usr/sbin:/sbin; a bare `tailscale` found elsewhere
+        # (the standalone macOS app installs /usr/local/bin/tailscale) must stay reachable from the service.
+        r = self.yobiru("service-template", "launchd", tailscale=True)
+        self.assertEqual(0, r.returncode, r.stderr)
+        env = plistlib.loads(r.stdout.encode("utf-8"))["EnvironmentVariables"]
+        self.assertEqual("/usr/bin:/bin:/usr/sbin:/sbin:" + str(PKG.fakebin), env["PATH"])
+        self.write_config({"tailscale_cmd": ["/Applications/Tailscale.app/Contents/MacOS/Tailscale"]})
+        r = self.yobiru("service-template", "launchd", tailscale=True)
+        self.assertNotIn("EnvironmentVariables", plistlib.loads(r.stdout.encode("utf-8")),
+                         "an absolute tailscale_cmd needs no PATH")
 
     def test_systemd_template_quotes_paths(self):
         home = self.user / "100% data $HOME"
