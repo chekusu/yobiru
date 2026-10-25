@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
-from http.server import ThreadingHTTPServer
+from support.numeric_http import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
