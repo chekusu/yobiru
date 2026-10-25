@@ -1,0 +1,64 @@
+{
+  "schema": "sandbank.workspace-handoff/v1",
+  "id": "chekusu/yobiru",
+  "pwd": "/home/codex/workspace/worktrees/yobiru-muse-20261026",
+  "root": "/home/codex/workspace/worktrees/yobiru-muse-20261026",
+  "invocationCwd": "/home/codex",
+  "host": "ubuntu",
+  "osUser": "codex",
+  "uid": 1000,
+  "observedAt": "2026-10-25T22:12:40.003Z",
+  "branch": "agent/yobiru-muse-20261026",
+  "HEAD": "2909af49c0f521fda536e288f47a66cc9f770cfd",
+  "task": "muse-adapter-20261026-a",
+  "source": "sandbank; writer=/root/muse_connector",
+  "next": "Muse outbound adapter and official-connector-first skill complete. Validation: build_plugin check; test_muse 6/6; test_cli 35/35; test_build 29 tests OK with 1 Claude CLI unavailable skip; help and diff check passed. Real loopback pull/result/files and lost-response same-ID recovery passed. No live Muse/marketplace acceptance; v0.7.14 lacks adapter. Parent to review and integrate; no push/deploy.",
+  "remotes": [
+    {
+      "name": "ags",
+      "url": "http://127.0.0.1:18080/chekusu/yobiru.git"
+    },
+    {
+      "name": "origin",
+      "url": "git@github.com:chekusu/yobiru.git"
+    }
+  ],
+  "dirty": [
+    {
+      "code": " M",
+      "path": "docs/PLATFORMS.md"
+    },
+    {
+      "code": " M",
+      "path": "plugins/yobiru/scripts/yobiru.py"
+    },
+    {
+      "code": " M",
+      "path": "plugins/yobiru/skills/yobiru-setup/SKILL.md"
+    }
+  ],
+  "untracked": [
+    "docs/MUSE.md",
+    "plugins/yobiru/scripts/yobiru_muse.py",
+    "plugins/yobiru/skills/yobiru-muse/SKILL.md",
+    "tests/test_muse.py"
+  ],
+  "tests": {
+    "commands": [],
+    "configFiles": []
+  },
+  "assetManifest": null,
+  "included": [
+    "plugins/yobiru/scripts/yobiru_muse.py",
+    "plugins/yobiru/scripts/yobiru.py",
+    "plugins/yobiru/skills/yobiru-muse/SKILL.md",
+    "plugins/yobiru/skills/yobiru-setup/SKILL.md",
+    "docs/MUSE.md",
+    "docs/PLATFORMS.md",
+    "tests/test_muse.py"
+  ],
+  "omitted": [],
+  "readOnly": false,
+  "pushRequested": "none",
+  "handoffOnly": false
+}

@@ -166,6 +166,12 @@ computer (the skills fall back to an unpacked release archive in `/workspace` if
 account's routine reaches the intended computer, and automatic recovery after a rebuild. The setup skill
 verifies official release checksums before using an archive in `/workspace`.
 
+## Meta Muse
+
+The official Tailscale connector joins Muse as its own tailnet node and supports outbound connections. Use the packaged **yobiru-muse** skill and `yobiru muse` adapter: check the actual CLI/identity interface, send tracked pull requests and poll the same request ID. No receiver is started inside Muse. If the connector cannot be used, the intended bot's Friends link provides the existing outbound HTTPS alternative. See [Muse setup, connector contract and limits](MUSE.md).
+
+The implementation has synthetic one-way transport tests; native Muse execution, region/account availability, secure credential storage and directory listing are separate, unverified acceptance states. The gateway's existing remote MCP uses static bearer credentials, not an OAuth integration. Meta's custom connector and directory submission flows must not be conflated.
+
 ## Remaining acceptance steps
 
 1. Codex: CLI install and skill discovery are done (see [VERIFICATION.md](VERIFICATION.md)). Still open: a new

@@ -10,6 +10,10 @@ no central server and identity from Tailscale. It also supports requests and rep
 shared-machine connection. Installing the plugin ran nothing (there is no install hook); this skill
 makes it work.
 
+## Muse: official connector and outbound-only setup
+
+On Meta Muse, use **yobiru-muse** first. Ask the user to connect the official Tailscale connector through Muse's own connection flow. Muse can reach a tailnet as a separate outbound-only node; `yobiru muse check` tests whether this execution environment exposes the identity and route the adapter needs. Do not start a receiver or install another Tailscale daemon in Muse. If the connector cannot be connected or used, offer the intended bot's Yobiru Friends link instead. A blanket "cloud agents cannot use Tailscale" statement is incorrect.
+
 ## Run the Yobiru command
 
 The command ships in this plugin: `scripts/yobiru`, two folders above this file
@@ -65,7 +69,7 @@ not survive between commands in many hosts). On Windows use `py -3 "<plugin>\scr
      https://tailscale.com/docs/install/linux). Without root and sudo, without `/dev/net/tun`
      (containers, some cloud sandboxes) or without a way to keep `tailscaled` running, report the
      blocked reason `onboard` gives and stop: userspace networking gives this machine no Tailscale IP
-     for the receiver, so Yobiru cannot work there. On a rebuildable cloud computer, inspect existing
+     for the receiver, so the private receiver cannot run there. An outbound-only client such as Muse uses the separate yobiru-muse path; Friends needs only outbound HTTPS. On a rebuildable cloud computer, inspect existing
      daemon state and startup first; follow the persistence guidance below before reinstalling or
      signing in again.
    - macOS: the user installs the Tailscale app (Mac App Store or https://tailscale.com/download),
