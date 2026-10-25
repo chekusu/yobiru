@@ -49,6 +49,7 @@ PUBLIC_BOTS = HERE / "public_bots"   # separate public gateway, its clients and 
 CORE_COMMANDS = ("serve", "send", "reply", "request", "inbox", "show", "fetch", "ack", "wake")
 LEVELS = ("none", "batch", "now")
 SERVICE_LABEL = "dev.tailmsg"    # receiver service names stay tailmsg's, matching existing installs
+LAUNCHD_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"    # the PATH launchd gives a job without EnvironmentVariables
 PEER_RULE_RE = re.compile(
     r"^(?:tag:[A-Za-z0-9][A-Za-z0-9_-]{0,62}|user:[^\s/]{1,253}|"
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)\Z")
@@ -1658,9 +1659,16 @@ def cmd_service_template(home, home_source, argv):
             print("WARNING: %s" % w, file=sys.stderr)
         print("Review, save stdout as ~/Library/LaunchAgents/%s.plist, then: launchctl load -w <that file>"
               % SERVICE_LABEL, file=sys.stderr)
-        sys.stdout.write(plistlib.dumps({
-            "Label": SERVICE_LABEL, "ProgramArguments": args, "RunAtLoad": True, "KeepAlive": True,
-            "StandardErrorPath": str(home / "serve.log")}).decode("utf-8"))
+        plist = {"Label": SERVICE_LABEL, "ProgramArguments": args, "RunAtLoad": True, "KeepAlive": True,
+                 "StandardErrorPath": str(home / "serve.log")}
+        # launchd starts jobs with PATH=/usr/bin:/bin:/usr/sbin:/sbin, so a bare tailscale_cmd that resolves here
+        # (e.g. the standalone app's /usr/local/bin/tailscale) would not be found by the service.
+        cfg, _ = read_config(home)
+        ts_cmd = (cfg or {}).get("tailscale_cmd") or ["tailscale"]
+        found = shutil.which(ts_cmd[0]) if isinstance(ts_cmd, list) and ts_cmd and "/" not in str(ts_cmd[0]) else None
+        if found and os.path.dirname(found) not in LAUNCHD_PATH.split(":"):
+            plist["EnvironmentVariables"] = {"PATH": LAUNCHD_PATH + ":" + os.path.dirname(found)}
+        sys.stdout.write(plistlib.dumps(plist).decode("utf-8"))
     else:
         def ps(s):
             return "'" + s.replace("'", "''") + "'"
