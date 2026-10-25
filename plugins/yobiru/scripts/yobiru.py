@@ -270,7 +270,8 @@ def probe_health(host, port, timeout=2.0, peer=None):
         r = c.getresponse()
         body = r.read(16384)
     except (OSError, http.client.HTTPException, ValueError) as e:
-        return {"url": "http://%s:%s/health" % (host, port), "reachable": False, "error": error_name(e),
+        return {"url": "http://%s:%s/health" % (host, port), "reachable": False,
+                "error": error_name(e),
                 "detail": core().transport_diagnostic(peer or host, host, port, "GET /health", e)}
     finally:
         if c is not None:

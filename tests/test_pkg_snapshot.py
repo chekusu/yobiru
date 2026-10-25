@@ -49,6 +49,24 @@ class SnapshotTests(unittest.TestCase):
             self.assertIn("Library/Caches/framework/cache",
                           pkg.snapshot(self.root, ignore_macos_caches=True))
 
+    def test_macos_home_snapshot_ignores_caches_with_existing_launch_agents(self):
+        agent = self.write("Library/LaunchAgents/synthetic.plist")
+        with mock.patch.object(pkg.sys, "platform", "darwin"):
+            before = pkg.snapshot(self.root, ignore_macos_caches=True)
+            self.write("Library/Caches/framework/cache")
+            self.assertEqual(before, pkg.snapshot(self.root, ignore_macos_caches=True))
+            agent.write_text("changed launch agent")
+            self.assertNotEqual(before, pkg.snapshot(self.root, ignore_macos_caches=True))
+
+    def test_macos_home_snapshot_detects_new_empty_launch_agents_directory(self):
+        self.write("Library/Caches/framework/cache")
+        with mock.patch.object(pkg.sys, "platform", "darwin"):
+            before = pkg.snapshot(self.root, ignore_macos_caches=True)
+            (self.root / "Library" / "LaunchAgents").mkdir()
+            after = pkg.snapshot(self.root, ignore_macos_caches=True)
+            self.assertNotEqual(before, after)
+            self.assertEqual("dir", after["Library/LaunchAgents"])
+
     def test_macos_home_snapshot_records_files_named_library_or_caches(self):
         with mock.patch.object(pkg.sys, "platform", "darwin"):
             library = self.write("Library")
