@@ -1363,13 +1363,31 @@ def read_attachment(st, raw, roots, max_bytes, media_max_bytes=C.MEDIA_MAX_BYTES
     given = os.path.expanduser(raw)
     if ".." in given.replace("\\", "/").split("/"):
         raise ValueError("traversal (..) is not allowed")
-    full = os.path.normpath(given if os.path.isabs(given) else os.path.join(os.path.realpath(os.getcwd()), given))
-    for root in roots:
-        if full.startswith(root["path"] + os.sep):
-            parts = full[len(root["path"]) + 1:].split(os.sep)
-            break
+    # Roots are stored realpaths, but a raw path's top-level prefix can be an unresolved symlink
+    # (macOS: /tmp, /var, /etc -> /private/...), so the plain string prefix never matches there. Try
+    # the string containment first; only when it misses, locate the root through the deepest ancestor
+    # that realpaths under it and keep the components below unresolved — the dir_fd walk re-checks
+    # every one of them with O_NOFOLLOW, which is the real boundary (issue #47).
+    probe = os.path.normpath(given if os.path.isabs(given) else os.path.join(os.path.realpath(os.getcwd()), given))
+    hit = next((r for r in roots if probe.startswith(r["path"] + os.sep)), None)
+    if hit is not None:
+        root, parts = hit, probe[len(hit["path"]) + 1:].split(os.sep)
     else:
-        raise ValueError("%s is outside the allowed roots (yobiru public attachments roots)" % raw)
+        # Walk up until an ancestor realpaths to exactly the stored root; every component below it stays
+        # in its raw spelling so the component checks and the O_NOFOLLOW walk still police each one.
+        parts, root, suffix = None, None, []
+        probe2 = probe
+        while probe2 != os.sep:
+            parent = os.path.dirname(probe2)
+            rp = os.path.realpath(parent)
+            hit = next((r for r in roots if rp == r["path"]), None)
+            if hit is not None:
+                root, parts = hit, [os.path.basename(probe2)] + suffix
+                break
+            suffix.insert(0, os.path.basename(probe2))
+            probe2 = parent
+        if parts is None:
+            raise ValueError("%s is outside the allowed roots (yobiru public attachments roots)" % raw)
     for i, part in enumerate(parts):
         err = component_problem(part, i == len(parts) - 1)
         if err:
@@ -1579,7 +1597,15 @@ def cmd_attachments(st, a):
             die("an attachment root is a project or export folder: not / , your home folder or one of its parents")
         if target == data_home or target.startswith(data_home + os.sep) or data_home.startswith(target + os.sep):
             die("an attachment root must not contain or be inside the Yobiru data home %s" % data_home)
-        below = target[len(home) + 1:].split(os.sep) if target.startswith(home + os.sep) else target.split(os.sep)
+        if target.startswith(home + os.sep):
+            below = target[len(home) + 1:].split(os.sep)
+        else:
+            below = target.split(os.sep)
+            # macOS realpaths top-level symlinked roots (/tmp, /var, /etc) into /private/<name>, so the
+            # leading "private" is a filesystem artifact, not a folder the user chose (issue #47). Drop it
+            # only in that case; a deliberate /private/... over a real directory keeps being rejected.
+            if len(below) > 2 and below[1] == "private" and os.path.islink(os.sep + below[2]):
+                below = below[:1] + below[2:]
         for part in below:
             if part.startswith(".") or part.lower() in SECRET_DIRS or part in ("Library", "AppData"):
                 die("%s is inside a hidden, system or secret folder (%s)" % (target, part))
