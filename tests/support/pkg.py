@@ -31,7 +31,10 @@ def free_port():
 
 
 def snapshot(path):
-    """{relative path: sha256 or 'dir'} for everything under path (missing path -> None)."""
+    """{relative path: sha256 or 'dir'} for everything under path (missing path -> None). On macOS a
+    Library tree holding nothing but Caches is dropped: python subprocesses create <home>/Library/Caches
+    on first interpreter start (framework init), so it is interpreter noise, not the command under test.
+    Any other Library write still shows up."""
     path = Path(path)
     if not path.exists():
         return None
@@ -39,6 +42,12 @@ def snapshot(path):
     for p in sorted(path.rglob("*")):
         rel = p.relative_to(path).as_posix()
         out[rel] = "dir" if p.is_dir() else hashlib.sha256(p.read_bytes()).hexdigest()
+    if sys.platform == "darwin":
+        lib = [r for r in out if r == "Library" or r.startswith("Library/")]
+        if lib and all(r == "Library" or r == "Library/Caches" or r.startswith("Library/Caches/")
+                       for r in lib):
+            for r in lib:
+                del out[r]
     return out
 
 
