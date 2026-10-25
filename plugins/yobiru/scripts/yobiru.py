@@ -2442,8 +2442,8 @@ def discovery_rows(home, f, nodes, wanted, port, timeout, include_self):
 
     def probe(job):
         n, p = job
-        if not n["online"]:
-            return None
+        # The snapshot's Online flag may lag a working path. Keep it visible independently
+        # and use the same bounded HTTP probe for every selected peer.
         host = n["ip"]
         if n["self"] and cfg is not None and cfg.get("bind"):
             host = cfg["bind"]
@@ -2452,11 +2452,11 @@ def discovery_rows(home, f, nodes, wanted, port, timeout, include_self):
     rows = []
     for (n, p), pr in zip(jobs, probes):
         row = {"machine": n["host"], "node": n["node"], "self": n["self"], "tailscale_online": n["online"],
-               "address": "%s:%d" % (n["ip"], p), "receiver": "offline" if pr is None else pr["kind"],
+               "address": "%s:%d" % (n["ip"], p), "receiver": "unknown" if pr is None else pr["kind"],
                "http_status": None if pr is None else pr["http_status"], "send_permission": "unknown",
                "version": None, "agents": None, "source": None, "detail": None, "warnings": []}
         if pr is None:
-            row["detail"] = "offline in Tailscale; not probed"
+            row["detail"] = "receiver probe unavailable; reachability unknown"
         elif pr["kind"] == "info":
             row.update(version=pr["info"]["version"], agents=pr["info"]["agents"], source="/info",
                        send_permission="self" if n["self"] else "allowed", warnings=pr["info"]["warnings"])

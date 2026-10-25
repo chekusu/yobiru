@@ -10,7 +10,7 @@ import os
 import sys
 
 DEFAULT_STATUS = {"BackendState": "Running",
-                  "Self": {"DNSName": "alpha.example.ts.net.", "HostName": "alpha",
+                  "Self": {"ID": "alpha-stable", "DNSName": "alpha.example.ts.net.", "HostName": "alpha",
                            "TailscaleIPs": ["127.0.0.1"], "Online": True}, "Peer": {}}
 
 args = sys.argv[1:]

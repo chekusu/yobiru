@@ -25,7 +25,7 @@ The observations do not establish why Tailscale's flags differed from live reach
 earlier event produced the stale receiver name. They do not prove that relogin always changes a
 node's identity, or that a matching hostname identifies the same authorized recipient.
 
-## Causes verified in the current code
+## Causes verified before the recovery changes
 
 | Path | Current behavior and consequence |
 | --- | --- |
@@ -59,27 +59,43 @@ file grants must not be redirected to a replacement node merely because its disp
    Retain unresolved restrictions. Never use `--legacy-request`, a renamed target or a broader access
    policy to bypass an identity mismatch. A process restart is not a verified machine-rebuild test.
 
-## Proposed fixes, not implemented in 0.5.2 or 0.5.3
+## Recovery changes after the immutable v0.7.14 tag
 
-- Treat the Tailscale online flag as a signal independent from bounded receiver reachability probes.
-  Make an unprobed/unknown state distinct from a failed probe; retain deadlines and concurrency bounds.
-- Refresh the receiver's own identity from trusted local Tailscale state, with a defined fail-closed
-  response when it cannot be established. Define how in-flight requests and stored response/file
-  authorization retain their original bindings before changing live identity behavior.
-- Split tracked-send diagnostics into identity mismatch, missing capability, access denial and
-  transport/malformed-response failures. Preserve preflight rejection before creating request state.
+These changes are source-level work after v0.7.14; deploying the original v0.7.14 archive does not include them.
 
-The following regression matrix is required for such a future change; it is a test plan, not a
-claim of implemented coverage or completed validation:
+- Discovery probes every selected peer with the existing HTTP deadline and bounded parallelism, including
+  peers whose Tailscale snapshot says `Online=false`. The flag and observed receiver reachability remain
+  separate output fields. A failed/unavailable probe never invents a receiver version or agent session.
+- A running receiver pins its startup DNS name, StableID and normalized address set. Before protected
+  handlers, maintenance phases, response sends and wake attempts it asks trusted local Tailscale state.
+  A status subprocess has a one-second deadline; overlapping checks share only an observation completed
+  after they arrived, with a 1.25-second lock-wait limit. Calls arriving after completion perform a fresh
+  lookup. This is not an authorization cache or a background task that silently changes identity.
+- Missing state, a stopped/logged-out daemon or a failed lookup returns `receiver_identity_unavailable`.
+  No protected operation starts from that check, and a later healthy lookup may recover. A confirmed
+  name, StableID or address change latches `receiver_identity_changed` for the process. `/info`, messages,
+  request status and file/upload grants fail closed with HTTP 503, and `/health` reports degraded while
+  remaining reachable. A pending upload rechecks before committing its bytes; POST rechecks after its
+  body. Maintenance and wake/send checks do not rewrite any persisted request, response or file principal.
+- A confirmed change requires the operator to follow the preservation/reconciliation steps above and
+  restart the existing receiver. Returning to the old name does not silently unlock that process. The
+  new process obtains a new initial identity; this does not migrate or retarget old requests. Reconcile
+  original IDs and authenticated bindings explicitly. An already-started external action is not undone
+  by a later identity change; the checks are bounded observations, not an atomic transaction with Tailscale.
+- A transiently blocked wake keeps the same inbox message pending with zero additional adapter attempts.
+  After identity recovery, `wake <original-id>` can retry that original record; no new message is needed.
+  Identity recovery does not automatically relaunch an action that may already have started.
+- Tracked-send preflight distinguishes access denial, transport failure, unexpected HTTP status,
+  malformed response, receiver identity mismatch and missing capability. GET `/info` retains a five-second
+  socket timeout, adds a five-second exchange deadline and a 64 KiB response bound. All rejected cases
+  precede message-ID creation, attachment staging and durable request state. No automatic legacy fallback
+  or permission bypass is added.
 
-| Scenario | Required evidence |
-| --- | --- |
-| `Online=false` with a reachable receiver | Bounded discovery reports both the flag and successful authenticated receiver probe, without a false offline conclusion. |
-| `Online=false` with an unreachable receiver | Probe terminates within its budget and reports unreachable or unknown without fabricating a version/session; no unbounded retry. |
-| Rename or relogin while the receiver runs | Trusted identity refresh or a clear recovery requirement; no stale `/info` identity silently accepted. Distinguish same-node rename from replacement identity. |
-| Requests, replies and file grants spanning identity changes | Existing authenticated recipient/sender bindings remain enforced; no reassigning old work or attachments to a similarly named replacement. |
-| Missing identity, spoofed/mismatched `/info`, policy denial or unavailable capability | Fail closed with the correct diagnostic, no request ID/POST from rejected preflight, and no automatic legacy or permission bypass. |
-| Receiver restart with existing data and adapters | Agents, webhooks, sessions, permissions and ledger survive; uncertain delivery is reconciled by the original ID without duplicate execution. |
+`tests/test_receiver_recovery.py` covers offline/reachable and offline/unreachable probes, name/StableID/
+address transitions, unavailable-state recovery, a latched change, slow LocalAPI/lock bounds, concurrent
+checks, body/upload transitions, unchanged saved work, maintenance/send/wake gates, original-ID wake retry,
+slow-but-valid preflight and diagnostic failures before state creation. These are synthetic LocalAPI and
+loopback HTTP tests; they do not claim a live relogin, machine rebuild, or real agent wake acceptance.
 
 See the [Grok Bot guide](GROK_BOT.md) for setup and the [verification record](VERIFICATION.md) for
-the narrower scope of released tests and live observations.
+released tests and live observations.

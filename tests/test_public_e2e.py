@@ -309,7 +309,7 @@ class PublicWorkflowTests(unittest.TestCase):
         shim.write_text(SHIM)
         shim.chmod(0o755)
         state = PKG.fake_state("legacy-%d" % os.getpid(), status={"BackendState": "Running", "Self": {
-            "DNSName": "worker.example.ts.net.", "HostName": "worker", "TailscaleIPs": ["127.0.0.1"], "Online": True},
+            "ID": "worker-stable", "DNSName": "worker.example.ts.net.", "HostName": "worker", "TailscaleIPs": ["127.0.0.1"], "Online": True},
             "Peer": {}}, whois={"Node": {"Name": "laptop.example.ts.net.", "Hostinfo": {"Hostname": "laptop"},
                                          "Tags": []}, "UserProfile": {"LoginName": "owner@example.com"}})
         port = free_port()

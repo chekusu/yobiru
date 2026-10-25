@@ -466,6 +466,7 @@ class Ctx:
         self._name_guard = threading.Lock()
         self._name_lookup = threading.Lock()   # one lookup subprocess at a time
         self.maintenance = None                # set by `serve`: supervised maintenance workers
+        self.receiver_identity = None          # set by `serve`: pinned LocalAPI identity, never rebound live
 
     def native_name(self, binding):
         """Read-only native session name for a bound session, cached (bounded subprocess cost)."""
@@ -1481,6 +1482,9 @@ def flush_responses(ctx, limit=FLUSH_LIMIT, budget=FLUSH_BUDGET, clock=time.mono
 def deliver_response(ctx, row, resolved):
     """POST one stored response to its original authenticated destination -> None, or the error type name."""
     try:
+        guard = getattr(ctx, "receiver_identity", None)
+        if guard is not None and guard.changed:
+            return "receiver_identity_changed"
         if row["peer"] not in resolved:
             resolved[row["peer"]] = ctx.resolve(row["peer"])
         peer, ip = resolved[row["peer"]]
@@ -1489,6 +1493,9 @@ def deliver_response(ctx, row, resolved):
         ident = ctx.whois(ip)
         if not ident or ident.get("node") != row["peer"] or not ctx.access_decision(ident)[0]:
             raise RuntimeError("response destination denied by local access policy")
+        identity_error = receiver_identity_error(ctx)
+        if identity_error:
+            return identity_error
         status, body = http_json(ip, row["port"], "POST", "/msg", json.loads(row["envelope"]), host=peer,
                                  timeout=3, deadline=FLUSH_EXCHANGE_SECONDS, limit=FLUSH_REPLY_BYTES)
         if status not in (200, 202) or not isinstance(body, dict) or body.get("ok") is not True or body.get("id") != row["id"]:
@@ -1513,6 +1520,9 @@ REQUEST_PHASES = (("recover", lambda ctx: recover_request_inbox(ctx)), ("expire"
 def run_phase(fn, ctx):
     """-> ("ok" | "busy" | "failed", counts, fixed error code or None). Errors are recorded by type name only."""
     try:
+        identity_error = receiver_identity_error(ctx)
+        if identity_error:
+            raise PhaseIncomplete(identity_error)
         result = fn(ctx)
     except PhaseIncomplete as exc:
         return "failed", exc.counts, exc.code
@@ -1534,6 +1544,60 @@ def request_maintenance(ctx):
 
 
 # ---------------------------------------------------------------- server
+class ReceiverIdentity(object):
+    """Pin this process to its startup Tailscale identity; never rebind old work on rename/relogin.
+
+    Each check asks trusted LocalAPI with a one-second subprocess timeout. The bounded lock serializes
+    checks, so a slower old answer cannot overwrite a newer change. Unavailable state may recover;
+    a confirmed change latches until the operator restarts the receiver with its preserved data home.
+    """
+    def __init__(self, ctx, initial):
+        self.ctx, self.initial = ctx, self.key(initial)
+        self.lock = threading.Lock()
+        self.changed = False
+        self.generation, self.last_error = 0, "receiver_identity_unavailable"
+
+    @staticmethod
+    def key(node):
+        name, stable, ips = node.get("node"), node.get("stable_id"), node.get("ips")
+        if not isinstance(name, str) or not name or not stable_peer_id(stable) or not isinstance(ips, list) or not ips:
+            raise ValueError("receiver needs a Tailscale DNS name, StableID and addresses; check Tailscale login")
+        return name.rstrip(".").lower(), stable, tuple(sorted(str(ipaddress.ip_address(ip)) for ip in ips))
+
+    def check(self):
+        # Concurrent callers may share a check completed after they arrived. A caller arriving
+        # after completion always performs a new lookup: there is no cached authorization TTL.
+        observed = self.generation
+        if not self.lock.acquire(timeout=1.25):
+            return "receiver_identity_unavailable"
+        try:
+            if self.changed:
+                return "receiver_identity_changed"
+            if self.generation != observed:
+                return self.last_error
+            error = "receiver_identity_unavailable"
+            try:
+                status = json.loads(self.ctx.ts("status", "--json", timeout=1))
+                if status.get("BackendState") == "Running":
+                    own = status["Self"]
+                    current = self.key({"node": own.get("DNSName"), "stable_id": own.get("ID"),
+                                        "ips": own.get("TailscaleIPs")})
+                    self.changed = current != self.initial
+                    error = "receiver_identity_changed" if self.changed else None
+            except Exception:
+                pass
+            self.last_error = error
+            self.generation += 1
+            return error
+        finally:
+            self.lock.release()
+
+
+def receiver_identity_error(ctx):
+    guard = getattr(ctx, "receiver_identity", None)
+    return guard.check() if guard is not None else None
+
+
 def make_handler(ctx, me):
     cfg = ctx.cfg
 
@@ -1554,10 +1618,28 @@ def make_handler(ctx, me):
             self.end_headers()
             self.wfile.write(body)
 
+        def check_receiver_identity(self):
+            error = receiver_identity_error(ctx)
+            if error:
+                # Refuse before consuming a message body or applying any stored grant. A client may
+                # retry an unavailable lookup with the same ID; changed identity needs operator recovery.
+                self.close_connection = True
+                detail = ("receiver identity changed; restart the existing receiver and reconcile original request IDs"
+                          if error == "receiver_identity_changed" else "receiver identity lookup unavailable")
+                self.reply(503, {"ok": False, "error": detail, "code": error}, {"Retry-After": "1"})
+                return False
+            return True
+
         def identify(self, fresh=False):
             ip = self.client_address[0]
             if not is_tailnet_ip(ip):
                 self.reply(403, {"ok": False, "error": "not a tailnet address"})
+                return None
+            # A confirmed change stays locked, without spending another peer lookup. Otherwise
+            # refresh self identity after the potentially slow peer lookup, before metadata/effects.
+            guard = getattr(ctx, "receiver_identity", None)
+            if guard is not None and guard.changed:
+                self.check_receiver_identity()
                 return None
             try:
                 ident = fresh_whois(ctx, ip) if fresh else ctx.whois(ip)
@@ -1567,6 +1649,8 @@ def make_handler(ctx, me):
                 return None
             if not isinstance(ident, dict) or not ident.get("node"):
                 self.reply(403, {"ok": False, "error": "unknown tailnet peer"})
+                return None
+            if not self.check_receiver_identity():
                 return None
             return ident
 
@@ -1682,7 +1766,9 @@ def make_handler(ctx, me):
                     os.fsync(stream.fileno())
                 if digest.hexdigest() != item["sha256"]:
                     raise ValueError("upload sha256 mismatch")
-                # Recheck access and reservation after a potentially long upload.
+                # Recheck local identity, peer access and reservation after a potentially long upload.
+                if not self.check_receiver_identity():
+                    return
                 try:
                     current = fresh_whois(ctx, self.client_address[0])
                 except TailscaleUnavailable:     # PR #17: retryable; the sender resumes the same request
@@ -1740,6 +1826,8 @@ def make_handler(ctx, me):
                 return self.reply(403, {"ok": False, "error": "'from' does not match tailscale identity %s" % ident["node"]})
             if env["to"].lower().rstrip(".") not in (me, me.split(".")[0]):
                 return self.reply(400, {"ok": False, "error": "misdirected: I am %s" % me})
+            if not self.check_receiver_identity():
+                return
             if route == "/requests/prepare":
                 try:
                     fresh = prepare_pull_request(ctx, env, ident)
@@ -2328,6 +2416,10 @@ def deliver_wake(ctx, path):
                 err = "access policy: " + reason
                 log("wake", mid, "stopped before adapter invocation:", reason)
                 break
+            identity_error = receiver_identity_error(ctx)
+            if identity_error:
+                err = identity_error
+                break
             attempted += 1
             res = call_webhook(a, rec, timeout) if a["type"] == "webhook" else call_exec(a, path, timeout, agent)
         except AdapterError as e:
@@ -2631,14 +2723,20 @@ def health_payload(ctx, me):
     maintenance = getattr(ctx, "maintenance", None)
     if maintenance is None:
         body.update(status="unknown", maintenance={"supported": False})
-        return body
-    summary = maintenance.snapshot()
-    body.update(ok=summary["status"] != "degraded", status=summary["status"], maintenance=summary)
+    else:
+        summary = maintenance.snapshot()
+        body.update(ok=summary["status"] != "degraded", status=summary["status"], maintenance=summary)
+    if getattr(ctx, "receiver_identity", None) is not None:
+        error = receiver_identity_error(ctx)
+        body["receiver_identity"] = {"status": error or "ok", "restart_required": error == "receiver_identity_changed"}
+        if error:
+            body.update(ok=False, status="degraded")
     return body
 
 
 def cmd_serve(ctx, a):
     me = ctx.self_node()
+    ctx.receiver_identity = ReceiverIdentity(ctx, me)
     bind = ctx.cfg.get("bind") or ctx.ts("ip", "-4").split()[0]
     port = int(ctx.cfg["port"])
     if ctx.cfg["access_policy"] == "allowlist" and not ctx.cfg["allow"]:
@@ -2991,9 +3089,25 @@ def cmd_send(ctx, a, reply_to=None, peer=None, agent=None):
     if pull and not tracked:
         die("--transport pull requires a tracked request; it cannot be combined with --legacy-request")
     if tracked:
-        status, info = http_json(to_ip, port, "GET", "/info", host=to_fqdn, timeout=5)
-        if (status != 200 or not isinstance(info, dict) or info.get("node") != to_fqdn or
-                not isinstance(info.get("capabilities"), list) or REQUEST_CAPABILITY not in info["capabilities"]):
+        try:
+            status, info = http_json(to_ip, port, "GET", "/info", host=to_fqdn, timeout=5,
+                                     deadline=5, limit=64 * 1024)
+        except TransportError as exc:
+            die("request preflight transport failure; no request created: %s" % exc)
+        if status in (401, 403):
+            die("request preflight access denied (HTTP %d); check authenticated identity and receiver policy; no request created" % status)
+        if status == 503 and isinstance(info, dict) and info.get("code") in (
+                "identity_unavailable", "receiver_identity_unavailable", "receiver_identity_changed"):
+            die("request preflight %s; repair the receiver identity before retrying; no request created" % info["code"])
+        if status != 200:
+            die("request preflight HTTP %d from /info; receiver capability is unverified; no request created" % status)
+        if not isinstance(info, dict) or not isinstance(info.get("node"), str) or not info["node"]:
+            die("request preflight malformed /info response (missing node); no request created")
+        if info["node"] != to_fqdn:
+            die("request preflight receiver identity mismatch; /info does not match the resolved target; restart/reconcile the receiver; no request created")
+        if not isinstance(info.get("capabilities"), list) or not all(isinstance(c, str) for c in info["capabilities"]):
+            die("request preflight malformed /info capabilities; no request created")
+        if REQUEST_CAPABILITY not in info["capabilities"]:
             die("peer does not advertise request-lifecycle-v1; upgrade it or explicitly use --legacy-request (no receipt/result guarantee)")
         if pull and REQUEST_PULL_CAPABILITY not in info["capabilities"]:
             die("peer does not advertise request-pull-v1; upgrade it before using --transport pull")

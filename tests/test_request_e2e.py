@@ -23,7 +23,7 @@ from support.pkg import REPO, SUPPORT, free_port
 
 def node(name, peer):
     return {"BackendState": "Running", "Self": {
-        "DNSName": "%s.example.ts.net." % name, "HostName": name,
+        "ID": name + "-stable", "DNSName": "%s.example.ts.net." % name, "HostName": name,
         "TailscaleIPs": ["127.0.0.1"], "Online": True}, "Peer": {"p1": {
             "DNSName": "%s.example.ts.net." % peer, "HostName": peer,
             "TailscaleIPs": ["127.0.0.1"], "Online": True}}}

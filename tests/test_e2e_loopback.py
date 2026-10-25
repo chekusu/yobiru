@@ -28,7 +28,7 @@ printf '%%s %%s %%s\\n' "$TAILMSG_AGENT" "$TAILMSG_MSG_ID" "$#" >> '%s'
 
 def node(name, peer):
     return {"BackendState": "Running",
-            "Self": {"DNSName": "%s.example.ts.net." % name, "HostName": name, "TailscaleIPs": ["127.0.0.1"],
+            "Self": {"ID": name + "-stable", "DNSName": "%s.example.ts.net." % name, "HostName": name, "TailscaleIPs": ["127.0.0.1"],
                      "Online": True},
             "Peer": {"p1": {"DNSName": "%s.example.ts.net." % peer, "HostName": peer, "OS": "linux",
                             "TailscaleIPs": ["127.0.0.1"], "Online": True}}}
