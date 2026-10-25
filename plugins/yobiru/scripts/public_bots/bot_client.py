@@ -1305,6 +1305,15 @@ def path_problem(text):
     return None
 
 
+def macos_temp_prefix(alias):
+    """Canonical prefix for a verified macOS /tmp or /var system alias, never a descendant path."""
+    if sys.platform == "darwin" and alias in ("/tmp", "/var") and os.path.islink(alias):
+        target = "/private" + alias
+        if os.path.realpath(alias) == target:
+            return target
+    return None
+
+
 def component_problem(name, final):
     """Why one path component below an allowed root is never read: hidden, secret-looking, traversal."""
     if name in ("", ".", ".."):
@@ -1364,6 +1373,11 @@ def read_attachment(st, raw, roots, max_bytes, media_max_bytes=C.MEDIA_MAX_BYTES
     if ".." in given.replace("\\", "/").split("/"):
         raise ValueError("traversal (..) is not allowed")
     full = os.path.normpath(given if os.path.isabs(given) else os.path.join(os.path.realpath(os.getcwd()), given))
+    alias = os.sep + full.split(os.sep)[1]
+    prefix = macos_temp_prefix(alias)
+    if prefix:
+        # Resolve only the system alias: descendants must still pass every O_NOFOLLOW check below.
+        full = prefix + full[len(alias):]
     for root in roots:
         if full.startswith(root["path"] + os.sep):
             parts = full[len(root["path"]) + 1:].split(os.sep)
@@ -1579,7 +1593,17 @@ def cmd_attachments(st, a):
             die("an attachment root is a project or export folder: not / , your home folder or one of its parents")
         if target == data_home or target.startswith(data_home + os.sep) or data_home.startswith(target + os.sep):
             die("an attachment root must not contain or be inside the Yobiru data home %s" % data_home)
-        below = target[len(home) + 1:].split(os.sep) if target.startswith(home + os.sep) else target.split(os.sep)
+        if target.startswith(home + os.sep):
+            below = target[len(home) + 1:].split(os.sep)
+        else:
+            below = target.split(os.sep)
+            # macOS /tmp and /var resolve below /private. Exempt only that system prefix for
+            # their descendants, and only while the corresponding alias resolves exactly there.
+            # A folder actually named private (including below either prefix) remains forbidden.
+            if len(below) > 3 and below[1] == "private":
+                alias = os.sep + below[2]
+                if macos_temp_prefix(alias) == os.sep.join(below[:3]):
+                    below = below[2:]
         for part in below:
             if part.startswith(".") or part.lower() in SECRET_DIRS or part in ("Library", "AppData"):
                 die("%s is inside a hidden, system or secret folder (%s)" % (target, part))

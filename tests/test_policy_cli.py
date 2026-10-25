@@ -36,17 +36,17 @@ class PolicyCliTests(unittest.TestCase):
         return json.loads((self.home / "config.json").read_text())
 
     def test_policy_show_before_setup_is_read_only_and_has_no_network_dependency(self):
-        before = snapshot(self.user)
+        before = snapshot(self.user, ignore_macos_caches=True)
         r, out = self.run_json("policy", "show")
         self.assertEqual(0, r.returncode, r.stderr)
         self.assertEqual({"access_policy": "tailnet", "allow": [], "deny": []}, out["policy"])
         self.assertFalse(out["config_exists"])
         self.assertFalse(out["changed"])
-        self.assertEqual(before, snapshot(self.user))
+        self.assertEqual(before, snapshot(self.user, ignore_macos_caches=True))
 
     def test_legacy_policy_show_and_diagnostics_preserve_restrictions(self):
         p = self.write_config({"allow": ["laptop"]})
-        before = snapshot(self.user)
+        before = snapshot(self.user, ignore_macos_caches=True)
         r, out = self.run_json("policy", "show")
         self.assertEqual("allowlist", out["policy"]["access_policy"])
         self.assertTrue(out["legacy_allowlist"])
@@ -58,7 +58,7 @@ class PolicyCliTests(unittest.TestCase):
         migrate = next(s for s in out["steps"] if s["id"] == "policy-migration")
         self.assertEqual("optional", migrate["status"])
         self.assertNotEqual("policy-migration", out["next"])
-        self.assertEqual(before, snapshot(self.user))
+        self.assertEqual(before, snapshot(self.user, ignore_macos_caches=True))
         self.assertEqual({"allow": ["laptop"]}, json.loads(p.read_text()))
 
     def test_migration_dry_run_then_backup_preserves_wake_sessions_and_other_data(self):
@@ -70,20 +70,20 @@ class PolicyCliTests(unittest.TestCase):
         config = self.write_config(original)
         (self.home / "sessions.json").write_text('{"v":1,"agents":{"codex":{"session_id":"fixed-session"}}}')
         (self.home / "codex-bridge.json").write_text('{"allow_replies":false,"dispatcher_thread_id":"fixed-session"}')
-        before = snapshot(self.user)
+        before = snapshot(self.user, ignore_macos_caches=True)
         old_bytes = config.read_bytes()
         r, out = self.run_json("policy", "set", "--mode", "tailnet")
         self.assertEqual(0, r.returncode, r.stderr)
         self.assertTrue(out["dry_run"])
         self.assertFalse(out["written"])
-        self.assertEqual(before, snapshot(self.user))
+        self.assertEqual(before, snapshot(self.user, ignore_macos_caches=True))
         r, out = self.run_json("policy", "set", "--mode", "tailnet", "--apply")
         self.assertTrue(out["written"], out)
         expected = dict(original, access_policy="tailnet")
         self.assertEqual(expected, self.config())
         self.assertEqual(old_bytes, Path(out["backup"]).read_bytes())
         self.assertEqual(0o600, stat.S_IMODE(Path(out["backup"]).stat().st_mode))
-        after = snapshot(self.user)
+        after = snapshot(self.user, ignore_macos_caches=True)
         for name in (".tailmsg/sessions.json", ".tailmsg/codex-bridge.json"):
             self.assertEqual(before[name], after[name])
         r, out = self.run_json("policy", "set", "--mode", "tailnet", "--apply")
@@ -111,22 +111,22 @@ class PolicyCliTests(unittest.TestCase):
         self.assertEqual(2, r.returncode)
         self.assertFalse(self.home.exists())
         self.write_config({"allow": ["laptop"]})
-        before = snapshot(self.user)
+        before = snapshot(self.user, ignore_macos_caches=True)
         for args in (["--mode", "open"], ["--mode", "tailnet", "--deny", "*"],
                      ["--mode", "tailnet", "--deny", "bad peer"],
                      ["--mode", "allowlist", "--allow", "../peer"],
                      ["--mode", "tailnet", "--deny", "peer", "--clear-deny"]):
             r = PKG.run(["policy", "set"] + args + ["--apply"], self.user)
             self.assertEqual(2, r.returncode, (args, r.stdout, r.stderr))
-        self.assertEqual(before, snapshot(self.user))
+        self.assertEqual(before, snapshot(self.user, ignore_macos_caches=True))
 
     def test_malformed_existing_policy_is_not_silently_repaired(self):
         for raw in ({"allow": "laptop"}, {"access_policy": "typo"}, {"deny": "retired"}):
             p = self.write_config(raw)
-            before = snapshot(self.user)
+            before = snapshot(self.user, ignore_macos_caches=True)
             r = PKG.run(["policy", "set", "--mode", "tailnet", "--apply"], self.user)
             self.assertEqual(2, r.returncode, (raw, r.stderr))
-            self.assertEqual(before, snapshot(self.user))
+            self.assertEqual(before, snapshot(self.user, ignore_macos_caches=True))
 
     def test_setup_explicit_send_only_and_existing_modes_remain_restricted(self):
         r, out = self.run_json("setup", "--send-only", "--apply")
