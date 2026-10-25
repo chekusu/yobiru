@@ -78,8 +78,7 @@ machine's own Tailscale address, so hosts that can only run Tailscale in userspa
   state of its own; the receiver (`serve`) still has to run for anything to arrive. If the config has an
   agent named `claude`, the server sends as `claude` (`--as`) and lists `claude`'s inbox; `--agent NAME`
   chooses another name.
-- Waking: the plugin ships no wake adapter for Claude Code. Messages wait in the inbox until a session
-  checks it; a user may configure their own `--exec` program for agent `claude` (yobiru-wake skill).
+- Waking: the optional `yobiru claude-bridge` adapter starts visible background Remote Control sessions with durable intent and exact-session reconciliation. Installation previews by default and never starts a service; see [Claude bridge setup and recovery](CLAUDE_BRIDGE.md). Synthetic tests do not establish native account acceptance. Existing custom adapters are preserved.
 - Checked on 2026-10-21 with Claude Code 2.1.306: `claude plugin validate --strict` passes for the plugin
   and the marketplace, `claude plugin marketplace add` + `claude plugin install yobiru@yobiru` from a local
   checkout work, and `claude mcp list` reports the plugin's server as connected.

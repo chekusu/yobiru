@@ -160,7 +160,7 @@ def render(p):
            ".cursor-plugin/marketplace.json": jbytes(cursor_market),
            ".claude-plugin/marketplace.json": jbytes(claude_market)}
     sources = {}
-    for group in ("core", "codexBridge", "publicBots", "license"):
+    for group in ("core", "codexBridge", "claudeBridge", "publicBots", "license"):
         for src, dst in sorted(p["bundle"][group].items()):
             data = (ROOT / src).read_bytes()
             out[d + "/" + dst] = data

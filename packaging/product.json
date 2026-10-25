@@ -91,6 +91,12 @@
     },
     "license": {
       "LICENSE": "LICENSE"
+    },
+    "claudeBridge": {
+      "claude_bridge.py": "scripts/claude_bridge/claude_bridge.py",
+      "install_claude_bridge.py": "scripts/claude_bridge/install_claude_bridge.py",
+      "CLAUDE_DISPATCHER.md": "scripts/claude_bridge/CLAUDE_DISPATCHER.md",
+      "docs/CLAUDE_BRIDGE.md": "scripts/claude_bridge/CLAUDE_BRIDGE.md"
     }
   },
   "homepage": "https://yobiru.com",

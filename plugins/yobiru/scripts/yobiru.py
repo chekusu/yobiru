@@ -88,6 +88,7 @@ Check and set up (read-only unless --apply):
                              optional Codex bridge: macOS desktop app, or Linux user systemd + a local
                              app-server socket (install/rollback support --dry-run and --no-start)
   muse {{check,send,status,resume,list,read,fetch}}  outbound-only Muse custom connector (JSON checks/results)
+  claude-bridge {{install,status,step,daemon}}  optional visible Claude Remote Control dispatcher
   mcp [--agent NAME]         local MCP server on stdio with the messaging commands as tools (the Claude Code
                              plugin registers it; other MCP clients can run it the same way)
   version
@@ -4034,6 +4035,27 @@ def cmd_muse(home, home_source, argv):
     return yobiru_muse.main(home, argv, sys.modules[__name__])
 
 
+def cmd_claude_bridge(home, home_source, argv):
+    if not argv or argv[0] in ("--help", "-h"):
+        print("yobiru claude-bridge install [--claude-path PATH --workdir DIR] [--apply]\n"
+              "yobiru claude-bridge {status,step,daemon} [--config PATH]\n"
+              "Install previews by default. step/daemon can launch visible Claude sessions; status is read-only.")
+        return 0
+    action, rest = argv[0], argv[1:]
+    folder = HERE / "claude_bridge"
+    if action == "install":
+        command = [sys.executable, "-B", str(folder / "install_claude_bridge.py"),
+                   "--tailmsg-home", str(home), "--plugin-root", str(PLUGIN_ROOT)] + rest
+    elif action in ("status", "step", "daemon"):
+        ap = argparse.ArgumentParser(prog=PRODUCT + " claude-bridge " + action, allow_abbrev=False)
+        ap.add_argument("--config", default=str(home / "claude-visible" / "config.json"))
+        args = ap.parse_args(rest)
+        command = [sys.executable, "-B", str(folder / "claude_bridge.py"), "--config", args.config, action]
+    else:
+        die("unknown claude-bridge action", 2)
+    return subprocess.call(command)
+
+
 def cmd_mcp(home, home_source, argv):
     """Local stdio MCP server over the messaging commands (yobiru_mcp.py next to this file)."""
     sys.path.insert(0, str(HERE))
@@ -4048,7 +4070,7 @@ PLUGIN_COMMANDS = {"paths": cmd_paths, "doctor": cmd_doctor, "status": cmd_statu
                    "onboard": cmd_onboard, "agents": cmd_agents, "peers": cmd_agents, "session": cmd_session, "update": cmd_update,
                    "gateway": cmd_gateway, "public": cmd_public, "calendar-service": cmd_calendar_service,
                    "resource-service": cmd_resource_service,
-                   "mcp": cmd_mcp, "muse": cmd_muse}
+                   "mcp": cmd_mcp, "muse": cmd_muse, "claude-bridge": cmd_claude_bridge}
 
 
 def main(argv=None):

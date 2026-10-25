@@ -194,3 +194,7 @@ replaces the other. The Codex bridge's dispatcher session is reported automatica
   retry or test is part of the task. Nothing deduplicates it: an adapter that sends once per
   invocation sends again, and a request's `running` state does not reserve execution. Before
   re-waking, confirm that any earlier run for that message has ended.
+
+## Claude Code visible Remote Control
+
+For Claude Code, the optional `sh Y claude-bridge install --claude-path /absolute/bin/claude --workdir /absolute/trusted/workdir` previews a durable, visible Remote Control adapter. Read the bundled `../../scripts/claude_bridge/CLAUDE_BRIDGE.md` before installing. Add `--apply` only within authorized setup; no service or Claude process starts during installation. Preserve any existing custom wake adapter. The default permission mode is `manual`. `claude-bridge status` is read-only; `step`/`daemon` can start paid Claude sessions and require the corresponding task authorization. Uncertain launches are reconciled by their persisted session UUID and are never automatically repeated; do not reset state or stop unrelated sessions. The immutable v0.7.14 release predates this adapter; use an exact reviewed source commit or a later release that explicitly includes it.

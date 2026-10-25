@@ -34,6 +34,22 @@
       "source": "install_codex_bridge_linux.py",
       "sha256": "00e3cd33d8ff9163880527b61a1ef44ecae78d2f8e289d934e72e436a6108e19"
     },
+    "scripts/claude_bridge/CLAUDE_DISPATCHER.md": {
+      "source": "CLAUDE_DISPATCHER.md",
+      "sha256": "262c6d705b048178883b61b6996e298728ff63fa02d7bbdde99bd87ee62c9e45"
+    },
+    "scripts/claude_bridge/claude_bridge.py": {
+      "source": "claude_bridge.py",
+      "sha256": "848b72fe8a5b2c0c837a9a0f84f24fd3092829fb4ee40b52bf19c8ca9532ff7a"
+    },
+    "scripts/claude_bridge/CLAUDE_BRIDGE.md": {
+      "source": "docs/CLAUDE_BRIDGE.md",
+      "sha256": "cb7923c24e416731aa0c2ba663a7077f02ea45fe646d0026667b0a394904da29"
+    },
+    "scripts/claude_bridge/install_claude_bridge.py": {
+      "source": "install_claude_bridge.py",
+      "sha256": "9ea36cecc5444ba5e23a769454fd24018dc9777993cc927222a0275ac87b52c7"
+    },
     "docs/PUBLIC_BOTS.md": {
       "source": "docs/PUBLIC_BOTS.md",
       "sha256": "645dd0f67ca997c5b7f000c40215cf16a93479008d480025d2c2a9f60a1f9e5f"
