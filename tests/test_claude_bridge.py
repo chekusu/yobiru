@@ -294,6 +294,14 @@ class InstallTests(unittest.TestCase):
         self.assertEqual("batch", current["agents"]["e\u0301"]["wake_max"])
         self.assertIn("wake_adapter", current["agents"]["e\u0301"])
 
+    def test_empty_existing_bridge_config_is_not_treated_as_a_fresh_install(self):
+        self.target.mkdir(mode=0o700)
+        (self.target / "config.json").write_text("{}")
+        before = snapshot(self.root)
+        self.args.apply = True
+        with self.assertRaises(bridge.BridgeError): installer.install(self.args)
+        self.assertEqual(before, snapshot(self.root))
+
     def test_upgrade_refuses_while_writer_active(self):
         self.args.apply = True
         installer.install(self.args)

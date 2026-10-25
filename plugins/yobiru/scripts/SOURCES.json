@@ -48,7 +48,7 @@
     },
     "scripts/claude_bridge/install_claude_bridge.py": {
       "source": "install_claude_bridge.py",
-      "sha256": "9ea36cecc5444ba5e23a769454fd24018dc9777993cc927222a0275ac87b52c7"
+      "sha256": "531d1325d98f7eba9942ee293d3804fa4e9c1b41e1dd07c5f73de594b4b99f7d"
     },
     "docs/PUBLIC_BOTS.md": {
       "source": "docs/PUBLIC_BOTS.md",

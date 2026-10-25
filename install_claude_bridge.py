@@ -69,7 +69,7 @@ def install(args):
     original = read_json(home / "config.json")
     cfg_path = target / "config.json"
     existing = read_json(cfg_path) if cfg_path.exists() or cfg_path.is_symlink() else None
-    if existing:
+    if existing is not None:
         validate_config(existing)
         Bridge(existing).load_state()  # missing/corrupt ownership cannot be reset by reinstalling
         if Path(existing["bridge_home"]) != target or Path(existing["tailmsg_home"]) != home:
