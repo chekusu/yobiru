@@ -1,0 +1,38 @@
+{
+  "schema": "sandbank.workspace-handoff/v1",
+  "id": "chekusu/yobiru",
+  "pwd": "/home/codex/workspace/worktrees/yobiru-integration-20261026",
+  "root": "/home/codex/workspace/worktrees/yobiru-integration-20261026",
+  "invocationCwd": "/home/codex/workspace/worktrees/yobiru-integration-20261026",
+  "host": "ubuntu",
+  "osUser": "codex",
+  "uid": 1000,
+  "observedAt": "2026-10-25T23:04:32.409Z",
+  "branch": "agent/yobiru-integration-20261026",
+  "HEAD": "9591b3fbd90594197bc08b554a98260d26d34afe",
+  "task": "completion-validated-20261026-a",
+  "source": "Reviewed integration: Linux full883 tests plus209 bridge passed; Mac feature snapshot876 plus209 passed; numeric DNS change independently reviewed and hostedMac passed; offline timeout changed fixture passed at integration.",
+  "next": "Await exact e272431 PR51 hostedCI, merge PR51 and close48, deploy immutable0.7.14 separately. Merge verified GitHub main into this branch without dropping changes, AGS publish after checks; keep runtime homes intact.",
+  "remotes": [
+    {
+      "name": "ags",
+      "url": "http://127.0.0.1:18080/chekusu/yobiru.git"
+    },
+    {
+      "name": "origin",
+      "url": "git@github.com:chekusu/yobiru.git"
+    }
+  ],
+  "dirty": [],
+  "untracked": [],
+  "tests": {
+    "commands": [],
+    "configFiles": []
+  },
+  "assetManifest": null,
+  "included": [],
+  "omitted": [],
+  "readOnly": false,
+  "pushRequested": "github",
+  "handoffOnly": true
+}
