@@ -98,23 +98,23 @@ class LocateTests(Base):
 class ReadOnlyTests(Base):
     def test_packaged_request_queries_need_no_network_and_create_no_ledger(self):
         self.write_config({})
-        plugin_before, user_before = snapshot(PKG.plugin), snapshot(self.user)
+        plugin_before, user_before = snapshot(PKG.plugin), snapshot(self.user, ignore_macos_caches=True)
         r = self.yobiru("request", "list", "--json")
         self.assertEqual(0, r.returncode, r.stderr)
         self.assertEqual([], json.loads(r.stdout))
         r = self.yobiru("request", "status", "0011223344556677", "--json")
         self.assertNotEqual(0, r.returncode)
         self.assertIn("no tracked outgoing request", r.stderr)
-        self.assertEqual(user_before, snapshot(self.user))
+        self.assertEqual(user_before, snapshot(self.user, ignore_macos_caches=True))
         self.assertEqual(plugin_before, snapshot(PKG.plugin))
 
     def test_install_and_read_only_commands_create_nothing(self):
-        plugin_before, user_before = snapshot(PKG.plugin), snapshot(self.user)
+        plugin_before, user_before = snapshot(PKG.plugin), snapshot(self.user, ignore_macos_caches=True)
         state = PKG.fake_state("ro", calls=str(PKG.root / "ro-calls.log"))
         for args in (["paths"], ["--help"], ["version"], ["status"], ["status", "--json"], ["doctor"],
                      ["doctor", "--json"], ["service-template", "systemd"], ["codex-bridge", "status"]):
             self.yobiru(*args, tailscale=True, extra={"FAKE_TS_STATE": str(state)})
-        self.assertEqual(user_before, snapshot(self.user))
+        self.assertEqual(user_before, snapshot(self.user, ignore_macos_caches=True))
         self.assertEqual(plugin_before, snapshot(PKG.plugin))      # no __pycache__ or state in the plugin
         calls = [json.loads(x) for x in (PKG.root / "ro-calls.log").read_text().splitlines()]
         self.assertTrue(calls)
@@ -393,6 +393,28 @@ class RuntimeAndServiceTests(Base):
         r = self.yobiru("service-template", "launchd", tailscale=True)
         self.assertNotIn("EnvironmentVariables", plistlib.loads(r.stdout.encode("utf-8")),
                          "an absolute tailscale_cmd needs no PATH")
+
+    def test_launchd_template_keeps_a_custom_tailscale_command_runnable(self):
+        directory = self.user / "custom CLI"
+        directory.mkdir()
+        command = directory / "configured-tailscale"
+        shutil.copyfile(str(PKG.fakebin / "tailscale"), str(command))
+        command.chmod(0o755)
+        state = PKG.fake_state("launchd-custom", ip4="127.0.0.42")
+        argv = [command.name, "--state", str(state)]
+        self.write_config({"tailscale_cmd": argv})
+        before = snapshot(self.home)
+        r = self.yobiru("service-template", "launchd", extra={
+            "PATH": str(PKG.bin) + os.pathsep + str(directory) + os.pathsep + str(PKG.fakebin)})
+        self.assertEqual(0, r.returncode, r.stderr)
+        env = plistlib.loads(r.stdout.encode("utf-8"))["EnvironmentVariables"]
+        self.assertEqual("/usr/bin:/bin:/usr/sbin:/sbin:" + str(directory), env["PATH"])
+        self.assertEqual(before, snapshot(self.home), "template generation must stay read-only")
+        # Exercise subprocess lookup using just the saved service environment, without the interactive PATH.
+        result = subprocess.run(argv + ["ip", "-4"], env=dict(env, HOME=str(self.user)), cwd=str(PKG.work),
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("127.0.0.42", result.stdout.strip())
 
     def test_systemd_template_quotes_paths(self):
         home = self.user / "100% data $HOME"

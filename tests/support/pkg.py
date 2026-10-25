@@ -30,24 +30,26 @@ def free_port():
     return port
 
 
-def snapshot(path):
-    """{relative path: sha256 or 'dir'} for everything under path (missing path -> None). On macOS a
-    Library tree holding nothing but Caches is dropped: python subprocesses create <home>/Library/Caches
-    on first interpreter start (framework init), so it is interpreter noise, not the command under test.
-    Any other Library write still shows up."""
+def snapshot(path, ignore_macos_caches=False):
+    """{relative path: sha256 or 'dir'} under path (missing path -> None).
+
+    Fake HOME snapshots may ignore macOS framework caches created by Python
+    itself. Keep other Library entries and all package snapshots visible.
+    """
     path = Path(path)
     if not path.exists():
         return None
     out = {}
     for p in sorted(path.rglob("*")):
         rel = p.relative_to(path).as_posix()
+        if ignore_macos_caches and sys.platform == "darwin":
+            # The Library directory is scaffolding; only its Caches subtree is
+            # runtime noise. Files or symlinks at either name remain visible.
+            if rel in ("Library", "Library/Caches") and p.is_dir() and not p.is_symlink():
+                continue
+            if rel.startswith("Library/Caches/"):
+                continue
         out[rel] = "dir" if p.is_dir() else hashlib.sha256(p.read_bytes()).hexdigest()
-    if sys.platform == "darwin":
-        lib = [r for r in out if r == "Library" or r.startswith("Library/")]
-        if lib and all(r == "Library" or r == "Library/Caches" or r.startswith("Library/Caches/")
-                       for r in lib):
-            for r in lib:
-                del out[r]
     return out
 
 

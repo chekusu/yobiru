@@ -10,7 +10,8 @@ import sys
 import tempfile
 import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from support.numeric_http import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -92,12 +93,87 @@ class TransportTests(unittest.TestCase):
         self.assertNotIn("Delivery", result["detail"])
         self.assertEqual(["/health"], server.requests)
 
+    def test_health_timeout_name_is_stable_for_legacy_socket_timeout(self):
+        # Before Python 3.10, socket.timeout was a separate OSError subclass named "timeout".
+        legacy_timeout = type("timeout", (OSError,), {})
+        for timeout_type in (socket.timeout, legacy_timeout):
+            for stage in ("request", "getresponse", "read"):
+                with self.subTest(timeout_type=timeout_type.__name__, stage=stage):
+                    conn = mock.Mock()
+                    target = conn.getresponse.return_value if stage == "read" else conn
+                    getattr(target, stage).side_effect = timeout_type("private-detail\n\x1b[31m")
+                    with mock.patch.object(Y.socket, "timeout", timeout_type), \
+                            mock.patch.object(Y.http.client, "HTTPConnection", return_value=conn):
+                        result = Y.probe_health("127.0.0.1", 9999, peer=PEER)
+                    self.assertFalse(result["reachable"])
+                    self.assertEqual("TimeoutError", result["error"])
+                    self.assertIn("GET /health to " + PEER, result["detail"])
+                    self.assertNotIn("Delivery", result["detail"])
+                    self.assertNotIn("private-detail", result["error"])
+                    self.assertNotIn("\n", result["detail"])
+                    self.assertNotIn("\x1b", result["detail"])
+                    conn.close.assert_called_once()
+
+    def test_health_non_timeout_error_names_are_preserved(self):
+        for error_type in (ConnectionRefusedError, Y.http.client.BadStatusLine, ValueError):
+            with self.subTest(error_type=error_type.__name__):
+                conn = mock.Mock()
+                conn.getresponse.side_effect = error_type("private-detail\n\x1b[31m")
+                with mock.patch.object(Y.http.client, "HTTPConnection", return_value=conn):
+                    result = Y.probe_health("127.0.0.1", 9999, peer=PEER)
+                self.assertFalse(result["reachable"])
+                self.assertEqual(error_type.__name__, result["error"])
+                self.assertNotIn("private-detail", result["error"])
+                if issubclass(error_type, Y.http.client.HTTPException):
+                    self.assertNotIn("private-detail", result["detail"])
+                self.assertNotIn("\n", result["detail"])
+                self.assertNotIn("\x1b", result["detail"])
+                conn.close.assert_called_once()
+
     def test_discovery_timeout_keeps_machine_readable_error_and_adds_context(self):
         server = self.slow_peer()
         result = Y.probe_info("127.0.0.1", server.port, timeout=0.1, expect_node=PEER)
         self.assertEqual(("unreachable", "timeout"), (result["kind"], result["error"]))
         self.assertIn("GET /info to " + PEER, result["detail"])
         self.assertIn("tailscale ping", result["detail"])
+
+    def test_dispatcher_error_names_are_stable_across_python_versions(self):
+        legacy_timeout = type("timeout", (OSError,), {})
+        for timeout_type in (socket.timeout, legacy_timeout):
+            for error_type, expected in ((timeout_type, "TimeoutError"),
+                                         (ConnectionRefusedError, "ConnectionRefusedError"),
+                                         (ValueError, "ValueError")):
+                with self.subTest(timeout_type=timeout_type.__name__, error_type=error_type.__name__):
+                    bridge = mock.Mock()
+                    bridge.diagnostics.side_effect = error_type("private-detail\n\x1b[31m")
+                    with mock.patch.object(Y.socket, "timeout", timeout_type), \
+                            mock.patch.object(Y, "bridge_module", return_value=bridge):
+                        result = Y.dispatcher_diagnostics(Path("unused"), cfg={})
+                    self.assertEqual({"state": "unknown", "error": expected}, result)
+
+    def test_notice_error_names_preserve_delivery_outcomes_across_python_versions(self):
+        legacy_timeout = type("timeout", (OSError,), {})
+        for timeout_type in (socket.timeout, legacy_timeout):
+            for error_type, expected in ((timeout_type, "TimeoutError"),
+                                         (ConnectionRefusedError, "ConnectionRefusedError")):
+                for stage in ("connect", "request", "getresponse", "read"):
+                    with self.subTest(timeout_type=timeout_type.__name__,
+                                      error_type=error_type.__name__, stage=stage):
+                        conn = mock.Mock()
+                        target = conn.getresponse.return_value if stage == "read" else conn
+                        getattr(target, stage).side_effect = error_type("private-detail\n\x1b[31m")
+                        with mock.patch.object(Y.socket, "timeout", timeout_type), \
+                                mock.patch.object(Y.http.client, "HTTPConnection", return_value=conn):
+                            result = Y.post_notice("127.0.0.1", 9999, PEER, {"id": MID})
+                        if stage == "connect":
+                            self.assertEqual(("not_sent", "unreachable (%s)" % expected, None), result)
+                            conn.request.assert_not_called()
+                        else:
+                            self.assertEqual(("uncertain", "no complete answer after sending (%s)" % expected,
+                                              None), result)
+                            conn.request.assert_called_once()
+                        conn.connect.assert_called_once()
+                        conn.close.assert_called_once()
 
     def test_http_rejection_json_and_non_json_bodies_are_unchanged(self):
         for raw, expected in ((b'{"error":"policy denied"}', {"error": "policy denied"}),

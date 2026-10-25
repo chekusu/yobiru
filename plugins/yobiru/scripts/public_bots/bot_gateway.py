@@ -43,7 +43,7 @@ import threading
 import time
 import urllib.parse
 import weakref
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -5633,7 +5633,7 @@ def make_handler(api):
 SHARED_ACCEPT_WAIT = 0.05      # seconds a full process leaves a connection to the other gateway processes
 
 
-class BoundedServer(ThreadingHTTPServer):
+class BoundedServer(C.NumericHTTPServer):
     """Threads are capped: a connection over the limit gets an immediate 503 instead of a new thread. When several
     gateway processes accept from one socket (`shared`), a process without a free thread first gives the others a
     moment to take the connection, so a 503 means that every process is full."""
@@ -5647,7 +5647,7 @@ class BoundedServer(ThreadingHTTPServer):
         self._slots = threading.BoundedSemaphore(slots)
         self._waiting = threading.BoundedSemaphore(waiting) if waiting else None
         self.shared, self._slot = False, False
-        ThreadingHTTPServer.__init__(self, address, handler)
+        C.NumericHTTPServer.__init__(self, address, handler)
 
     # A waiting connector poll gives its request slot back while it sleeps and takes one again to answer.
     def park(self):

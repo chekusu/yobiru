@@ -154,7 +154,7 @@ class Base(unittest.TestCase):
 
 class FirstRunTests(Base):
     def test_onboard_works_without_config_or_tailscale_and_changes_nothing(self):
-        before = snapshot(self.user)
+        before = snapshot(self.user, ignore_macos_caches=True)
         r, d = self.run_json("onboard", "--json")
         self.assertEqual(0, r.returncode, r.stderr)
         self.assertFalse(d["changed"])
@@ -162,7 +162,7 @@ class FirstRunTests(Base):
         self.assertEqual(["python", "tailscale-install", "tailscale-login", "config", "runtime", "receiver", "verify"],
                          ids)
         self.assertEqual("tailscale-install", d["next"])
-        self.assertEqual(before, snapshot(self.user))
+        self.assertEqual(before, snapshot(self.user, ignore_macos_caches=True))
         r = PKG.run(["onboard"], self.user)
         self.assertIn("no install hook", r.stdout)
 

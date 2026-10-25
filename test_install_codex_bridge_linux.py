@@ -101,8 +101,10 @@ class LinuxInstallerTests(unittest.TestCase):
         os.chmod(str(self.home / "config.json"), 0o640)
         self.codex_home = self.user / "codex home"
         self.codex_home.mkdir()
-        self.socket_dir = self.codex_home / "run"
-        self.socket_dir.mkdir()
+        # macOS temp homes can exceed the Unix socket path limit once nested.
+        # Keep the socket short while retaining the long, spaced data/config paths.
+        self.socket_dir = Path(tempfile.mkdtemp(prefix="yobiru-sock-", dir="/tmp")).resolve()
+        self.addCleanup(shutil.rmtree, str(self.socket_dir), True)
         self.socket_path = self.socket_dir / "app.sock"
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.listener.bind(str(self.socket_path))

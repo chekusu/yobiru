@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from support.public_harness import legacy_gateway_prefix
 from pathlib import Path
 
 from support.public_harness import C, FriendsGateway, PUBLIC
@@ -168,7 +169,7 @@ class InboxUpgradeTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix="yobiru inbox upgrade ")
         self.addCleanup(self.tmp.cleanup)
         self.gw = FriendsGateway(Path(self.tmp.name),
-                                 prefix=[sys.executable, str(self.legacy / "bot_gateway.py")]).start()
+                                 prefix=legacy_gateway_prefix(self.legacy / "bot_gateway.py")).start()
         self.addCleanup(self.gw.stop)
         self.bot = self.gw.bot("upgrade-inbox")
         self.worker, _ = self.gw.native(self.bot)
