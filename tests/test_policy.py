@@ -12,7 +12,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
-from http.server import ThreadingHTTPServer
+from support.numeric_http import ThreadingHTTPServer
 from unittest.mock import patch
 
 from support.pkg import REPO

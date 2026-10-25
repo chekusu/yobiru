@@ -15,7 +15,8 @@ import tempfile
 import threading
 import time
 import unittest
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from support.numeric_http import ThreadingHTTPServer
 from pathlib import Path
 
 from support.pkg import REPO, SUPPORT, free_port

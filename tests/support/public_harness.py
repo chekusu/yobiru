@@ -85,6 +85,11 @@ class Service(object):
         self._signal(signal.SIGKILL)
 
 
+def legacy_gateway_prefix(script):
+    """Frozen gateway protocol/storage with a numeric-only listener metadata shim."""
+    return [sys.executable, str(Path(__file__).with_name("legacy_gateway.py")), str(script)]
+
+
 class Gateway(object):
     """A real bot_gateway.py from the source tree (or a given command prefix) with its own home and port."""
 

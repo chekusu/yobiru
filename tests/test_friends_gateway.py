@@ -17,6 +17,7 @@ import unittest
 from pathlib import Path
 
 from support.pkg import REPO
+from support.public_harness import legacy_gateway_prefix
 from support.public_harness import C, PUBLIC, FriendsGateway, plain_env
 
 LIMITS = {"min_deadline_seconds": 1, "read_timeout_seconds": 5, "wake_retry_seconds": 1,
@@ -780,7 +781,7 @@ class MigrationTests(unittest.TestCase):
         shutil.copy(str(PUBLIC / "bot_common.py"), str(self.v1dir / "bot_common.py"))
 
     def v1_gateway(self):
-        return FriendsGateway(self.root, prefix=[sys.executable, str(self.v1dir / "bot_gateway.py")], limits={
+        return FriendsGateway(self.root, prefix=legacy_gateway_prefix(self.v1dir / "bot_gateway.py"), limits={
             "min_deadline_seconds": 1})
 
     def run_new(self, home, *args):

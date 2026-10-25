@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from support.public_harness import legacy_gateway_prefix
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
@@ -141,7 +142,7 @@ class BaseGatewayDeclineTests(unittest.TestCase):
                 except (FileNotFoundError, subprocess.CalledProcessError):
                     self.skipTest("the public PR base commit is unavailable (for example, a source archive)")
                 (legacy / name).write_bytes(source)
-            gw = FriendsGateway(root, prefix=[sys.executable, str(legacy / "bot_gateway.py")]).start()
+            gw = FriendsGateway(root, prefix=legacy_gateway_prefix(legacy / "bot_gateway.py")).start()
             try:
                 def client(home, *args):
                     result = subprocess.run([sys.executable, str(PUBLIC / "bot_client.py"),
