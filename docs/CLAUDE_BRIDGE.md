@@ -13,7 +13,7 @@ sh /absolute/plugin/scripts/yobiru --home /absolute/private/yobiru-data claude-b
   --claude-path /absolute/bin/claude --workdir /absolute/trusted/workdir
 ```
 
-Preview does not write files, start services, query Claude authentication or launch Claude. Add `--apply` only for an authorized installation. The default target is `<data-home>/claude-visible`; `--bridge-home` selects a different private target. An existing different agent wake adapter is refused and left intact. In particular, this installer does not take over a custom `claude-local` bridge. Do not disable that bridge or clear its state as an installation shortcut.
+Preview does not write files, start services, query Claude authentication or launch Claude. Add `--apply` only for an authorized installation. The default target is `<data-home>/claude-visible`; `--bridge-home` selects a different private target. An existing different agent wake adapter, including one inherited from the default agent’s global configuration, is refused and left intact. In particular, this installer does not take over a custom `claude-local` bridge. Do not disable that bridge or clear its state as an installation shortcut.
 
 The installer freezes a complete copy of the plugin under a content-addressed version directory, keeps an initialized persistent launch ledger, preserves local dispatcher instructions and writes backups before changing bridge/Yobiru configuration. Upgrades preserve launch ownership and all inbox data. It refuses a missing/corrupt existing ledger and a changed agent/executable/workdir binding. The default permission mode is `manual`; another supported mode must be deliberately selected. No arbitrary extra launch flags or permission-bypass mode is exposed.
 
@@ -29,7 +29,7 @@ Use `--config /absolute/path/config.json` for a custom bridge home. `step` perfo
 
 ## Durable launch and recovery
 
-1. Re-read inbox destination, acknowledgement, effective wake and the request ledger. Expired, final, missing or already running tracked requests are not dispatched.
+1. Re-read the verified sender receipt and current receiver access policy, inbox destination, acknowledgement, effective wake and the request ledger. A revoked peer cannot wake Claude from an older queued message. Expired, final, missing or already running tracked requests are not dispatched.
 2. Check local Claude authentication. Auth failures launch nothing and leave the inbox pending.
 3. Persist and fsync a unique session UUID and its exact message IDs **before** invoking Claude.
 4. Start a visible Remote Control session using that UUID, the frozen plugin and local dispatcher instructions.

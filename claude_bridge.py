@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import uuid
 import unicodedata
 
@@ -32,7 +33,7 @@ class BridgeError(RuntimeError):
 
 
 def read_json(path):
-    fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_BYTES:
@@ -144,19 +145,25 @@ class Bridge:
         validate_state(state, self.cfg["installation_id"])
         atomic_json(self.state_path, state)
 
-    def request_state(self, mid):
+    def core_module(self):
         if self.core is None:
             path = Path(self.cfg["plugin_root"]) / "scripts" / "tailmsg.py"
             spec = importlib.util.spec_from_file_location("claude_bridge_tailmsg", str(path))
             self.core = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(self.core)
-        return self.core.request_snapshot(Path(self.cfg["tailmsg_home"]), mid)
+        return self.core
+
+    def request_state(self, mid):
+        return self.core_module().request_snapshot(Path(self.cfg["tailmsg_home"]), mid)
 
     def pending(self, state):
         owned = {mid for run in state["runs"].values() for mid in run["ids"]}
         pending, refused = [], []
         if not self.inbox.exists():
             return pending, refused
+        core = self.core_module()
+        raw = read_json(Path(self.cfg["tailmsg_home"]) / "config.json")
+        policy = SimpleNamespace(access_decision=lambda peer: core.access_decision(raw, peer))
         for path in sorted(self.inbox.glob("*.json")):
             mid = path.stem
             if not ID_RE.fullmatch(mid) or mid in owned:
@@ -168,6 +175,10 @@ class Bridge:
                     raise BridgeError("invalid record")
                 wake = (received.get("wake") or {}).get("effective")
                 if received.get("agent") != self.cfg["agent"] or rec.get("acked_at") or wake not in ("now", "batch") or "response" in env:
+                    continue
+                allowed, reason = core.wake_access_decision(policy, rec)
+                if not allowed:
+                    refused.append({"id": mid, "reason": "access_policy:" + reason})
                     continue
                 if "request" in env:
                     request = self.request_state(mid)

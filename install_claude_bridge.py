@@ -50,7 +50,7 @@ def service_templates(cfg):
     def quote(value):
         return '"' + value.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"') + '"'
     unit = ("[Unit]\nDescription=Yobiru visible Claude Remote Control dispatcher\n\n[Service]\nType=simple\n"
-            "WorkingDirectory=" + quote(cfg["workdir"]) + "\nExecStart=" + " ".join(quote(x) for x in command) +
+            "WorkingDirectory=" + quote(cfg["workdir"]) + "\nExecStart=" + " ".join(quote(x).replace("$", "$$") for x in command) +
             "\nRestart=on-failure\nRestartSec=60\n\n[Install]\nWantedBy=default.target\n")
     return {label + ".plist": plist, label + ".service": unit.encode("utf-8")}
 
@@ -115,6 +115,13 @@ def install(args):
     if not isinstance(current, dict):
         raise BridgeError("invalid Yobiru agent specification")
     previous_adapter = current.get("wake_adapter")
+    default_agent = original.get("default_agent")
+    if isinstance(default_agent, str):
+        default_agent = unicodedata.normalize("NFC", default_agent)
+    if not previous_adapter and agent == default_agent:
+        previous_adapter = original.get("wake_adapter")
+        if not previous_adapter and original.get("on_message"):
+            raise BridgeError("an inherited legacy wake adapter is already configured; it was preserved")
     if previous_adapter and (not existing or previous_adapter != adapter(existing)):
         raise BridgeError("a different wake adapter is already configured; it was preserved")
     current["wake_adapter"] = adapter(cfg)

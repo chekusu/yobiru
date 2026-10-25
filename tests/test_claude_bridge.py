@@ -58,6 +58,7 @@ class BridgeTests(unittest.TestCase):
         (self.home / "wake").mkdir()
         self.data = self.root / "data"
         (self.data / "inbox").mkdir(parents=True)
+        (self.data / "config.json").write_text(json.dumps({"allow": ["sender.example.ts.net"]}))
         self.fake = self.root / "fake-claude"
         self.fake.write_text("#!" + sys.executable + "\n" + FAKE)
         self.fake.chmod(0o700)
@@ -76,7 +77,8 @@ class BridgeTests(unittest.TestCase):
     def record(self, mid, **changes):
         rec = {"envelope": {"id": mid, "from": "sender.example.ts.net", "to": "receiver.example.ts.net",
                             "kind": "text", "text": "UNTRUSTED BODY MUST NOT ENTER LAUNCH PROMPT"},
-               "received": {"at": "2026-01-01T00:00:00Z", "agent": "claude", "wake": {"effective": "now"}}}
+               "received": {"at": "2026-01-01T00:00:00Z", "agent": "claude", "wake": {"effective": "now"},
+                            "peer": {"node": "sender.example.ts.net", "ip": "100.64.0.9"}}}
         rec.update(changes)
         (self.data / "inbox" / (mid + ".json")).write_text(json.dumps(rec))
         return rec
@@ -100,6 +102,66 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn("UNTRUSTED BODY", " ".join(self.launches()[0]))
         self.assertFalse(any(c and c[0] in ("stop", "kill", "rm") for c in self.calls()))
         self.assertNotIn("acked_at", json.loads((self.data / "inbox" / (self.mid + ".json")).read_text()))
+
+    def test_fifo_config_or_state_status_fails_promptly_without_writes(self):
+        config = self.home / "config.json"
+        config.write_text(json.dumps(self.cfg))
+        for path in (config, self.home / "state.json"):
+            with self.subTest(path=path.name):
+                original = path.read_bytes()
+                path.unlink()
+                os.mkfifo(path, 0o600)
+                def inventory():
+                    return sorted((str(p.relative_to(self.root)), p.lstat().st_mode, p.lstat().st_size)
+                                  for p in self.root.rglob("*"))
+                before = inventory()
+                result = subprocess.run([sys.executable, "-B", str(REPO / "claude_bridge.py"),
+                                         "--config", str(config), "status"],
+                                        capture_output=True, text=True, timeout=3)
+                self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+                self.assertIn("bounded regular file", result.stderr)
+                self.assertEqual(before, inventory())
+                self.assertEqual([], self.calls())
+                self.assertFalse((self.home / "bridge.lock").exists())
+                path.unlink()
+                path.write_bytes(original)
+
+    def test_current_access_revocation_blocks_old_queue_then_restores_same_id(self):
+        for policy in ({"deny": ["sender.example.ts.net"]}, {"allow": []}, {"allow": "invalid"}):
+            with self.subTest(policy=policy):
+                (self.data / "config.json").write_text(json.dumps(policy))
+                result = self.b.step()
+                self.assertEqual("idle", result["state"])
+                self.assertTrue(result["refused"][0]["reason"].startswith("access_policy:"))
+                self.assertEqual([], self.calls())
+                self.assertEqual({}, self.b.load_state()["runs"])
+        (self.data / "config.json").write_text(json.dumps({"allow": ["sender.example.ts.net"]}))
+        result = self.b.step()
+        self.assertEqual("dispatched", result["state"])
+        self.assertEqual([self.mid], result["ids"])
+        self.assertEqual(1, len(self.launches()))
+
+    def test_missing_or_mismatched_verified_peer_cannot_wake(self):
+        for peer in (None, {"node": "different.example.ts.net"}):
+            rec = self.record(self.mid)
+            rec["received"]["peer"] = peer
+            (self.data / "inbox" / (self.mid + ".json")).write_text(json.dumps(rec))
+            result = self.b.step()
+            self.assertEqual("idle", result["state"])
+            self.assertEqual("access_policy:sender_mismatch", result["refused"][0]["reason"])
+            self.assertEqual([], self.calls())
+
+    def test_access_revoked_during_auth_check_is_rechecked_before_intent(self):
+        real = self.b.call
+        def revoke_after_auth(args, timeout=15):
+            result = real(args, timeout)
+            if args == ["auth", "status"]:
+                (self.data / "config.json").write_text(json.dumps({"allow": []}))
+            return result
+        with patch.object(self.b, "call", side_effect=revoke_after_auth):
+            self.assertEqual("idle", self.b.step()["state"])
+        self.assertEqual([], self.launches())
+        self.assertEqual({}, self.b.load_state()["runs"])
 
     def test_auth_failure_records_no_launch_intent_then_can_recover(self):
         self.mode("auth")
@@ -238,6 +300,24 @@ class InstallTests(unittest.TestCase):
             self.assertIn("daemon", plistlib.loads(path.read_bytes())["ProgramArguments"])
         self.assertFalse((self.root / "calls.jsonl").exists())
 
+    def test_service_paths_preserve_literal_environment_and_unit_specifiers(self):
+        unusual = self.root / "cash${HOME}%i"
+        unusual.mkdir()
+        self.args.bridge_home = str(unusual / "bridge")
+        self.args.workdir = str(unusual)
+        self.args.apply = True
+        installer.install(self.args)
+        target = unusual / "bridge"
+        cfg = bridge.read_json(target / "config.json")
+        unit = next((target / "services").glob("*.service")).read_text()
+        working = next(line for line in unit.splitlines() if line.startswith("WorkingDirectory="))
+        command = next(line for line in unit.splitlines() if line.startswith("ExecStart="))
+        self.assertIn('cash${HOME}%%i', working)
+        self.assertIn('cash$${HOME}%%i', command)
+        plist = plistlib.loads(next((target / "services").glob("*.plist")).read_bytes())
+        self.assertIn(cfg["entry"], plist["ProgramArguments"])
+        self.assertEqual(str(unusual), plist["WorkingDirectory"])
+
     def test_upgrade_preserves_launch_state_local_instructions_and_backup(self):
         self.args.apply = True
         installer.install(self.args)
@@ -265,6 +345,19 @@ class InstallTests(unittest.TestCase):
         before = snapshot(self.root)
         with self.assertRaises(bridge.BridgeError): installer.install(self.args)
         self.assertEqual(before, snapshot(self.root))
+
+    def test_inherited_global_adapters_are_preserved_in_preview_and_apply(self):
+        for inherited in ({"wake_adapter": {"type": "exec", "argv": ["/custom/global/bridge"]}},
+                          {"on_message": "/custom/legacy/bridge"}):
+            original = dict(self.original, default_agent="claude", **inherited)
+            (self.data / "config.json").write_text(json.dumps(original))
+            for apply in (False, True):
+                with self.subTest(inherited=inherited, apply=apply):
+                    self.args.apply = apply
+                    before = snapshot(self.root)
+                    with self.assertRaises(bridge.BridgeError): installer.install(self.args)
+                    self.assertEqual(before, snapshot(self.root))
+                    self.assertFalse(self.target.exists())
 
     def test_packaged_cli_installs_and_status_runs_without_source_checkout(self):
         package = Package()
