@@ -4,6 +4,24 @@ Yobiru release verification. This page separates what has actually been run from
 security guarantee: the tests show the behaviors listed below, nothing more.
 Dated release results refer to the named release trees, not a later development branch or an installed host.
 
+## 2026-10-26 development validation (after 0.7.14)
+
+These results belong to distinct source snapshots; they are not a claim that every suite ran on the final merged tree.
+
+| Snapshot | Environment and result |
+| --- | --- |
+| PR #51 `e272431` | [CI run 40242634870](https://github.com/chekusu/yobiru/actions/runs/40242634870): macOS and Ubuntu both passed 834 main-suite tests and 209 bridge tests; main-suite skips were 54 on macOS and 6 on Ubuntu. |
+| Integrated features `39b7b522` | Mac, CPython 3.12: 876 main-suite tests (53 skipped) and 209 bridge tests passed; package check passed. |
+| Integrated features `0f980208` | Linux: 883 main-suite tests (2 skipped) and 209 bridge tests passed. |
+
+The subsequent test-fixture changes `776135e` / `e272431` passed their affected focused tests. The CI row above covers the PR #51 tree; it does not include all later integrated features.
+
+Muse tests use synthetic Tailscale identities and a real loopback receiver to verify outbound pull requests, original-ID recovery, results and attachments without a reverse connection. Native Muse acceptance remains blocked by the account's age-verification screen; no real Muse round trip or directory approval is claimed. See [MUSE.md](MUSE.md).
+
+Claude bridge tests use a fake Claude executable to verify durable launch intent, exact-session reconciliation, no relaunch after uncertain outcomes, current-policy checks and installer preservation. Native Claude account startup and Remote Control visibility have not been tested. Recovery tests exercise saved identity, expiry and outcome checks before resuming an existing request. These automated results do not establish native-host acceptance. See [CLAUDE_BRIDGE.md](CLAUDE_BRIDGE.md) and [RESTART_RECOVERY.md](RESTART_RECOVERY.md).
+
+Production deployment of the immutable `v0.7.14` release was verified separately. Its archive remains unchanged and does not contain these new Muse/Claude adapters or the later recovery changes; use an explicitly identified source commit or a future release that includes them.
+
 ## Native Grok Bot acceptance run (after 0.6.0-beta.1)
 
 On 2026-10-22, `tools/friends_acceptance.py --host remote` ran the Beta guide's acceptance checklist with a real
