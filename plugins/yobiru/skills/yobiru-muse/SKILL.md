@@ -17,7 +17,7 @@ The bundled command is `../../scripts/yobiru` relative to this skill. Below `Y` 
 
     sh Y --home /absolute/private/yobiru-muse-data muse check
 
-This check is read-only and starts no process or service. It needs Python 3.8+, the official connector's `tailscale status --json`/LocalAPI identity and a direct outbound TCP route to the intended receiver. `local_ready` is not delivery evidence. If the connector is connected but hides its CLI, stable identity or route from the tool running this code, report that exact limitation and offer Friends; do not invent a StableID or copy another machine's configuration. No `/dev/net/tun` or inbound-listener requirement is imposed on this sender.
+This check is read-only and starts no receiver or background service. It needs Python 3.8+, the official connector's `tailscale status --json`/LocalAPI identity and a direct outbound TCP route to the intended receiver. `local_ready` is not delivery evidence. If the connector is connected but hides its CLI, stable identity or route from the tool running this code, report that exact limitation and offer Friends; do not invent a StableID or copy another machine's configuration. No `/dev/net/tun` or inbound-listener requirement is imposed on this sender.
 
 After the official connection works, configure this isolated home with the intended receiver hostname (without port or agent) as its allow rule. Preview first; setup authorization covers applying this plan, and existing configuration stays intact:
 
