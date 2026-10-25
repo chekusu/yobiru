@@ -271,10 +271,12 @@ class RequestWorkflowTests(unittest.TestCase):
         self.assertEqual([], self.inbox("alpha"), "protocol result was routed to the ordinary agent inbox")
 
     def test_refresh_when_peer_offline_preserves_unknown_timeout_state(self):
-        mid = self.send_request(timeout=2)
+        # Leave time to observe the receipt and stop the peer before its real
+        # deadline; a two-second window can expire during hosted-runner scheduling.
+        mid = self.send_request(timeout=30)
         self.await_state("alpha", mid, "received")
         self.stop("bravo")
-        self.await_state("alpha", mid, "timed_out", timeout=5)
+        self.await_state("alpha", mid, "timed_out", timeout=35)
         state = self.status("alpha", mid, refresh=True)
         self.assertEqual("timed_out", state["state"])
         self.assertEqual("unavailable", state["refresh"])
