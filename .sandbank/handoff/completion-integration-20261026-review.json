@@ -1,0 +1,38 @@
+{
+  "schema": "sandbank.workspace-handoff/v1",
+  "id": "chekusu/yobiru",
+  "pwd": "/home/codex/workspace/worktrees/yobiru-integration-20261026",
+  "root": "/home/codex/workspace/worktrees/yobiru-integration-20261026",
+  "invocationCwd": "/home/codex/workspace/worktrees/yobiru-integration-20261026",
+  "host": "ubuntu",
+  "osUser": "codex",
+  "uid": 1000,
+  "observedAt": "2026-10-25T22:43:39.825Z",
+  "branch": "agent/yobiru-integration-20261026",
+  "HEAD": "6092876d7fa770cb188e0bdf8b676ae41a011fe5",
+  "task": "completion-integration-20261026-review",
+  "source": "Sandbank codex integration writer; docs, recovery, Muse and visible Claude adapter reviewed independently; generated packaging verified.",
+  "next": "Mac platform validation of exact checkpoint; preserve runtime homes. PR51 numeric bind CI fix is pending separately. No release tag or deployment included.",
+  "remotes": [
+    {
+      "name": "ags",
+      "url": "http://127.0.0.1:18080/chekusu/yobiru.git"
+    },
+    {
+      "name": "origin",
+      "url": "git@github.com:chekusu/yobiru.git"
+    }
+  ],
+  "dirty": [],
+  "untracked": [],
+  "tests": {
+    "commands": [],
+    "configFiles": []
+  },
+  "assetManifest": null,
+  "included": [],
+  "omitted": [],
+  "readOnly": false,
+  "pushRequested": "github",
+  "handoffOnly": true
+}
