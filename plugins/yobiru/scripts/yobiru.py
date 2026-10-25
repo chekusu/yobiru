@@ -255,6 +255,11 @@ def run_tailscale(cmd, args, timeout=10):
 HEALTH_KEYS = ("ok", "v", "node", "receiver_alive", "status", "maintenance")
 
 
+def error_name(error):
+    """Keep socket timeout names stable on Python 3.8/3.9 and 3.10+."""
+    return "TimeoutError" if isinstance(error, socket.timeout) else type(error).__name__
+
+
 def probe_health(host, port, timeout=2.0, peer=None):
     """GET /health: transport reachability, plus the receiver's own maintenance summary when it reports one
     (kept as given, so doctor can tell a reachable but degraded receiver from a healthy one)."""
@@ -265,9 +270,7 @@ def probe_health(host, port, timeout=2.0, peer=None):
         r = c.getresponse()
         body = r.read(16384)
     except (OSError, http.client.HTTPException, ValueError) as e:
-        # socket.timeout became an alias of TimeoutError in Python 3.10.
-        error = "TimeoutError" if isinstance(e, socket.timeout) else type(e).__name__
-        return {"url": "http://%s:%s/health" % (host, port), "reachable": False, "error": error,
+        return {"url": "http://%s:%s/health" % (host, port), "reachable": False, "error": error_name(e),
                 "detail": core().transport_diagnostic(peer or host, host, port, "GET /health", e)}
     finally:
         if c is not None:
@@ -338,7 +341,7 @@ def dispatcher_diagnostics(home, cfg=None):
         module = bridge_module()
         return module.diagnostics(module.validate_config(dict(cfg)))
     except Exception as e:      # a diagnostic reports, it does not crash
-        return {"state": "unknown", "error": type(e).__name__}
+        return {"state": "unknown", "error": error_name(e)}
 
 
 def agent_names(cfg, agents):
@@ -3163,7 +3166,7 @@ def post_notice(ip, port, node, env, timeout=10.0):
         try:
             d.connect()
         except (OSError, socket.timeout) as e:
-            return "not_sent", "unreachable (%s)" % ("deadline" if d.expired else type(e).__name__), None
+            return "not_sent", "unreachable (%s)" % ("deadline" if d.expired else error_name(e)), None
         try:
             c.request("POST", "/msg", body=data, headers={"Host": "%s:%d" % (node, int(port)),
                                                           "Content-Type": "application/json"})
@@ -3172,7 +3175,7 @@ def post_notice(ip, port, node, env, timeout=10.0):
             d.check()
         except (OSError, socket.timeout, http.client.HTTPException) as e:
             return "uncertain", "no complete answer after sending (%s)" % (
-                "deadline" if d.expired else type(e).__name__), None
+                "deadline" if d.expired else error_name(e)), None
     try:
         receipt = json.loads(body.decode("utf-8")) if len(body) <= MAX_REPLY_BYTES else None
     except (UnicodeDecodeError, ValueError):

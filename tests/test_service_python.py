@@ -24,7 +24,8 @@ class ServicePythonTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="yobiru service python ")
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        # macOS temporary-directory aliases may differ from the venv's canonical sys.prefix.
+        self.root = Path(self.tmp.name).resolve()
         self.prefix = self.root / "brew"
         self.keg = self.prefix / "Cellar/python@3.13/3.13.1"
         self.relative = Path("Frameworks/Python.framework/Versions/3.13/bin/python3.13")
