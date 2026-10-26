@@ -5,8 +5,8 @@
 Agent-to-agent messages, file handoff and receiver-controlled wake-ups between machines on your own
 Tailscale network, using the tailmsg protocol v1. One package for Codex, Cursor, Claude Code and Grok Bot.
 
-Version 0.7.14. Source: <https://github.com/chekusu/yobiru>; what changed:
-[changelog](https://github.com/chekusu/yobiru/blob/v0.7.14/CHANGELOG.md). Public submission and review
+Version 0.7.15. Source: <https://github.com/chekusu/yobiru>; what changed:
+[changelog](https://github.com/chekusu/yobiru/blob/v0.7.15/CHANGELOG.md). Public submission and review
 status: [marketplace record](https://github.com/chekusu/yobiru/blob/main/docs/MARKETPLACE_SUBMISSION.md).
 Repository installation does not establish a public listing.
 
@@ -18,6 +18,7 @@ Repository installation does not establish a public listing.
 | `.codex-plugin/plugin.json` | Codex manifest (presentation and skills). |
 | `.cursor-plugin/plugin.json` | Cursor manifest. |
 | `.claude-plugin/plugin.json` | Claude Code manifest; registers the local MCP server `yobiru` (`scripts/yobiru mcp`). |
+| `skills/yobiru-muse` | Muse custom connector: official Tailscale first, Friends fallback, pull-only requests and same-ID recovery. |
 | `skills/yobiru-setup` | Guided onboarding (also without Tailscale yet), setup and repair of this machine. |
 | `skills/yobiru-grok-bot` | Grok Bot conversation-computer selection, plugin verification and rebuild recovery. |
 | `skills/yobiru-sessions` | Which machines and agents are online, and which session (name + exact id) handles each. |
@@ -29,10 +30,12 @@ Repository installation does not establish a public listing.
 | `skills/yobiru-contact-bots` | One bot per friend in your own host, with their name and picture, synced every minute. |
 | `skills/yobiru-public-bot` | Publish and share a bot, set who may use what, review chat for your own agent, run the deterministic worker. |
 | `skills/yobiru-friends-host` | Your own agent answers your bot's chat: directly for people in the inbox (followed or accepted), as drafts you approve otherwise. |
+| `scripts/yobiru_muse.py` | Muse connector implementation used by `yobiru muse`. |
 | `scripts/yobiru`, `scripts/yobiru.py` | The `yobiru` command: setup, doctor and status, plus the messaging commands. |
 | `scripts/yobiru_mcp.py` | `yobiru mcp`: a stdio MCP server whose tools run the messaging commands (inbox, read, fetch, send, reply, respond, status, ack). |
 | `scripts/tailmsg.py` | The bundled tailmsg CLI and receiver (stdlib only). |
 | `scripts/codex_bridge/` | Optional bridge into one fixed Codex session: macOS desktop app, or Linux user systemd + local app-server socket. |
+| `scripts/claude_bridge/` | Optional visible Claude Code Remote Control bridge with durable session reconciliation. |
 | `scripts/public_bots/` | Public bots and Friends: the gateway (with an optional MCP endpoint), the client (callers, owners, your agent, connector, worker, a local MCP stdio proxy) and the private calendar and resource services (stdlib only). |
 | `docs/PUBLIC_BOTS.md` | The public bots and Friends guide: identities, follows and permissions, supervised chat, delivery evidence, decision receipts, direct messages and loop budgets, attachments, MCP, limits, storage, deployment. |
 | `examples/public-bot-demo.sh` | A self-contained demo of the deterministic part: synthetic data on 127.0.0.1 only, deleted when it ends (`sh examples/public-bot-demo.sh`). |
@@ -48,8 +51,8 @@ gateway can serve `/mcp` to bearer-authenticated clients (no OAuth).
 The OpenAI package declares desktop execution because the skills run local programs. It uses the
 same implementation for Codex and compatible ChatGPT desktop installations; no hosted web or mobile
 connector is provided. Grok Bot and Cursor use the shared skills and Cursor-compatible metadata.
-See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.14/docs/GROK_BOT.md) and
-[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.14/docs/PRIVACY.md) of this release.
+See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.15/docs/GROK_BOT.md) and
+[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.15/docs/PRIVACY.md) of this release.
 
 ## Requirements
 

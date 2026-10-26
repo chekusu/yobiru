@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.15 (2026-10-26)
+
+This release packages the Muse connector and later agent workflow fixes previously available only from the reviewed main source.
+
+- **Muse connector.** Add the `yobiru muse` adapter and `yobiru-muse` skill. It checks the official Tailscale connector first, uses pull-only requests with original-ID recovery, and guides the user to Yobiru Friends when the official connector cannot be used.
+- **Visible Claude Code bridge.** Add the optional Remote Control bridge with durable session identity, exact reconciliation after uncertain launches, and preservation of existing local configuration.
+- **Recovery hardening.** Reconcile saved node identity, StableID and address before resuming a request; transient lookup changes do not silently rebind a request.
+- **Test and platform fixes.** Make listener metadata independent of reverse DNS and keep isolated Linux test children on the selected Python runtime.
+
+Native Muse account round-trip, directory review, and native Claude account/Remote Control acceptance remain separate product gates; automated tests do not claim those native approvals.
+
+
 Notable changes to Yobiru. Versions follow [SemVer](https://semver.org/). A prerelease such as `0.6.0-beta.1` is
 opt-in: the stable update channel, plugin pages and the repository marketplace never offer or install it.
 

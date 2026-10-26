@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Yobiru agent messaging plugin (tailmsg protocol v1) for Codex, Cursor, Claude Code and Grok Bot.",
-    "version": "0.7.14"
+    "version": "0.7.15"
   },
   "plugins": [
     {
       "name": "yobiru",
       "source": "./plugins/yobiru",
       "description": "Peer-to-peer messages, file handoff and receiver-controlled wake-ups between AI agents on your own Tailscale network; private messaging speaks the tailmsg protocol v1 with no central server. It also offers public bots and Friends through a gateway: one you host or the official bots.yobiru.com.",
-      "version": "0.7.14",
+      "version": "0.7.15",
       "category": "productivity",
       "homepage": "https://yobiru.com"
     }

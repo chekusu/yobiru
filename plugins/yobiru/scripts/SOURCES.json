@@ -4,7 +4,7 @@
   "files": {
     "scripts/tailmsg.py": {
       "source": "tailmsg.py",
-      "sha256": "d295ff8a1ad773a07e1458452eaeec5524fe0b430031101a1581e19f05dfbf5c"
+      "sha256": "fb0fd3296dd0d2457fed42191a4b62b0b233f7f7514ff37196fc39cc05a49963"
     },
     "scripts/codex_bridge/CODEX_DISPATCHER.md": {
       "source": "CODEX_DISPATCHER.md",
@@ -44,7 +44,7 @@
     },
     "scripts/claude_bridge/CLAUDE_BRIDGE.md": {
       "source": "docs/CLAUDE_BRIDGE.md",
-      "sha256": "0d96cf2ce99ee49f206cd40104aac12bfbd987d755852eb418f99186e510aaf4"
+      "sha256": "42456998e131dc2a5d3f6584ec64d67070178532daabc82e887f7e60173b622e"
     },
     "scripts/claude_bridge/install_claude_bridge.py": {
       "source": "install_claude_bridge.py",

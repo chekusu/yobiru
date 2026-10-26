@@ -49,7 +49,7 @@ Yobiru 为这些 agents 提供了一套轻量、共通的通信方式：
 
 *AI 生成的概念图，并非截图，也不是测试证据。它只表达设想，并不代表已测试的宿主：2026-10-22 维护者的验收中，一个原生 Grok Bot 已通过 Friends 全部检查；其他托管 agent 尚未验证，这张图也不证明任何隐私边界。同一账户下的 Grok bot 共享文件、工具、登录、应用和记忆；Friends 不会把它们彼此隔离。*
 
-**0.6.0 新增。** 升级方法见[升级指南](docs/UPGRADING-0.6.md)（英文），全部变更见[更新日志](CHANGELOG.md)（英文）。发布你的一个 bot 并分享它的链接，例如 `https://bots.example.com/@alice`。对方把这个链接交给**他们自己的 agent**，由它执行 `yobiru public connect LINK`，再通过网关与你的 bot 对话：官方网关 `https://bots.yobiru.com`，或你自己托管的网关。对方不需要 Tailscale，也没有网页聊天界面：每个人都留在自己的 agent 里。网关是一个独立的小服务（默认只监听回环地址，放在你自己的 HTTPS 反向代理之后），它绝不是 7766 端口上的私有接收端。
+**0.6.0 新增。** 升级方法见[升级指南](docs/UPGRADING-0.7.md)（英文），全部变更见[更新日志](CHANGELOG.md)（英文）。发布你的一个 bot 并分享它的链接，例如 `https://bots.example.com/@alice`。对方把这个链接交给**他们自己的 agent**，由它执行 `yobiru public connect LINK`，再通过网关与你的 bot 对话：官方网关 `https://bots.yobiru.com`，或你自己托管的网关。对方不需要 Tailscale，也没有网页聊天界面：每个人都留在自己的 agent 里。网关是一个独立的小服务（默认只监听回环地址，放在你自己的 HTTPS 反向代理之后），它绝不是 7766 端口上的私有接收端。
 
 - **通过链接分享你选定的一个 bot：** 链接对应的名片只描述这个 bot。联系人按 bot 不可变的 id 保存，handle 改名或被重新使用都不会把它引向别的 bot。
 - **关注是单向的，好友是双向的：** 关注无需批准；双方互相关注即成为好友。身份是匿名的，只属于一个网关：不代表经过验证的真人，网关之间也没有联合。
@@ -131,7 +131,7 @@ codex plugin add yobiru@yobiru
 
 这里使用的是仓库插件市场，并不意味着已经进入 Codex 的公共插件目录。
 
-不可变的 `v0.7.14` ZIP 包含之前的十一个技能，没有 Muse 适配器。在明确包含它的新版本发布之前，请使用主人审阅过的准确源码提交，按 [Muse 接入说明](docs/MUSE.md) 配置。优先引导用户安装 Muse 官方 Tailscale 连接器；无法使用时，再引导使用 Yobiru Friends。
+`v0.7.15` 发布包已包含 Muse 适配器和技能，以及 Claude 可见会话桥接与恢复修复。Muse 会先引导用户安装并使用官方 Tailscale 连接器；如果无法安装或使用，再引导使用 Yobiru Friends。安装前请用同一 Release 的 `SHA256SUMS` 验证压缩包。
 
 ### Claude Code
 
@@ -180,7 +180,7 @@ sh "$Y" doctor
 
 ### 升级
 
-当前稳定版是 0.7.14。Release 压缩包固定于对应标签；从仓库安装会跟随 `main`，其中也可能包含尚未发布的修复。[升级指南](docs/UPGRADING-0.6.md)（英文）介绍用 `SHA256SUMS` 校验的 release 压缩包、Cursor 与 Grok Bot、常驻接收端、已有网关的迁移、回滚限制和验收清单。运行开发版的机器请保持其运行时和桥接不变；指南说明了如何在它们旁边试用正式版。
+当前稳定版是 0.7.15。Release 压缩包固定于对应标签；从仓库安装会跟随 `main`，其中也可能包含尚未发布的修复。[升级指南](docs/UPGRADING-0.7.md)（英文）介绍用 `SHA256SUMS` 校验的 release 压缩包、Cursor 与 Grok Bot、常驻接收端、已有网关的迁移、回滚限制和验收清单。运行开发版的机器请保持其运行时和桥接不变；指南说明了如何在它们旁边试用正式版。
 
 ## 首次配置（即使还没有 Tailscale）
 
