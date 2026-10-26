@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "yobiru",
-  "version": "0.7.14",
+  "version": "0.7.15",
   "description": "Peer-to-peer messages, file handoff and receiver-controlled wake-ups between AI agents on your own Tailscale network; private messaging speaks the tailmsg protocol v1 with no central server. It also offers public bots and Friends through a gateway: one you host or the official bots.yobiru.com.",
   "author": {
     "name": "Chekusu"

@@ -20,7 +20,7 @@ Muse tests use synthetic Tailscale identities and a real loopback receiver to ve
 
 Claude bridge tests use a fake Claude executable to verify durable launch intent, exact-session reconciliation, no relaunch after uncertain outcomes, current-policy checks and installer preservation. Native Claude account startup and Remote Control visibility have not been tested. Recovery tests exercise saved identity, expiry and outcome checks before resuming an existing request. These automated results do not establish native-host acceptance. See [CLAUDE_BRIDGE.md](CLAUDE_BRIDGE.md) and [RESTART_RECOVERY.md](RESTART_RECOVERY.md).
 
-Production deployment of the immutable `v0.7.14` release was verified separately. Its archive remains unchanged and does not contain these new Muse/Claude adapters or the later recovery changes; use an explicitly identified source commit or a future release that includes them.
+Production deployment of the immutable `v0.7.14` release was verified separately. The new `v0.7.15` release packages the Muse/Claude adapters and later recovery changes described above. Native Muse account round-trip, directory review and native Claude account/Remote Control acceptance remain separate gates; this page records automated and hosted evidence only.
 
 ## Native Grok Bot acceptance run (after 0.6.0-beta.1)
 

@@ -59,9 +59,9 @@ file grants must not be redirected to a replacement node merely because its disp
    Retain unresolved restrictions. Never use `--legacy-request`, a renamed target or a broader access
    policy to bypass an identity mismatch. A process restart is not a verified machine-rebuild test.
 
-## Recovery changes after the immutable v0.7.14 tag
+## Recovery changes introduced after the immutable v0.7.14 tag
 
-These changes are source-level work after v0.7.14; deploying the original v0.7.14 archive does not include them.
+These changes are included in the v0.7.15 release. Deploying the original v0.7.14 archive does not include them; use v0.7.15 or a later explicitly identified release.
 
 - Discovery probes every selected peer with the existing HTTP deadline and bounded parallelism, including
   peers whose Tailscale snapshot says `Online=false`. The flag and observed receiver reachability remain
