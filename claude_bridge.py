@@ -3,7 +3,8 @@
 
 The inbox and request ledger remain authoritative. This adapter records intent
 before launch, never retries uncertain launches, never acknowledges messages,
-and never stops sessions. Only exact persisted session UUIDs are reconciled.
+and never stops sessions. Reconciliation requires an exact session UUID or a
+persisted launch receipt with matching working directory and session name.
 """
 import argparse
 import contextlib
@@ -27,9 +28,20 @@ ID_RE = re.compile(r"[A-Za-z0-9_-]{8,64}\Z")
 MAX_BYTES = 4 * 1024 * 1024
 PERMISSIONS = ("manual", "plan", "auto", "acceptEdits")
 PHASES = ("intent", "uncertain", "dispatched")
+BACKGROUND_ID_RE = re.compile(r"[0-9a-f]{8}\Z")
+BACKGROUND_RECEIPT_RE = re.compile(r"backgrounded · ([0-9a-f]{8})(?: · [^\r\n]+)?\Z")
 
 class BridgeError(RuntimeError):
     pass
+
+
+def launch_background_id(output):
+    # Claude's non-TTY banner may be surrounded by service/management messages.
+    # Retain only an unambiguous receipt, never arbitrary CLI output.
+    output = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    receipts = [BACKGROUND_RECEIPT_RE.fullmatch(line.strip()) for line in output.splitlines()]
+    ids = [match.group(1) for match in receipts if match]
+    return ids[0] if len(ids) == 1 else None
 
 
 def read_json(path):
@@ -222,8 +234,21 @@ class Bridge:
         agents = self.agents()
         for sid, run in waiting:
             matches = [a for a in agents or [] if a.get("sessionId") == sid]
+            if (not matches and isinstance(run.get("launch_background_id"), str)
+                    and BACKGROUND_ID_RE.fullmatch(run["launch_background_id"])
+                    and isinstance(run.get("name"), str) and run["name"]
+                    and isinstance(run.get("workdir"), str) and run["workdir"]):
+                # --bg can allocate its own UUID despite --session-id. Never
+                # infer ownership from name/cwd alone or bypass duplicate UUIDs.
+                matches = [a for a in agents or [] if a.get("id") == run["launch_background_id"]
+                           and a.get("cwd") == run["workdir"] and a.get("name") == run["name"]]
             if len(matches) == 1 and isinstance(matches[0].get("id"), str) and matches[0]["id"]:
                 run.update(phase="dispatched", background_id=matches[0]["id"], reconciled_at=time.time())
+                try:
+                    run["observed_session_id"] = str(uuid.UUID(matches[0]["sessionId"]))
+                except (KeyError, ValueError, TypeError, AttributeError):
+                    pass  # A full session UUID is optional in the agents listing.
+                run.pop("reason", None)
             else:
                 run.update(phase="uncertain", reason="session_lookup_unavailable" if agents is None else "session_not_uniquely_observed")
         self.save(state)
@@ -261,15 +286,19 @@ class Bridge:
         if not ids:
             return {"state": "idle", "detail": "messages settled before launch"}
         sid = str(uuid.uuid4())
-        state["runs"][sid] = {"ids": ids, "phase": "intent", "created_at": time.time()}
-        self.save(state)  # fsync intent and directory before invoking Claude
         name = "Yobiru %s %s" % (self.cfg["agent"], ids[0][:8])
+        state["runs"][sid] = {"ids": ids, "phase": "intent", "created_at": time.time(),
+                              "name": name, "workdir": self.cfg["workdir"]}
+        self.save(state)  # fsync intent and directory before invoking Claude
         args = ["--bg", "--remote-control", name, "--session-id", sid, "--name", name,
                 "--permission-mode", self.cfg["permission_mode"], "--no-chrome",
                 "--plugin-dir", self.cfg["plugin_root"], "--append-system-prompt", instructions,
                 "--", self.prompt(ids)]
-        code, _ = self.call(args, timeout=self.cfg["command_timeout"])
+        code, out = self.call(args, timeout=self.cfg["command_timeout"])
         state["runs"][sid].update(phase="uncertain", launch_exit=code)
+        background_id = launch_background_id(out)
+        if background_id is not None:
+            state["runs"][sid]["launch_background_id"] = background_id
         self.save(state)
         self.reconcile(state)
         return {"state": state["runs"][sid]["phase"], "session_id": sid, "ids": ids,
