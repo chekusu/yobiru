@@ -287,6 +287,9 @@ class Bridge:
             return {"state": "idle", "detail": "messages settled before launch"}
         sid = str(uuid.uuid4())
         name = "Yobiru %s %s" % (self.cfg["agent"], ids[0][:8])
+        # `claude agents` collapses JavaScript whitespace in display names.
+        # Canonicalize only the label; the inbox routing identity stays exact.
+        name = re.sub(r"[\s\ufeff]+", " ", name).strip()
         state["runs"][sid] = {"ids": ids, "phase": "intent", "created_at": time.time(),
                               "name": name, "workdir": self.cfg["workdir"]}
         self.save(state)  # fsync intent and directory before invoking Claude

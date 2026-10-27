@@ -21,7 +21,7 @@ sys.path.insert(0, str(REPO))
 import claude_bridge as bridge
 import install_claude_bridge as installer
 
-FAKE = r'''import json, os, sys, time, uuid
+FAKE = r'''import json, os, re, sys, time, uuid
 from pathlib import Path
 root = Path.cwd()
 args = sys.argv[1:]
@@ -43,8 +43,9 @@ if mode in ("nonzero", "timeout"):
     sys.exit(9)
 actual_sid = str(uuid.uuid4()) if mode == "assigned_session" else sid
 name = args[args.index("--name") + 1]
+listed_name = re.sub(r"[\s\ufeff]+", " ", name).strip()
 (root / "agents.json").write_text(json.dumps([{"id": actual_sid[:8], "sessionId": actual_sid,
-    "name": name, "cwd": str(root), "status": "idle"}]))
+    "name": listed_name, "cwd": str(root), "status": "idle"}]))
 if mode == "timeout_seen": time.sleep(2)
 if mode == "nonzero_seen": sys.exit(9)
 print("Starting background service…")
@@ -145,6 +146,30 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(run["launch_background_id"])
         self.assertEqual("idle", bridge.Bridge(self.cfg).step()["state"])
         self.assertEqual(1, len(self.launches()))
+
+    def test_custom_agent_whitespace_keeps_routing_identity_and_receipt_matching(self):
+        self.mode("assigned_session")
+        for custom_agent in ("team  assistant", "team\u00a0assistant", "team\ufeffassistant", "team\u3000assistant"):
+            with self.subTest(agent=custom_agent):
+                cfg = dict(self.cfg, agent=custom_agent)
+                b = bridge.Bridge(cfg)
+                bridge.atomic_json(self.home / "state.json", bridge.empty_state(cfg["installation_id"]))
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                for mid in (self.mid, "fedcba9876543210"):
+                    # Keep the original agent identity in the inbox; only the CLI
+                    # display label may use collapsed whitespace.
+                    rec = self.record(mid)
+                    rec["received"]["agent"] = custom_agent
+                    (self.data / "inbox" / (mid + ".json")).write_text(json.dumps(rec))
+                    result = b.step()
+                    self.assertEqual("dispatched", result["state"])
+                    self.assertEqual([mid], result["ids"])
+                    run = b.load_state()["runs"][result["session_id"]]
+                    self.assertEqual("Yobiru team assistant " + mid[:8], run["name"])
+                    self.assertEqual(custom_agent, b.cfg["agent"])
+                    self.assertEqual(custom_agent, json.loads((self.data / "inbox" / (mid + ".json")).read_text())["received"]["agent"])
+                    self.assertEqual("idle", bridge.Bridge(cfg).step()["state"])
+                self.assertEqual(2, len(self.launches()))
 
     def test_background_receipt_requires_unique_id_and_saved_launch_bindings(self):
         sid = str(uuid.uuid4())

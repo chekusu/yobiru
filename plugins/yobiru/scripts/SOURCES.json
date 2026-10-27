@@ -40,7 +40,7 @@
     },
     "scripts/claude_bridge/claude_bridge.py": {
       "source": "claude_bridge.py",
-      "sha256": "e571c5ac9dbf28dc96ea401183df97e41a3453dd3452856bdaef01b79ea7cd4d"
+      "sha256": "f2be634cd01b3a17970965f26512ef6f2dce15f37674fc76711d2292234342f0"
     },
     "scripts/claude_bridge/CLAUDE_BRIDGE.md": {
       "source": "docs/CLAUDE_BRIDGE.md",
