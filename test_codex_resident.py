@@ -305,6 +305,7 @@ class ResidentTests(unittest.TestCase):
         try:
             eventually(lambda: server.loaded)
             state = self.root / "bridge state"
+            eventually(lambda: resident_status(state, self.thread_id)["state"] == "connected")
             self.assertTrue((state / "bridge.sqlite3").is_file())
             self.assertEqual("connected", resident_status(state, self.thread_id)["state"])
             script = Path(__file__).parent / "plugins/yobiru/scripts/yobiru.py"
