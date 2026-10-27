@@ -659,6 +659,10 @@ def _friends_connection(u, timeout):
     if ":" in u.hostname and not hasattr(http.client.HTTPConnection, "_wrap_ipv6"):
         raise ApiError(None, "proxy_config", "this Python version cannot tunnel an IPv6 destination")
     target = u.hostname.encode("idna").decode("ascii")
+    if ":" in target:
+        # stdlib brackets the CONNECT target but not its automatic Host header.
+        # Keep the unbracketed target for TLS certificate verification.
+        headers["Host"] = "[%s]:%d" % (target, u.port or 443)
     conn = _ProxyHTTPSConnection(host, port, timeout=timeout, context=context)
     # A process-wide http.client debuglevel must not print CONNECT credentials or gateway tokens.
     conn.set_debuglevel(0)

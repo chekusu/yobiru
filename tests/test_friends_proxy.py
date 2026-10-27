@@ -53,6 +53,10 @@ class ConnectHandler(socketserver.StreamRequestHandler):
         self.server.seen.append((line, headers))
         try:
             mode = self.server.mode
+            if mode == "strict_authority" and headers.get("Host") != line.decode("ascii").split()[1]:
+                self.wfile.write(b"HTTP/1.1 400 CONNECT Host mismatch\r\nContent-Length: 0\r\n\r\n")
+                self.wfile.flush()
+                return
             if mode == "refuse":
                 self.wfile.write(("HTTP/1.0 407 %s\r\nContent-Length: 0\r\n\r\n" % self.server.reason).encode())
                 self.wfile.flush()
@@ -183,7 +187,7 @@ class ProxyLoopbackTests(unittest.TestCase):
         cls.cert, key = root / "cert.pem", root / "key.pem"
         config = root / "cert.cnf"
         config.write_text("[req]\nprompt=no\ndistinguished_name=dn\nx509_extensions=ext\n"
-                          "[dn]\nCN=localhost\n[ext]\nsubjectAltName=DNS:localhost,DNS:xn--bcher-kva.example\n"
+                          "[dn]\nCN=localhost\n[ext]\nsubjectAltName=DNS:localhost,DNS:xn--bcher-kva.example,IP:::1\n"
                           "basicConstraints=critical,CA:TRUE\n"
                           "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign\n"
                           "extendedKeyUsage=serverAuth\n")
@@ -275,6 +279,27 @@ class ProxyLoopbackTests(unittest.TestCase):
         self.assertEqual((200, {"ok": True}), self.helpers()[0]())
         self.assertEqual(["xn--bcher-kva.example"], self.sni)
         self.assertTrue(self.proxy.seen[0][0].startswith(b"CONNECT xn--bcher-kva.example:"))
+
+    @unittest.skipUnless(hasattr(http.client.HTTPConnection, "_wrap_ipv6"),
+                         "runtime explicitly refuses IPv6 CONNECT destinations")
+    def test_ipv6_connect_host_matches_authority_and_keeps_verified_tls(self):
+        proxy = self.new_proxy("strict_authority")
+        os.environ["APP_PROXY"] = proxy.url.replace("http://", "http://us%40er:p%3Ass@")
+        for port in (None, self.origin.server_port):
+            with self.subTest(port=port):
+                self.url = "https://[::1]" + (":%d" % port if port else "") + "/base"
+                self.assertEqual((200, {"ok": True}), self.helpers()[0]())
+                self.assertEqual((200, "application/json", b'{"ok":true}'), self.helpers()[1]())
+                self.assertEqual((200, "image/png", b"raw body"), C.get_raw(self.url, "/avatar", 128))
+                authority = "[::1]:%d" % (port or 443)
+                for line, headers in proxy.seen[-3:]:
+                    self.assertEqual("CONNECT " + authority, line.decode().rsplit(" ", 1)[0])
+                    self.assertEqual([authority], headers.get_all("Host"))
+                    self.assertEqual("Basic dXNAZXI6cDpzcw==", headers.get("Proxy-Authorization"))
+                    self.assertIsNone(headers.get("Authorization"))
+        self.assertEqual(6, len(self.seen))
+        for _, _, headers, _ in self.seen:
+            self.assertIsNone(headers.get("Proxy-Authorization"))
 
     def test_direct_default_and_plain_loopback_ignore_proxy_configuration(self):
         del os.environ["YOBIRU_HTTPS_PROXY_ENV"]
