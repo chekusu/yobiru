@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from contextlib import redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler
 from support.numeric_http import HTTPServer
@@ -154,10 +155,18 @@ class TransportTests(unittest.TestCase):
         return rec
 
     def test_total_deadline_covers_slow_close_delimited_bodies(self):
+        connection = C.http.client.HTTPConnection
+
+        def longer_socket_timeout(*args, **kwargs):
+            # Exercise the total deadline independently of the socket timeout.
+            kwargs["timeout"] = 2
+            return connection(*args, **kwargs)
+
         for version, close_header in (("HTTP/1.0", False), ("HTTP/1.1", True)):
             rec = self.slow_server(version, close_header)
             started = time.monotonic()
-            with self.assertRaises(C.ApiError) as cm:
+            with mock.patch.object(C.http.client, "HTTPConnection", side_effect=longer_socket_timeout), \
+                    self.assertRaises(C.ApiError) as cm:
                 C.api_call(rec.url, "GET", "/slow", timeout=0.25)
             self.assertEqual("unreachable", cm.exception.code)
             self.assertIn("deadline", cm.exception.detail)
