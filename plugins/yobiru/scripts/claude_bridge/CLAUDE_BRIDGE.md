@@ -17,6 +17,16 @@ Preview does not write files, start services, query Claude authentication or lau
 
 The installer freezes a complete copy of the plugin under a content-addressed version directory, keeps an initialized persistent launch ledger, preserves local dispatcher instructions and writes backups before changing bridge/Yobiru configuration. Upgrades preserve launch ownership and all inbox data. It refuses a missing/corrupt existing ledger and a changed agent/executable/workdir binding. The default permission mode is `manual`; another supported mode must be deliberately selected. No arbitrary extra launch flags or permission-bypass mode is exposed.
 
+### Select a session model
+
+Repository builds support an optional `--model ID` installer option (not included in the `v0.7.15` archive). Add `--model claude-sonnet-4-6` to the install command above to preview a selection for a new or existing installation. The standalone `install_claude_bridge.py` installer accepts the same option. Review the returned `model`, then add `--apply` to save it. Preview never queries Claude or writes configuration.
+
+The installer saves the optional `model` key in bridge `config.json`. Each new session receives that exact value as `--model ID`. An upgrade without `--model` preserves the saved selection; an explicit `--model ID` replaces it. Without a `model` key, launches retain the Claude CLI default. Restart the dispatcher after changing the selection so it reloads configuration; existing sessions and durable launch ownership are preserved.
+
+Model IDs must contain 1–256 ASCII characters, start with a letter or digit, and otherwise use letters, digits or `._:/[]-`. Empty values, whitespace, control characters and option-like values are rejected before installation or launch. This validates syntax only; the local Claude CLI and account determine availability. Aliases such as `sonnet` are accepted but can change their resolved model over time; use a full model ID to pin a version (see [Claude model configuration](https://code.claude.com/docs/en/model-config)). To return to the CLI default, stop the dispatcher, remove the `model` key from its configuration, then restart it while preserving `state.json`.
+
+### Start the dispatcher
+
 The result lists a launchd plist and a Linux user systemd unit. These are templates; installation never starts a service. On macOS, an authorized operator may bootstrap the returned plist with `launchctl bootstrap gui/$(id -u) /absolute/path/to/returned.plist`. On Linux, place the returned unit in `~/.config/systemd/user/`, run `systemctl --user daemon-reload`, then enable/start its exact unit name. Run under the receiver owner's account and existing Claude login, never by copying credentials. The receiver must reload its wake-adapter config after this change using the normal receiver restart process. Coordinate any service restart with active work.
 
 Status is read-only and does not run Claude:
@@ -45,4 +55,4 @@ Configuration backups contain the old bridge and receiver configuration, **not a
 
 ## Verification boundary
 
-Automated tests use a fake Claude executable and synthetic inbox/ledger records to cover intent-before-launch, interrupted startup, auth failure, duplicate wake, timeout/nonzero outcomes, exact-session reconciliation, expired/final requests, corrupt-state refusal, writer exclusion, read-only status and installer preservation. They do not start a real Claude session, perform paid inference, or verify current Remote Control visibility on a user's account. Validate one authorized harmless request on that account before claiming native acceptance. Local CLI help from Claude Code 2.1.310 supplied the supported flags; future versions may differ.
+Automated tests use a fake Claude executable and synthetic inbox/ledger records to cover intent-before-launch, interrupted startup, auth failure, duplicate wake, timeout/nonzero outcomes, exact-session reconciliation, expired/final requests, corrupt-state refusal, writer exclusion, read-only status, model validation/forwarding and installer preservation. They do not start a real Claude session, perform paid inference, or verify current Remote Control visibility on a user's account. Validate one authorized harmless request on that account before claiming native acceptance. Local CLI help from Claude Code 2.1.310 supplied the supported flags; future versions may differ.

@@ -99,9 +99,42 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(result["message_handled"])
         self.assertEqual("idle", bridge.Bridge(self.cfg).step()["state"])
         self.assertEqual(1, len(self.launches()))
+        self.assertNotIn("--model", self.launches()[0])
         self.assertNotIn("UNTRUSTED BODY", " ".join(self.launches()[0]))
         self.assertFalse(any(c and c[0] in ("stop", "kill", "rm") for c in self.calls()))
         self.assertNotIn("acked_at", json.loads((self.data / "inbox" / (self.mid + ".json")).read_text()))
+
+    def test_configured_model_is_forwarded_as_one_exact_option(self):
+        models = ("sonnet", "claude-sonnet-4-6", "claude-opus-4-6[1m]",
+                  "anthropic/claude-sonnet-4.6",
+                  "arn:aws:bedrock:us-east-1:123456789012:inference-profile/anthropic.claude-sonnet-4-6")
+        (self.data / "inbox" / (self.mid + ".json")).unlink()
+        for index, model in enumerate(models):
+            with self.subTest(model=model):
+                self.record("%016x" % (index + 1))
+                result = bridge.Bridge(dict(self.cfg, model=model)).step()
+                self.assertEqual("dispatched", result["state"])
+                args = self.launches()[-1]
+                self.assertEqual(1, args.count("--model"))
+                option = args.index("--model")
+                self.assertEqual(model, args[option + 1])
+                self.assertLess(option + 1, args.index("--"))
+        self.assertEqual(len(models), len(self.launches()))
+        self.assertFalse(any("--model" in args for args in self.calls() if "--bg" not in args))
+
+    def test_invalid_configured_model_fails_before_calls_or_writes(self):
+        invalid = (None, "", True, 42, [], {}, " sonnet", "sonnet ", "son net",
+                   "--help", "-sonnet", "/sonnet", ".sonnet", "[1m]",
+                   "a\tb", "a\nb", "a\rb", "a\0b", "sonnet\u00a0", "sönnet", "a" * 257)
+        before = snapshot(self.root)
+        for model in invalid:
+            with self.subTest(model=model):
+                with self.assertRaisesRegex(bridge.BridgeError, "model"):
+                    bridge.Bridge(dict(self.cfg, model=model))
+                self.assertEqual(before, snapshot(self.root))
+                self.assertEqual([], self.calls())
+        self.assertEqual("a", bridge.validate_config(dict(self.cfg, model="a"))["model"])
+        self.assertEqual("a" * 256, bridge.validate_config(dict(self.cfg, model="a" * 256))["model"])
 
     def test_fifo_config_or_state_status_fails_promptly_without_writes(self):
         config = self.home / "config.json"
@@ -277,18 +310,20 @@ class InstallTests(unittest.TestCase):
         (self.data / "config.json").write_text(json.dumps(self.original))
         self.args = argparse.Namespace(plugin_root=str(REPO / "plugins/yobiru"), tailmsg_home=str(self.data),
                                        bridge_home=str(self.target), agent=None, claude_path=sys.executable,
-                                       workdir=str(self.root), permission_mode=None, apply=False)
+                                       workdir=str(self.root), permission_mode=None, model=None, apply=False)
 
     def test_preview_writes_nothing_and_apply_freezes_plugin_without_starting_anything(self):
         before = snapshot(self.root)
         plan = installer.install(self.args)
         self.assertFalse(plan["applied"])
         self.assertFalse(plan["starts_service"])
+        self.assertIsNone(plan["model"])
         self.assertEqual(before, snapshot(self.root))
         self.args.apply = True
         result = installer.install(self.args)
         cfg = bridge.read_json(self.target / "config.json")
         self.assertEqual("manual", cfg["permission_mode"])
+        self.assertNotIn("model", cfg)
         self.assertTrue(Path(cfg["entry"]).is_file())
         self.assertTrue((Path(cfg["plugin_root"]) / ".claude-plugin/plugin.json").is_file())
         self.assertEqual(self.original, bridge.read_json(Path(result["backup"]) / "tailmsg-config.json"))
@@ -299,6 +334,36 @@ class InstallTests(unittest.TestCase):
         for path in (self.target / "services").glob("*.plist"):
             self.assertIn("daemon", plistlib.loads(path.read_bytes())["ProgramArguments"])
         self.assertFalse((self.root / "calls.jsonl").exists())
+
+    def test_model_preview_writes_nothing_and_apply_persists_selection(self):
+        self.args.model = "claude-opus-4-6[1m]"
+        before = snapshot(self.root)
+        plan = installer.install(self.args)
+        self.assertEqual(self.args.model, plan["model"])
+        self.assertFalse(plan["launches_claude"])
+        self.assertEqual(before, snapshot(self.root))
+        self.args.apply = True
+        result = installer.install(self.args)
+        self.assertEqual(self.args.model, result["model"])
+        self.assertEqual(self.args.model, bridge.read_json(self.target / "config.json")["model"])
+        self.assertFalse((self.root / "calls.jsonl").exists())
+
+    def test_invalid_model_install_does_not_write(self):
+        for model in ("", "--help", "son net", "a\nb", "a\0b", "sönnet", "a" * 257):
+            for apply in (False, True):
+                with self.subTest(model=model, apply=apply):
+                    self.args.model, self.args.apply = model, apply
+                    before = snapshot(self.root)
+                    with self.assertRaisesRegex(bridge.BridgeError, "model"):
+                        installer.install(self.args)
+                    self.assertEqual(before, snapshot(self.root))
+        self.args.model, self.args.apply = "sonnet", True
+        installer.install(self.args)
+        self.args.model = "--help"
+        before = snapshot(self.root)
+        with self.assertRaisesRegex(bridge.BridgeError, "model"):
+            installer.install(self.args)
+        self.assertEqual(before, snapshot(self.root))
 
     def test_service_paths_preserve_literal_environment_and_unit_specifiers(self):
         unusual = self.root / "cash${HOME}%i"
@@ -320,16 +385,33 @@ class InstallTests(unittest.TestCase):
 
     def test_upgrade_preserves_launch_state_local_instructions_and_backup(self):
         self.args.apply = True
+        self.args.model = "claude-sonnet-4-6"
         installer.install(self.args)
         cfg = bridge.read_json(self.target / "config.json")
         state = bridge.empty_state(cfg["installation_id"])
         state["runs"][str(uuid.uuid4())] = {"ids": ["0123456789abcdef"], "phase": "uncertain"}
         bridge.atomic_json(self.target / "state.json", state)
         (self.target / "CLAUDE_DISPATCHER.md").write_text("custom owner instructions")
-        installer.install(self.args)
+        self.args.model = None
+        result = installer.install(self.args)
+        self.assertEqual(cfg["model"], result["model"])
+        self.assertEqual(cfg, bridge.read_json(self.target / "config.json"))
         self.assertEqual(state, bridge.read_json(self.target / "state.json"))
         self.assertEqual("custom owner instructions", (self.target / "CLAUDE_DISPATCHER.md").read_text())
         self.assertEqual(2, len(list((self.target / "backups").iterdir())))
+
+    def test_explicit_model_change_preserves_existing_installation(self):
+        self.args.apply, self.args.model = True, "sonnet"
+        installer.install(self.args)
+        previous = bridge.read_json(self.target / "config.json")
+        state_before = (self.target / "state.json").read_bytes()
+        self.args.model = "claude-opus-4-6[1m]"
+        result = installer.install(self.args)
+        expected = dict(previous, model=self.args.model)
+        self.assertEqual(expected, bridge.read_json(self.target / "config.json"))
+        self.assertEqual(self.args.model, result["model"])
+        self.assertEqual(state_before, (self.target / "state.json").read_bytes())
+        self.assertEqual(previous, bridge.read_json(Path(result["backup"]) / "bridge-config.json"))
 
     def test_existing_adapter_and_corrupt_bridge_state_are_not_replaced(self):
         original = copy.deepcopy(self.original)
@@ -362,16 +444,45 @@ class InstallTests(unittest.TestCase):
     def test_packaged_cli_installs_and_status_runs_without_source_checkout(self):
         package = Package()
         self.addCleanup(package.cleanup)
-        result = subprocess.run([sys.executable, str(package.entry), "--home", str(self.data), "claude-bridge", "install",
-                                 "--bridge-home", str(self.target), "--claude-path", sys.executable,
-                                 "--workdir", str(self.root), "--apply"], capture_output=True, text=True, timeout=20)
+        fake = self.root / "fake-claude"
+        fake.write_text("#!" + sys.executable + "\n" + FAKE)
+        fake.chmod(0o700)
+        model = "claude-opus-4-6[1m]"
+        command = [sys.executable, "-B", str(package.entry), "--home", str(self.data), "claude-bridge", "install",
+                   "--bridge-home", str(self.target), "--claude-path", str(fake), "--workdir", str(self.root)]
+        before = snapshot(self.root)
+        result = subprocess.run(command + ["--model=--help", "--apply"], capture_output=True, text=True, timeout=20)
+        self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+        self.assertIn("model", result.stderr)
+        self.assertEqual(before, snapshot(self.root))
+        result = subprocess.run(command + ["--model", model, "--apply"], capture_output=True, text=True, timeout=20)
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         cfg = bridge.read_json(self.target / "config.json")
+        self.assertEqual(model, cfg["model"])
         package.cleanup()
         result = subprocess.run([sys.executable, "-B", cfg["entry"], "--config", str(self.target / "config.json"), "status"],
-                                capture_output=True, text=True, timeout=10)
+                                capture_output=True, text=True, timeout=10, cwd=str(self.root))
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertFalse(json.loads(result.stdout)["changed"])
+        inbox = self.data / "inbox"
+        inbox.mkdir()
+        mid = "0123456789abcdef"
+        record = {"envelope": {"id": mid, "from": "trusted", "to": "receiver.example.ts.net",
+                               "kind": "text", "text": "synthetic"},
+                  "received": {"at": "2026-01-01T00:00:00Z", "agent": "claude", "wake": {"effective": "now"},
+                               "peer": {"node": "trusted", "ip": "100.64.0.9"}}}
+        (inbox / (mid + ".json")).write_text(json.dumps(record))
+        result = subprocess.run([sys.executable, "-B", cfg["entry"], "--config", str(self.target / "config.json"), "step"],
+                                capture_output=True, text=True, timeout=10, cwd=str(self.root))
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("dispatched", json.loads(result.stdout)["state"])
+        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
+        launches = [args for args in calls if "--bg" in args]
+        self.assertEqual(1, len(launches))
+        self.assertEqual(1, launches[0].count("--model"))
+        option = launches[0].index("--model")
+        self.assertEqual(model, launches[0][option + 1])
+        self.assertLess(option + 1, launches[0].index("--"))
 
     def test_invalid_agent_is_refused_and_unicode_equivalent_agent_is_preserved(self):
         self.args.agent = " bad "

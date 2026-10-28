@@ -40,15 +40,15 @@
     },
     "scripts/claude_bridge/claude_bridge.py": {
       "source": "claude_bridge.py",
-      "sha256": "ee99d1e44db21d8ed2ead820f98e5a707d3c0bdf4dfbfd3293c8dfed8b9a5ac3"
+      "sha256": "b792bb08fae1a3d6f376f3917688ba658dc6760002928e2d59feb2fb7d978d2f"
     },
     "scripts/claude_bridge/CLAUDE_BRIDGE.md": {
       "source": "docs/CLAUDE_BRIDGE.md",
-      "sha256": "42456998e131dc2a5d3f6584ec64d67070178532daabc82e887f7e60173b622e"
+      "sha256": "7dff7639cba138e0e06d18ed88e29cfd9cf75500aa10c5554dd3bb788379ba75"
     },
     "scripts/claude_bridge/install_claude_bridge.py": {
       "source": "install_claude_bridge.py",
-      "sha256": "af3fc9859efbc4ae872b3628bfbecbc7369941994496f053d0845d5a48c02555"
+      "sha256": "f4434b65785e2f248abb6dd661c9beaa45c92e961e0f6f4238ad58cb545a292e"
     },
     "docs/PUBLIC_BOTS.md": {
       "source": "docs/PUBLIC_BOTS.md",
