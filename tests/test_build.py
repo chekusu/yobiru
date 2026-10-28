@@ -29,6 +29,28 @@ def fixture_copy(dst):
 
 
 class RepositoryTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("git") and (REPO / ".git").exists(), "Git checkout required")
+    def test_local_handoffs_are_not_tracked_in_repository_sources(self):
+        # Curated plugin ZIPs do not cover GitHub's full source archives.
+        result = subprocess.run(["git", "ls-files", "-z", "--", ".sandbank"], cwd=REPO,
+                                capture_output=True, check=True)
+        self.assertEqual(b"", result.stdout, "Local development metadata must not be tracked")
+
+    @unittest.skipUnless(shutil.which("git"), "Git required")
+    def test_root_local_handoffs_are_ignored(self):
+        # Use only the repository rule, without local or global excludes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            shutil.copy2(str(REPO / ".gitignore"), str(root / ".gitignore"))
+            subprocess.run(["git", "init", "--quiet", "--template=", str(root)],
+                           capture_output=True, check=True)
+            paths = ".sandbank/handoff/synthetic.json\n.sandbank/state.json\ndocs/.sandbank/example.json\n"
+            result = subprocess.run(["git", "-c", "core.excludesFile=" + os.devnull,
+                                     "check-ignore", "--no-index", "--stdin"], cwd=root,
+                                    input=paths, capture_output=True, text=True)
+            self.assertEqual(0, result.returncode)
+            self.assertEqual(paths.splitlines()[:2], result.stdout.splitlines())
+
     def test_tree_is_in_sync_and_valid(self):
         self.assertEqual([], B.drift(P))
         self.assertEqual([], B.validate(P))

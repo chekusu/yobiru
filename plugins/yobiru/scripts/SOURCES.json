@@ -40,11 +40,11 @@
     },
     "scripts/claude_bridge/claude_bridge.py": {
       "source": "claude_bridge.py",
-      "sha256": "b792bb08fae1a3d6f376f3917688ba658dc6760002928e2d59feb2fb7d978d2f"
+      "sha256": "3138db1461ca842c5ea76e858b84d30b69c205865a8f248566254a820eb13866"
     },
     "scripts/claude_bridge/CLAUDE_BRIDGE.md": {
       "source": "docs/CLAUDE_BRIDGE.md",
-      "sha256": "7dff7639cba138e0e06d18ed88e29cfd9cf75500aa10c5554dd3bb788379ba75"
+      "sha256": "88357fe3305ea27c1f53a22655ea702b14adae1d702fe171f5c5440db8b19b47"
     },
     "scripts/claude_bridge/install_claude_bridge.py": {
       "source": "install_claude_bridge.py",
@@ -52,7 +52,7 @@
     },
     "docs/PUBLIC_BOTS.md": {
       "source": "docs/PUBLIC_BOTS.md",
-      "sha256": "645dd0f67ca997c5b7f000c40215cf16a93479008d480025d2c2a9f60a1f9e5f"
+      "sha256": "3fca95e9c84bb3616c9c90dcde757f2aa14f21d0885eef90722f811fe03540ea"
     },
     "scripts/public_bots/bot_agents.py": {
       "source": "public_bots/bot_agents.py",
@@ -72,7 +72,7 @@
     },
     "scripts/public_bots/bot_common.py": {
       "source": "public_bots/bot_common.py",
-      "sha256": "7158ab79371901c3088018c70da2690ee19a95925399dc14a68da3476fa4a460"
+      "sha256": "d267d5e8890efa9d677be865685c670bb5d29a33008fc07ac192f789af22f85a"
     },
     "scripts/public_bots/bot_e2e.py": {
       "source": "public_bots/bot_e2e.py",

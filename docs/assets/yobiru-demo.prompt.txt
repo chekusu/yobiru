@@ -1,8 +1,9 @@
 Generated with built-in OpenAI image generation (image_gen.imagegen), 2026-10-10.
 Revision: two phones, Codex on a laptop, conversation-only plugin results, lowercase sans-serif wordmark.
 Concept illustration; not screenshots of actual Yobiru integrations.
-The current image also includes the approved icon from the 2026-10-12 brand-only edit;
-see yobiru-demo.brand-update.prompt.txt. The original prompt below is retained as provenance.
+The current image includes the older demo-only icon from the 2026-10-12 brand-only edit;
+see yobiru-demo.brand-update.prompt.txt. The product logo is now the final vector set in
+`brand/logo/yobiru/` (PR #64). The original prompt below is retained as provenance.
 
 Public UI references:
 - Grok Bot: official X Corp. App Store screenshots, https://apps.apple.com/us/app/grok-bot/id6794501026 (conversation / file-result screenshot).

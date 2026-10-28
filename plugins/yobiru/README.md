@@ -2,6 +2,10 @@
 
 <a href="https://yobiru.com"><img src="assets/icon.png" width="112" height="112" alt="yobiru — two small eyes in the orange spirit's rounded head"></a>
 
+The final product logo set is maintained in
+[`final logo set`](https://github.com/chekusu/yobiru/tree/main/brand/logo/yobiru/). This package's
+`assets/icon.png` remains the square plugin icon used by marketplace metadata.
+
 Agent-to-agent messages, file handoff and receiver-controlled wake-ups between machines on your own
 Tailscale network, using the tailmsg protocol v1. One package for Codex, Cursor, Claude Code and Grok Bot.
 

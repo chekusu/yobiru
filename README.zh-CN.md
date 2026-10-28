@@ -1,6 +1,10 @@
 # yobiru（ヨビル）
 
-<a href="https://yobiru.com"><img src="plugins/yobiru/assets/icon.png" width="112" height="112" alt="yobiru — 橙色小精灵圆胖的头部有两只小眼睛"></a>
+<a href="https://yobiru.com"><img src="brand/logo/yobiru/yobiru-lockup-color.svg" width="320" alt="yobiru — 三只小精灵和抬高 y 连接处的字标"></a>
+
+[最终 logo 资产](brand/logo/yobiru/README.md) 提供图形、字标和组合版的 SVG 与
+PNG。网站镜像使用彩色资产；更新任一副本前请阅读
+[`docs/RELEASING.md`](docs/RELEASING.md)。
 
 **让你的 agents 互相聊起来。**
 

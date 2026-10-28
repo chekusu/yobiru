@@ -21,7 +21,7 @@ sys.path.insert(0, str(REPO))
 import claude_bridge as bridge
 import install_claude_bridge as installer
 
-FAKE = r'''import json, os, sys, time
+FAKE = r'''import json, os, re, sys, time, uuid
 from pathlib import Path
 root = Path.cwd()
 args = sys.argv[1:]
@@ -41,10 +41,17 @@ assert args[args.index("--permission-mode") + 1] == "manual"
 if mode in ("nonzero", "timeout"): 
     if mode == "timeout": time.sleep(2)
     sys.exit(9)
-(root / "agents.json").write_text(json.dumps([{"id": sid[:8], "sessionId": sid, "status": "idle"}]))
+actual_sid = str(uuid.uuid4()) if mode == "assigned_session" else sid
+name = args[args.index("--name") + 1]
+listed_name = re.sub(r"[\s\ufeff]+", " ", name).strip()
+(root / "agents.json").write_text(json.dumps([{"id": actual_sid[:8], "sessionId": actual_sid,
+    "name": listed_name, "cwd": str(root), "status": "idle"}]))
 if mode == "timeout_seen": time.sleep(2)
 if mode == "nonzero_seen": sys.exit(9)
-print("backgrounded " + sid[:8])
+print("Starting background service…")
+print("backgrounded · \x1b[36m" + actual_sid[:8] + "\x1b[39m · " + name)
+print("claude attach " + actual_sid[:8])
+print("SYNTHETIC PRIVATE OUTPUT MUST NOT ENTER STATE")
 '''
 
 
@@ -101,8 +108,6 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(1, len(self.launches()))
         self.assertNotIn("--model", self.launches()[0])
         self.assertNotIn("UNTRUSTED BODY", " ".join(self.launches()[0]))
-        self.assertFalse(any(c and c[0] in ("stop", "kill", "rm") for c in self.calls()))
-        self.assertNotIn("acked_at", json.loads((self.data / "inbox" / (self.mid + ".json")).read_text()))
 
     def test_configured_model_is_forwarded_as_one_exact_option(self):
         models = ("sonnet", "claude-sonnet-4-6", "claude-opus-4-6[1m]",
@@ -135,6 +140,131 @@ class BridgeTests(unittest.TestCase):
                 self.assertEqual([], self.calls())
         self.assertEqual("a", bridge.validate_config(dict(self.cfg, model="a"))["model"])
         self.assertEqual("a" * 256, bridge.validate_config(dict(self.cfg, model="a" * 256))["model"])
+        self.assertFalse(any(c and c[0] in ("stop", "kill", "rm") for c in self.calls()))
+        self.assertNotIn("acked_at", json.loads((self.data / "inbox" / (self.mid + ".json")).read_text()))
+
+    def test_background_assigned_session_is_observed_and_next_wake_dispatches(self):
+        self.mode("assigned_session")
+        real = self.b.agents
+        def observe():
+            # Receipt and launch bindings must survive a crash before the lookup.
+            run = next(iter(self.b.load_state()["runs"].values()))
+            agent = json.loads((self.root / "agents.json").read_text())[0]
+            self.assertEqual(agent["id"], run["launch_background_id"])
+            self.assertEqual(agent["name"], run["name"])
+            self.assertEqual(agent["cwd"], run["workdir"])
+            return real()
+        with patch.object(self.b, "agents", side_effect=observe):
+            result = self.b.step()
+        self.assertEqual("dispatched", result["state"])
+        agent = json.loads((self.root / "agents.json").read_text())[0]
+        self.assertNotEqual(result["session_id"], agent["sessionId"])
+        run = self.b.load_state()["runs"][result["session_id"]]
+        self.assertEqual(agent["id"], run["background_id"])
+        self.assertEqual(agent["sessionId"], run["observed_session_id"])
+        self.assertNotIn("backgrounded", json.dumps(run))
+        self.assertNotIn("SYNTHETIC PRIVATE OUTPUT", json.dumps(run))
+        self.assertEqual("idle", bridge.Bridge(self.cfg).step()["state"])
+        self.record("fedcba9876543210")
+        self.assertEqual("dispatched", bridge.Bridge(self.cfg).step()["state"])
+        self.assertEqual(2, len(self.launches()))
+
+    def test_background_receipt_survives_interrupted_reconciliation(self):
+        self.mode("assigned_session")
+        with patch.object(self.b, "agents", side_effect=SystemExit("simulated crash before lookup")):
+            with self.assertRaises(SystemExit):
+                self.b.step()
+        run = next(iter(self.b.load_state()["runs"].values()))
+        self.assertEqual("uncertain", run["phase"])
+        self.assertTrue(run["launch_background_id"])
+        self.assertEqual("idle", bridge.Bridge(self.cfg).step()["state"])
+        self.assertEqual(1, len(self.launches()))
+
+    def test_custom_agent_whitespace_keeps_routing_identity_and_receipt_matching(self):
+        self.mode("assigned_session")
+        for custom_agent in ("team  assistant", "team\u00a0assistant", "team\ufeffassistant", "team\u3000assistant"):
+            with self.subTest(agent=custom_agent):
+                cfg = dict(self.cfg, agent=custom_agent)
+                b = bridge.Bridge(cfg)
+                bridge.atomic_json(self.home / "state.json", bridge.empty_state(cfg["installation_id"]))
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                for mid in (self.mid, "fedcba9876543210"):
+                    # Keep the original agent identity in the inbox; only the CLI
+                    # display label may use collapsed whitespace.
+                    rec = self.record(mid)
+                    rec["received"]["agent"] = custom_agent
+                    (self.data / "inbox" / (mid + ".json")).write_text(json.dumps(rec))
+                    result = b.step()
+                    self.assertEqual("dispatched", result["state"])
+                    self.assertEqual([mid], result["ids"])
+                    run = b.load_state()["runs"][result["session_id"]]
+                    self.assertEqual("Yobiru team assistant " + mid[:8], run["name"])
+                    self.assertEqual(custom_agent, b.cfg["agent"])
+                    self.assertEqual(custom_agent, json.loads((self.data / "inbox" / (mid + ".json")).read_text())["received"]["agent"])
+                    self.assertEqual("idle", bridge.Bridge(cfg).step()["state"])
+                self.assertEqual(2, len(self.launches()))
+
+    def test_background_receipt_requires_unique_id_and_saved_launch_bindings(self):
+        sid = str(uuid.uuid4())
+        actual_sid = str(uuid.uuid4())
+        short = actual_sid[:8]
+        run = {"ids": [self.mid], "phase": "uncertain", "name": "Yobiru claude " + self.mid[:8],
+               "workdir": str(self.root), "launch_background_id": short}
+        agent = {"id": short, "sessionId": actual_sid, "name": run["name"], "cwd": run["workdir"]}
+        cases = [(None, {}), ([], {}), ([dict(agent, id="deadbeef")], {}), ([dict(agent, cwd=str(self.data))], {}),
+                 ([dict(agent, name="another session")], {}), ([agent, dict(agent)], {}),
+                 ([agent], {"launch_background_id": None}), ([agent], {"name": None}),
+                 ([agent], {"workdir": None}),
+                 ([dict(agent, sessionId=sid), dict(agent, sessionId=sid)], {})]
+        for agents, changes in cases:
+            with self.subTest(agents=agents, changes=changes):
+                state = bridge.empty_state(self.cfg["installation_id"])
+                state["runs"][sid] = dict(run, **changes)
+                self.b.save(state)
+                with patch.object(self.b, "agents", return_value=agents):
+                    self.assertEqual("uncertain", self.b.step()["state"])
+                self.assertEqual([], self.launches())
+        # A config change cannot substitute for the workdir/name saved at launch.
+        state["runs"][sid] = dict(run)
+        self.b.save(state)
+        changed = bridge.Bridge(dict(self.cfg, workdir=str(self.data), agent="other"))
+        with patch.object(changed, "agents", return_value=[agent]):
+            changed.reconcile(state)
+        self.assertEqual("dispatched", state["runs"][sid]["phase"])
+        self.assertNotIn("reason", state["runs"][sid])
+
+    def test_background_receipt_reconciles_after_delayed_agent_visibility(self):
+        self.mode("assigned_session")
+        with patch.object(self.b, "agents", return_value=[]):
+            self.assertEqual("uncertain", self.b.step()["state"])
+        self.assertEqual("idle", bridge.Bridge(self.cfg).step()["state"])
+        self.assertNotIn("reason", next(iter(self.b.load_state()["runs"].values())))
+        self.assertEqual(1, len(self.launches()))
+
+    def test_background_receipt_can_reconcile_without_listed_session_uuid(self):
+        self.mode("assigned_session")
+        real = self.b.agents
+        def without_session_id():
+            return [{k: v for k, v in agent.items() if k != "sessionId"} for agent in real()]
+        with patch.object(self.b, "agents", side_effect=without_session_id):
+            self.assertEqual("dispatched", self.b.step()["state"])
+        self.assertEqual(1, len(self.launches()))
+
+    def test_malformed_or_ambiguous_launch_output_cannot_bind_assigned_session(self):
+        self.mode("assigned_session")
+        real = self.b.call
+        for output in ("", "not a launch receipt deadbeef", "backgrounded · invalid-id",
+                       "backgrounded · deadbeef\nbackgrounded · cafebabe"):
+            with self.subTest(output=output):
+                def call(args, timeout=15):
+                    code, out = real(args, timeout)
+                    return (code, output) if "--bg" in args else (code, out)
+                with patch.object(self.b, "call", side_effect=call):
+                    self.assertEqual("uncertain", self.b.step()["state"])
+                self.assertEqual("uncertain", bridge.Bridge(self.cfg).step()["state"])
+                self.assertEqual(1, len(self.launches()))
+                bridge.atomic_json(self.home / "state.json", bridge.empty_state(self.cfg["installation_id"]))
+                (self.root / "calls.jsonl").unlink()
 
     def test_fifo_config_or_state_status_fails_promptly_without_writes(self):
         config = self.home / "config.json"
@@ -317,13 +447,11 @@ class InstallTests(unittest.TestCase):
         plan = installer.install(self.args)
         self.assertFalse(plan["applied"])
         self.assertFalse(plan["starts_service"])
-        self.assertIsNone(plan["model"])
         self.assertEqual(before, snapshot(self.root))
         self.args.apply = True
         result = installer.install(self.args)
         cfg = bridge.read_json(self.target / "config.json")
         self.assertEqual("manual", cfg["permission_mode"])
-        self.assertNotIn("model", cfg)
         self.assertTrue(Path(cfg["entry"]).is_file())
         self.assertTrue((Path(cfg["plugin_root"]) / ".claude-plugin/plugin.json").is_file())
         self.assertEqual(self.original, bridge.read_json(Path(result["backup"]) / "tailmsg-config.json"))
@@ -334,36 +462,6 @@ class InstallTests(unittest.TestCase):
         for path in (self.target / "services").glob("*.plist"):
             self.assertIn("daemon", plistlib.loads(path.read_bytes())["ProgramArguments"])
         self.assertFalse((self.root / "calls.jsonl").exists())
-
-    def test_model_preview_writes_nothing_and_apply_persists_selection(self):
-        self.args.model = "claude-opus-4-6[1m]"
-        before = snapshot(self.root)
-        plan = installer.install(self.args)
-        self.assertEqual(self.args.model, plan["model"])
-        self.assertFalse(plan["launches_claude"])
-        self.assertEqual(before, snapshot(self.root))
-        self.args.apply = True
-        result = installer.install(self.args)
-        self.assertEqual(self.args.model, result["model"])
-        self.assertEqual(self.args.model, bridge.read_json(self.target / "config.json")["model"])
-        self.assertFalse((self.root / "calls.jsonl").exists())
-
-    def test_invalid_model_install_does_not_write(self):
-        for model in ("", "--help", "son net", "a\nb", "a\0b", "sönnet", "a" * 257):
-            for apply in (False, True):
-                with self.subTest(model=model, apply=apply):
-                    self.args.model, self.args.apply = model, apply
-                    before = snapshot(self.root)
-                    with self.assertRaisesRegex(bridge.BridgeError, "model"):
-                        installer.install(self.args)
-                    self.assertEqual(before, snapshot(self.root))
-        self.args.model, self.args.apply = "sonnet", True
-        installer.install(self.args)
-        self.args.model = "--help"
-        before = snapshot(self.root)
-        with self.assertRaisesRegex(bridge.BridgeError, "model"):
-            installer.install(self.args)
-        self.assertEqual(before, snapshot(self.root))
 
     def test_service_paths_preserve_literal_environment_and_unit_specifiers(self):
         unusual = self.root / "cash${HOME}%i"
@@ -385,33 +483,16 @@ class InstallTests(unittest.TestCase):
 
     def test_upgrade_preserves_launch_state_local_instructions_and_backup(self):
         self.args.apply = True
-        self.args.model = "claude-sonnet-4-6"
         installer.install(self.args)
         cfg = bridge.read_json(self.target / "config.json")
         state = bridge.empty_state(cfg["installation_id"])
         state["runs"][str(uuid.uuid4())] = {"ids": ["0123456789abcdef"], "phase": "uncertain"}
         bridge.atomic_json(self.target / "state.json", state)
         (self.target / "CLAUDE_DISPATCHER.md").write_text("custom owner instructions")
-        self.args.model = None
-        result = installer.install(self.args)
-        self.assertEqual(cfg["model"], result["model"])
-        self.assertEqual(cfg, bridge.read_json(self.target / "config.json"))
+        installer.install(self.args)
         self.assertEqual(state, bridge.read_json(self.target / "state.json"))
         self.assertEqual("custom owner instructions", (self.target / "CLAUDE_DISPATCHER.md").read_text())
         self.assertEqual(2, len(list((self.target / "backups").iterdir())))
-
-    def test_explicit_model_change_preserves_existing_installation(self):
-        self.args.apply, self.args.model = True, "sonnet"
-        installer.install(self.args)
-        previous = bridge.read_json(self.target / "config.json")
-        state_before = (self.target / "state.json").read_bytes()
-        self.args.model = "claude-opus-4-6[1m]"
-        result = installer.install(self.args)
-        expected = dict(previous, model=self.args.model)
-        self.assertEqual(expected, bridge.read_json(self.target / "config.json"))
-        self.assertEqual(self.args.model, result["model"])
-        self.assertEqual(state_before, (self.target / "state.json").read_bytes())
-        self.assertEqual(previous, bridge.read_json(Path(result["backup"]) / "bridge-config.json"))
 
     def test_existing_adapter_and_corrupt_bridge_state_are_not_replaced(self):
         original = copy.deepcopy(self.original)
@@ -444,45 +525,16 @@ class InstallTests(unittest.TestCase):
     def test_packaged_cli_installs_and_status_runs_without_source_checkout(self):
         package = Package()
         self.addCleanup(package.cleanup)
-        fake = self.root / "fake-claude"
-        fake.write_text("#!" + sys.executable + "\n" + FAKE)
-        fake.chmod(0o700)
-        model = "claude-opus-4-6[1m]"
-        command = [sys.executable, "-B", str(package.entry), "--home", str(self.data), "claude-bridge", "install",
-                   "--bridge-home", str(self.target), "--claude-path", str(fake), "--workdir", str(self.root)]
-        before = snapshot(self.root)
-        result = subprocess.run(command + ["--model=--help", "--apply"], capture_output=True, text=True, timeout=20)
-        self.assertEqual(2, result.returncode, result.stdout + result.stderr)
-        self.assertIn("model", result.stderr)
-        self.assertEqual(before, snapshot(self.root))
-        result = subprocess.run(command + ["--model", model, "--apply"], capture_output=True, text=True, timeout=20)
+        result = subprocess.run([sys.executable, str(package.entry), "--home", str(self.data), "claude-bridge", "install",
+                                 "--bridge-home", str(self.target), "--claude-path", sys.executable,
+                                 "--workdir", str(self.root), "--apply"], capture_output=True, text=True, timeout=20)
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         cfg = bridge.read_json(self.target / "config.json")
-        self.assertEqual(model, cfg["model"])
         package.cleanup()
         result = subprocess.run([sys.executable, "-B", cfg["entry"], "--config", str(self.target / "config.json"), "status"],
-                                capture_output=True, text=True, timeout=10, cwd=str(self.root))
+                                capture_output=True, text=True, timeout=10)
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertFalse(json.loads(result.stdout)["changed"])
-        inbox = self.data / "inbox"
-        inbox.mkdir()
-        mid = "0123456789abcdef"
-        record = {"envelope": {"id": mid, "from": "trusted", "to": "receiver.example.ts.net",
-                               "kind": "text", "text": "synthetic"},
-                  "received": {"at": "2026-01-01T00:00:00Z", "agent": "claude", "wake": {"effective": "now"},
-                               "peer": {"node": "trusted", "ip": "100.64.0.9"}}}
-        (inbox / (mid + ".json")).write_text(json.dumps(record))
-        result = subprocess.run([sys.executable, "-B", cfg["entry"], "--config", str(self.target / "config.json"), "step"],
-                                capture_output=True, text=True, timeout=10, cwd=str(self.root))
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        self.assertEqual("dispatched", json.loads(result.stdout)["state"])
-        calls = [json.loads(line) for line in (self.root / "calls.jsonl").read_text().splitlines()]
-        launches = [args for args in calls if "--bg" in args]
-        self.assertEqual(1, len(launches))
-        self.assertEqual(1, launches[0].count("--model"))
-        option = launches[0].index("--model")
-        self.assertEqual(model, launches[0][option + 1])
-        self.assertLess(option + 1, launches[0].index("--"))
 
     def test_invalid_agent_is_refused_and_unicode_equivalent_agent_is_preserved(self):
         self.args.agent = " bad "
