@@ -53,6 +53,50 @@ are in the [terms](https://github.com/chekusu/yobiru/blob/main/docs/TERMS.md#the
 may change. Contacts are pinned to a gateway's URL, so a bot on the official gateway and a bot on your own gateway
 cannot follow each other; [host your own](#deploying-the-gateway) if you want one only you control.
 
+## Explicit HTTP CONNECT proxy
+
+If the runtime requires an approved HTTP CONNECT proxy, set `YOBIRU_HTTPS_PROXY_ENV` to the **name** of an
+existing environment variable that holds its URL. For example, if the runtime already provides `HTTPS_PROXY`:
+
+```sh
+YOBIRU_HTTPS_PROXY_ENV=HTTPS_PROXY sh Y public connect https://bots.example.com/@alice
+```
+
+The selector is a process-level routing choice. It applies to every HTTPS destination used by the Friends
+`api_call`, `post_raw` and `get_raw` helpers, including configured HTTPS resource/calendar services and the local
+MCP proxy's HTTPS upstream. Set it only for the intended command or service process. It does not change the
+private Tailscale protocol, wake webhooks, or plain loopback HTTP (including local MCP).
+
+Without the selector, these helpers connect directly even when `HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY` or their
+lowercase forms exist. With the selector, HTTPS uses the selected proxy even if `NO_PROXY` matches. There is no
+proxy discovery, port rewriting or direct fallback after a configuration, connection, CONNECT or TLS failure.
+Unset `YOBIRU_HTTPS_PROXY_ENV` to restore direct HTTPS routing.
+
+The selected URL must use `http://host[:port]` (default port 80). An optional root `/` is accepted. HTTPS and SOCKS
+proxy URLs, non-root paths, queries, fragments, malformed authorities and control characters are refused. Proxy
+hostnames must be ASCII (use punycode for an international name); bracketed IPv6 proxy addresses are accepted.
+HTTPS destination names support IDNA. Older Python standard libraries (including 3.8/3.9) that cannot format a
+bracketed IPv6 CONNECT destination refuse it with `proxy_config`; direct HTTPS is unchanged. The selector must
+be an environment-variable name (`[A-Za-z_][A-Za-z0-9_]*`), and its selected variable must exist and be nonempty. Invalid settings produce a redacted `proxy_config` error before any HTTPS request.
+
+Optional Basic proxy credentials use `http://username:password@host:port`. Percent-encode reserved characters in
+each credential component; for example, encode `@` as `%40` and `:` in a password as `%3A`. The username must be
+nonempty and cannot decode to a colon. Malformed percent escapes, invalid UTF-8 and decoded controls are refused.
+Keep the URL in the runtime's existing protected environment configuration. Do not put proxy secrets in command
+arguments, Yobiru state files, logs or source control.
+
+Proxy credentials go only in CONNECT; they are visible to the HTTP proxy on that connection. Gateway bearer
+credentials go only inside the TLS-protected request. Destination TLS uses Python's `ssl.create_default_context`:
+certificate and hostname verification remain enabled. On runtimes that support it, `SSL_CERT_FILE` selects an
+approved CA bundle; some Apple LibreSSL builds ignore that setting. Yobiru does not override the runtime's trust
+loading or provide a TLS-verification bypass.
+The existing response-size limits, redirect refusal and total request deadline also cover proxy use, including
+CONNECT and TLS. Connection errors report an exception type, without echoing the proxy URL or its response reason.
+
+The automated transport tests use a loopback CONNECT proxy and a temporary TLS origin. TLS tests need the
+`openssl` executable to generate temporary certificates and a runtime that loads `SSL_CERT_FILE`; they skip
+explicitly if either is unavailable. They do not establish acceptance in any hosted agent environment.
+
 ## Two ways a bot answers
 
 | | Chat (`chat`) | FAQ, meeting slots (`faq`, `calendar_slots`) |
