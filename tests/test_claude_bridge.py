@@ -21,7 +21,7 @@ sys.path.insert(0, str(REPO))
 import claude_bridge as bridge
 import install_claude_bridge as installer
 
-FAKE = r'''import json, os, sys, time
+FAKE = r'''import json, os, re, sys, time, uuid
 from pathlib import Path
 root = Path.cwd()
 args = sys.argv[1:]
@@ -41,10 +41,17 @@ assert args[args.index("--permission-mode") + 1] == "manual"
 if mode in ("nonzero", "timeout"): 
     if mode == "timeout": time.sleep(2)
     sys.exit(9)
-(root / "agents.json").write_text(json.dumps([{"id": sid[:8], "sessionId": sid, "status": "idle"}]))
+actual_sid = str(uuid.uuid4()) if mode == "assigned_session" else sid
+name = args[args.index("--name") + 1]
+listed_name = re.sub(r"[\s\ufeff]+", " ", name).strip()
+(root / "agents.json").write_text(json.dumps([{"id": actual_sid[:8], "sessionId": actual_sid,
+    "name": listed_name, "cwd": str(root), "status": "idle"}]))
 if mode == "timeout_seen": time.sleep(2)
 if mode == "nonzero_seen": sys.exit(9)
-print("backgrounded " + sid[:8])
+print("Starting background service…")
+print("backgrounded · \x1b[36m" + actual_sid[:8] + "\x1b[39m · " + name)
+print("claude attach " + actual_sid[:8])
+print("SYNTHETIC PRIVATE OUTPUT MUST NOT ENTER STATE")
 '''
 
 
@@ -102,6 +109,129 @@ class BridgeTests(unittest.TestCase):
         self.assertNotIn("UNTRUSTED BODY", " ".join(self.launches()[0]))
         self.assertFalse(any(c and c[0] in ("stop", "kill", "rm") for c in self.calls()))
         self.assertNotIn("acked_at", json.loads((self.data / "inbox" / (self.mid + ".json")).read_text()))
+
+    def test_background_assigned_session_is_observed_and_next_wake_dispatches(self):
+        self.mode("assigned_session")
+        real = self.b.agents
+        def observe():
+            # Receipt and launch bindings must survive a crash before the lookup.
+            run = next(iter(self.b.load_state()["runs"].values()))
+            agent = json.loads((self.root / "agents.json").read_text())[0]
+            self.assertEqual(agent["id"], run["launch_background_id"])
+            self.assertEqual(agent["name"], run["name"])
+            self.assertEqual(agent["cwd"], run["workdir"])
+            return real()
+        with patch.object(self.b, "agents", side_effect=observe):
+            result = self.b.step()
+        self.assertEqual("dispatched", result["state"])
+        agent = json.loads((self.root / "agents.json").read_text())[0]
+        self.assertNotEqual(result["session_id"], agent["sessionId"])
+        run = self.b.load_state()["runs"][result["session_id"]]
+        self.assertEqual(agent["id"], run["background_id"])
+        self.assertEqual(agent["sessionId"], run["observed_session_id"])
+        self.assertNotIn("backgrounded", json.dumps(run))
+        self.assertNotIn("SYNTHETIC PRIVATE OUTPUT", json.dumps(run))
+        self.assertEqual("idle", bridge.Bridge(self.cfg).step()["state"])
+        self.record("fedcba9876543210")
+        self.assertEqual("dispatched", bridge.Bridge(self.cfg).step()["state"])
+        self.assertEqual(2, len(self.launches()))
+
+    def test_background_receipt_survives_interrupted_reconciliation(self):
+        self.mode("assigned_session")
+        with patch.object(self.b, "agents", side_effect=SystemExit("simulated crash before lookup")):
+            with self.assertRaises(SystemExit):
+                self.b.step()
+        run = next(iter(self.b.load_state()["runs"].values()))
+        self.assertEqual("uncertain", run["phase"])
+        self.assertTrue(run["launch_background_id"])
+        self.assertEqual("idle", bridge.Bridge(self.cfg).step()["state"])
+        self.assertEqual(1, len(self.launches()))
+
+    def test_custom_agent_whitespace_keeps_routing_identity_and_receipt_matching(self):
+        self.mode("assigned_session")
+        for custom_agent in ("team  assistant", "team\u00a0assistant", "team\ufeffassistant", "team\u3000assistant"):
+            with self.subTest(agent=custom_agent):
+                cfg = dict(self.cfg, agent=custom_agent)
+                b = bridge.Bridge(cfg)
+                bridge.atomic_json(self.home / "state.json", bridge.empty_state(cfg["installation_id"]))
+                (self.root / "calls.jsonl").unlink(missing_ok=True)
+                for mid in (self.mid, "fedcba9876543210"):
+                    # Keep the original agent identity in the inbox; only the CLI
+                    # display label may use collapsed whitespace.
+                    rec = self.record(mid)
+                    rec["received"]["agent"] = custom_agent
+                    (self.data / "inbox" / (mid + ".json")).write_text(json.dumps(rec))
+                    result = b.step()
+                    self.assertEqual("dispatched", result["state"])
+                    self.assertEqual([mid], result["ids"])
+                    run = b.load_state()["runs"][result["session_id"]]
+                    self.assertEqual("Yobiru team assistant " + mid[:8], run["name"])
+                    self.assertEqual(custom_agent, b.cfg["agent"])
+                    self.assertEqual(custom_agent, json.loads((self.data / "inbox" / (mid + ".json")).read_text())["received"]["agent"])
+                    self.assertEqual("idle", bridge.Bridge(cfg).step()["state"])
+                self.assertEqual(2, len(self.launches()))
+
+    def test_background_receipt_requires_unique_id_and_saved_launch_bindings(self):
+        sid = str(uuid.uuid4())
+        actual_sid = str(uuid.uuid4())
+        short = actual_sid[:8]
+        run = {"ids": [self.mid], "phase": "uncertain", "name": "Yobiru claude " + self.mid[:8],
+               "workdir": str(self.root), "launch_background_id": short}
+        agent = {"id": short, "sessionId": actual_sid, "name": run["name"], "cwd": run["workdir"]}
+        cases = [(None, {}), ([], {}), ([dict(agent, id="deadbeef")], {}), ([dict(agent, cwd=str(self.data))], {}),
+                 ([dict(agent, name="another session")], {}), ([agent, dict(agent)], {}),
+                 ([agent], {"launch_background_id": None}), ([agent], {"name": None}),
+                 ([agent], {"workdir": None}),
+                 ([dict(agent, sessionId=sid), dict(agent, sessionId=sid)], {})]
+        for agents, changes in cases:
+            with self.subTest(agents=agents, changes=changes):
+                state = bridge.empty_state(self.cfg["installation_id"])
+                state["runs"][sid] = dict(run, **changes)
+                self.b.save(state)
+                with patch.object(self.b, "agents", return_value=agents):
+                    self.assertEqual("uncertain", self.b.step()["state"])
+                self.assertEqual([], self.launches())
+        # A config change cannot substitute for the workdir/name saved at launch.
+        state["runs"][sid] = dict(run)
+        self.b.save(state)
+        changed = bridge.Bridge(dict(self.cfg, workdir=str(self.data), agent="other"))
+        with patch.object(changed, "agents", return_value=[agent]):
+            changed.reconcile(state)
+        self.assertEqual("dispatched", state["runs"][sid]["phase"])
+        self.assertNotIn("reason", state["runs"][sid])
+
+    def test_background_receipt_reconciles_after_delayed_agent_visibility(self):
+        self.mode("assigned_session")
+        with patch.object(self.b, "agents", return_value=[]):
+            self.assertEqual("uncertain", self.b.step()["state"])
+        self.assertEqual("idle", bridge.Bridge(self.cfg).step()["state"])
+        self.assertNotIn("reason", next(iter(self.b.load_state()["runs"].values())))
+        self.assertEqual(1, len(self.launches()))
+
+    def test_background_receipt_can_reconcile_without_listed_session_uuid(self):
+        self.mode("assigned_session")
+        real = self.b.agents
+        def without_session_id():
+            return [{k: v for k, v in agent.items() if k != "sessionId"} for agent in real()]
+        with patch.object(self.b, "agents", side_effect=without_session_id):
+            self.assertEqual("dispatched", self.b.step()["state"])
+        self.assertEqual(1, len(self.launches()))
+
+    def test_malformed_or_ambiguous_launch_output_cannot_bind_assigned_session(self):
+        self.mode("assigned_session")
+        real = self.b.call
+        for output in ("", "not a launch receipt deadbeef", "backgrounded · invalid-id",
+                       "backgrounded · deadbeef\nbackgrounded · cafebabe"):
+            with self.subTest(output=output):
+                def call(args, timeout=15):
+                    code, out = real(args, timeout)
+                    return (code, output) if "--bg" in args else (code, out)
+                with patch.object(self.b, "call", side_effect=call):
+                    self.assertEqual("uncertain", self.b.step()["state"])
+                self.assertEqual("uncertain", bridge.Bridge(self.cfg).step()["state"])
+                self.assertEqual(1, len(self.launches()))
+                bridge.atomic_json(self.home / "state.json", bridge.empty_state(self.cfg["installation_id"]))
+                (self.root / "calls.jsonl").unlink()
 
     def test_fifo_config_or_state_status_fails_promptly_without_writes(self):
         config = self.home / "config.json"
