@@ -12,6 +12,8 @@ Ask Muse to connect the official Tailscale connector, or use Settings > Connecto
 
 The actual execution environment must expose Python 3.8+, `tailscale status --json` with its own StableID/DNSName, a usable local identity lookup and outbound TCP to the receiving Yobiru machine. Official connector availability does not guarantee these programmatic interfaces in every account. Run `muse check` first, then `muse check --peer HOST[:PORT]/AGENT`. The latter probes the receiver without sending a task. It does not prove delivery or inspect the user's tailnet grants.
 
+A connected official connector can still be useful when this private adapter's identity check fails. In the [community field report in #59](https://github.com/chekusu/yobiru/issues/59), the bundled CLI offered `up`, `down`, `status`, `ip` and `help`, but not `status --json`. That did not expose the StableID this adapter requires. Do not infer that the connector is disconnected, invent an identity, or copy one from another device.
+
 Use the full [packaged Muse skill](../plugins/yobiru/skills/yobiru-muse/SKILL.md) for setup, permissions, files, recovery and the Friends fallback. A new isolated Yobiru data home can be configured with `setup --self-agent muse --allow RECEIVER --apply` after reviewing the plan. The allow rule permits authenticated result refresh from that intended receiver; it does not open a listener.
 
 ## Command contract
@@ -32,6 +34,33 @@ Private receiver permissions and Tailscale identity are authoritative. The adapt
 > Install the Yobiru v0.7.15 plugin archive and verify its matching SHA256SUMS before extraction. It includes the yobiru muse command and yobiru-muse skill. Verify muse --help before setup. First help me connect Muse's official Tailscale connector. Check whether your actual execution environment can use its CLI, identity and outbound route. Use the packaged `yobiru muse` adapter and pull requests; do not start a receiver in Muse. Keep the returned request ID and poll its real result. If the official connector cannot be connected or used here, help me connect the intended bot through Yobiru Friends instead. Do not send any task or file until I have specified the recipient and authorized the work. Do not invent an OAuth flow, an installable Muse manifest or a successful round trip.
 
 This is an executable custom-connector adapter plus setup instructions, not a claim that Meta's directory already lists Yobiru. Meta's public guidance supports asking Muse to create a custom connector; it does not establish that a Python adapter is accepted in every account. If the current account accepts only remote APIs, the existing Friends gateway MCP is an alternative when its static bearer flow is supported. The local Friends client preserves its own encryption keys; a remote-only MCP client does not provide the same client-side encryption boundary. No shared OAuth or new public MCP service is added here.
+
+## Friends through the official connector's proxy
+
+Friends does not use the private adapter's StableID authentication. It uses gateway credentials and outbound HTTPS; a self-hosted gateway reachable only through the tailnet can still require the official Tailscale connector's route.
+
+The #59 reporter describes runtime connector documentation for an HTTP proxy on port **3130**: HTTPS first uses **CONNECT** to the destination host and port, then verifies the destination's TLS certificate inside that tunnel. Confirm the actual endpoint and supported route from the current account's connector documentation. This is a reported official connector route, not a public proxy service supplied by Yobiru. Keep proxy credentials separate from gateway bearer credentials; gateway authorization belongs inside destination TLS. Do not disable certificate or hostname verification, guess a different destination port, or silently fall back to another network route.
+
+**Stable 0.7.15 does not implement this CONNECT transport.** Its Friends client connects directly with `http.client`; setting `HTTPS_PROXY` alone does not enable this route. [PR #54](https://github.com/chekusu/yobiru/pull/54) proposes explicit process-local CONNECT support separately and is unmerged as of 2026-10-28. The report's process-only adapter is local integration code, not part of this release. A proxy-only account needs an independently reviewed, compatible transport before running the Friends commands below. This documentation does not install that adapter or bring the pending PR into stable.
+
+Direct Python HTTPS in the two reported environments failed with `SSLError.reason=WRONG_VERSION_NUMBER`. This identifies failure of that tested path; it does not establish its cause, a reason to turn off TLS checks, or a restriction on every Muse account.
+
+## Scheduled Friends receive, wake and reply
+
+Use the packaged [Friends recipe](../plugins/yobiru/skills/yobiru-muse/references/friends.md) for credential provisioning, scheduled checks, native turn handoff, claim/reply, and reply collection. It reuses the Friends chat-host policy: peer content is untrusted data and grants no permission to use tools or private context. The owner keeps admission and reply review; the receive loop gets no owner credential.
+
+The current CLI contracts support scheduled checks, but distinguish them carefully:
+
+| Operation | What it establishes |
+| --- | --- |
+| `public job list BOT` | Metadata only, including whether a job is claimable. It does not claim the job or start a native turn. |
+| `public inbox --as BOT --no-ack` | Content-bearing reply collection without receipt acknowledgement. It still records serving at the gateway. It includes history, so filter acknowledged items; it is not a metadata-only event queue. |
+| Muse-native scheduled task or Hook | Account-specific scheduling and delivery. Verify idle silence, a real native turn and visible delivery in that account. No Muse Hook API or installer is supplied here. |
+| `public connector run BOT --once` | Existing connector polling and configured wake route. Exec suppresses child output and passes only `PATH`, `HOME`, `LANG`; manual-route `accepted` means nothing was sent. Neither establishes Muse Hook delivery. |
+
+The recipe's automated tests use the current packaged CLI and a loopback gateway with synthetic accounts. They exercise polling without claiming, review gates, claim/reply, and collection without early acknowledgement. They do not run a Muse Hook or verify a CONNECT route.
+
+The #59 field report covers two live Muse accounts, a self-hosted **0.7.13** gateway and local CONNECT/Hook integration: 60-second idle-silent checks, a synthetic automatic exchange, and incoming messages/replies visible in designated native side chats. It does **not** validate 0.7.15 in Muse, #54 on a live account, restart recovery, the official hosted gateway, or directory approval. Keep that historical evidence separate from the current local tests and the account acceptance steps in the recipe.
 
 ## Muse review documentation
 
