@@ -106,7 +106,9 @@ actual execution is unknown; it does not cancel the task. Late final results can
 
 Use `request status ID --refresh --json` to ask the original receiver, or omit `--refresh` for local
 state. Receivers use `request status ID --direction incoming --json`. `request list --json` lists
-both directions. A running receiver maintains the ledger and response queue automatically;
+both directions. `request list --open --json` lists unresolved long-lived tasks, so blocked, failed,
+rejected or timed-out work remains discoverable after ack or bridge archival. `request resolve TASK_ID`
+is the explicit local disposition and never changes the immutable request attempt. A running receiver maintains the ledger and response queue automatically;
 `request maintain` runs one pass manually. No exactly-once execution or offline completion is promised.
 
 Tracked responses stay in the authenticated request ledger, not the ordinary inbox, and never wake

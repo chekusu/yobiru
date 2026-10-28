@@ -1007,6 +1007,16 @@ def diagnostics(config, now=None, limit=DIAGNOSTIC_ROWS):
                         "stalled_running": stalled, "final_response_delivery": final_delivery,
                         "ledger": "read" if ledger_ok else "absent" if ledger_reason == "ledger_absent"
                         else "unavailable:" + ledger_reason}
+    try:
+        backlog_reader = getattr(_core(), "request_backlog", None)
+        task_summary = backlog_reader(tailmsg_home).get("tasks") if backlog_reader else None
+    except Exception:
+        task_summary = None
+    out["tasks"] = task_summary or {"available": False, "reason": "ledger_reader_unavailable"}
+    if not out["tasks"].get("available"):
+        add("tasks_unavailable")
+    elif out["tasks"].get("needs_attention", 0):
+        add("tasks_need_attention")
     return _finish(out, "partial" if partial else "known")
 
 
