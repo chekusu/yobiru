@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Claude bridge reconciliation.** When the Claude CLI gives a `--bg` session its own UUID and ignores `--session-id`, a run is reconciled by its unique launch name instead of staying `uncertain` and blocking later dispatch.
+
 ## 0.7.15 (2026-10-26)
 
 This release packages the Muse connector and later agent workflow fixes previously available only from the reviewed main source.

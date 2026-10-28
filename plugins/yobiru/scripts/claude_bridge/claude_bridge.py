@@ -113,6 +113,23 @@ def validate_state(value, installation_id):
     return value
 
 
+def started_before(agent, created_at, slack=60):
+    """True only when the session's own start time is known and clearly precedes the launch intent."""
+    started = agent.get("startedAt")
+    if type(created_at) not in (int, float):
+        return False
+    if type(started) in (int, float):
+        seconds = started / 1000 if started > 1e11 else started
+    elif isinstance(started, str):
+        try:
+            seconds = datetime.datetime.fromisoformat(started.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return False
+    else:
+        return False
+    return seconds < created_at - slack
+
+
 @contextlib.contextmanager
 def writer_lock(home):
     import fcntl
@@ -215,15 +232,28 @@ class Bridge:
             return None
         return value if isinstance(value, list) and all(isinstance(a, dict) for a in value) else None
 
+    def session_name(self, ids):
+        return "Yobiru %s %s" % (self.cfg["agent"], ids[0][:8])
+
     def reconcile(self, state):
         waiting = [(sid, run) for sid, run in state["runs"].items() if run["phase"] in ("intent", "uncertain")]
         if not waiting:
             return
         agents = self.agents()
+        claimed = {run.get("background_id") for run in state["runs"].values() if run.get("background_id")}
         for sid, run in waiting:
-            matches = [a for a in agents or [] if a.get("sessionId") == sid]
+            matches, by = [a for a in agents or [] if a.get("sessionId") == sid], "session_id"
+            if not matches:
+                # Some Claude Code versions give a --bg session its own UUID and ignore --session-id. The
+                # launch name is unique per run (a message ID is owned by one run only); accept it only when
+                # exactly one unclaimed session carries it and that session did not start before the intent.
+                matches, by = [a for a in agents or [] if a.get("name") == self.session_name(run["ids"])
+                               and a.get("id") not in claimed and not started_before(a, run.get("created_at"))], "name"
             if len(matches) == 1 and isinstance(matches[0].get("id"), str) and matches[0]["id"]:
-                run.update(phase="dispatched", background_id=matches[0]["id"], reconciled_at=time.time())
+                run.update(phase="dispatched", background_id=matches[0]["id"], reconciled_at=time.time(),
+                           reconciled_by=by)
+                run.pop("reason", None)
+                claimed.add(matches[0]["id"])
             else:
                 run.update(phase="uncertain", reason="session_lookup_unavailable" if agents is None else "session_not_uniquely_observed")
         self.save(state)
@@ -263,7 +293,7 @@ class Bridge:
         sid = str(uuid.uuid4())
         state["runs"][sid] = {"ids": ids, "phase": "intent", "created_at": time.time()}
         self.save(state)  # fsync intent and directory before invoking Claude
-        name = "Yobiru %s %s" % (self.cfg["agent"], ids[0][:8])
+        name = self.session_name(ids)
         args = ["--bg", "--remote-control", name, "--session-id", sid, "--name", name,
                 "--permission-mode", self.cfg["permission_mode"], "--no-chrome",
                 "--plugin-dir", self.cfg["plugin_root"], "--append-system-prompt", instructions,
