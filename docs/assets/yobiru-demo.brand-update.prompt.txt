@@ -1,4 +1,6 @@
-Brand-only edit, 2026-10-12. Method: built-in Image Generation.
+Historical demo-only brand edit, 2026-10-12. Method: built-in Image Generation.
+The current product logo is the final vector set in `brand/logo/yobiru/` (PR #64);
+this prompt records only the older README demonstration edit.
 Input 1: previous docs/assets/yobiru-demo.png, the demonstration to preserve.
 Input 2: plugins/yobiru/assets/icon.png, the approved icon to insert.
 This revision supersedes the original prompt's instruction to omit a separate icon.

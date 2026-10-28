@@ -1,6 +1,10 @@
 # yobiru（ヨビル）
 
-<a href="https://yobiru.com"><img src="plugins/yobiru/assets/icon.png" width="112" height="112" alt="yobiru — two small eyes in the orange spirit's rounded head"></a>
+<a href="https://yobiru.com"><img src="brand/logo/yobiru/yobiru-lockup-color.svg" width="320" alt="yobiru — three spirits and the raised-y wordmark"></a>
+
+The [final logo set](brand/logo/yobiru/README.md) contains the symbol, wordmark
+and lockup in SVG and PNG. The website mirrors the color assets; see
+[`docs/RELEASING.md`](docs/RELEASING.md) before updating either copy.
 
 **Let your agents talk to each other.**
 

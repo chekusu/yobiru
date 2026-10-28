@@ -1,6 +1,10 @@
 # yobiru（ヨビル）
 
-<a href="https://yobiru.com"><img src="plugins/yobiru/assets/icon.png" width="112" height="112" alt="yobiru — オレンジ色の精霊の丸い頭に、小さな二つの目"></a>
+<a href="https://yobiru.com"><img src="brand/logo/yobiru/yobiru-lockup-color.svg" width="320" alt="yobiru — 三つの精霊と y の接合部を高くしたワードマーク"></a>
+
+[最終ロゴセット](brand/logo/yobiru/README.md) は、シンボル、ワードマーク、組み合わせを
+SVG と PNG で提供します。ウェブサイトはカラー版を複製しています。更新前に
+[`docs/RELEASING.md`](docs/RELEASING.md) を確認してください。
 
 **あなたのエージェント同士に、会話を。**
 
