@@ -9,7 +9,7 @@ the bot's owner can mint. Bots follow each other with directed edges; two exact 
 friends. Each owner sets visitor, follower and friend presets plus explicit per-contact grants, and
 every access re-derives what a caller may use now. Deterministic workers and at most one native agent
 binding per bot poll outbound and work under fenced leases; a connector wakes the selected native host
-with an opaque job reference, and replies from a native host are drafts the owner approves. The gateway
+with an opaque job, reply or friend bot id, and replies from a native host are drafts the owner approves. The gateway
 never makes outbound requests, never runs adapters or shell commands, and never forwards anything to
 tailmsg. Email verification codes wait in an outbox that the separate `mail-relay` process delivers over
 SMTP, so `serve` itself still connects nowhere. `POST /mcp` serves the same API to MCP clients (Streamable HTTP, JSON responses, bearer credentials).
@@ -291,8 +291,13 @@ CREATE TABLE IF NOT EXISTS contacts (
     PRIMARY KEY (bot_id, actor_id));
 CREATE TABLE IF NOT EXISTS follows (
     src TEXT NOT NULL, dst TEXT NOT NULL, state TEXT NOT NULL, revision INTEGER NOT NULL,
-    created_ts INTEGER NOT NULL, updated_ts INTEGER NOT NULL, PRIMARY KEY (src, dst));
+    created_ts INTEGER NOT NULL, updated_ts INTEGER NOT NULL,
+    wake_state TEXT NOT NULL DEFAULT 'none', wake_id TEXT, wake_seq INTEGER NOT NULL DEFAULT 0,
+    wake_ts INTEGER, wake_detail TEXT, PRIMARY KEY (src, dst));
 CREATE INDEX IF NOT EXISTS follows_dst ON follows(dst, state);
+-- One wake record per direction: src is the bot that may be woken about dst. The mutual listing reads
+-- active edges by that bot and by wake_state (none or refused).
+CREATE INDEX IF NOT EXISTS follows_friend_wake ON follows(src, wake_state) WHERE state='active';
 CREATE TABLE IF NOT EXISTS workers (
     id TEXT PRIMARY KEY, bot_id TEXT NOT NULL, epoch INTEGER NOT NULL, label TEXT NOT NULL,
     created_ts INTEGER NOT NULL, revoked_ts INTEGER, last_seen_ts INTEGER,
@@ -455,6 +460,38 @@ STATS_BACKFILL = (
     "SELECT actor_id AS who FROM messages WHERE author='caller' AND substr(actor_id, 1, 4)='bot_' "
     "UNION ALL SELECT bot_id FROM messages WHERE author='owner' "
     "UNION ALL SELECT bot_id FROM messages WHERE state='completed' AND result IS NOT NULL) GROUP BY who")
+
+
+FOLLOW_WAKE_COLUMNS = (
+    ("wake_state", "TEXT NOT NULL DEFAULT 'none'"),
+    ("wake_id", "TEXT"),
+    ("wake_seq", "INTEGER NOT NULL DEFAULT 0"),
+    ("wake_ts", "INTEGER"),
+    ("wake_detail", "TEXT"),
+)
+
+
+def ensure_follow_wakes(db):
+    """Wake columns on `follows`, added in place (no schema bump). Each direction is the wake record of its
+    source bot, and only a mutual friendship is announced. Edges that already existed are marked accepted
+    once, so an upgrade does not wake the agent for friends it already had; a new mutual friendship after
+    that can. A one-way follow does not. The old `follows_wake` index (by destination) is replaced by
+    `follows_friend_wake`, which matches the per-owner listing. `db` is in autocommit mode."""
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        cols = {row[1] for row in db.execute("PRAGMA table_info(follows)")}
+        for name, decl in FOLLOW_WAKE_COLUMNS:
+            if name not in cols:
+                db.execute("ALTER TABLE follows ADD COLUMN %s %s" % (name, decl))
+        if db.execute("SELECT 1 FROM meta WHERE key='follow_wakes'").fetchone() is None:
+            db.execute("UPDATE follows SET wake_state='accepted' WHERE wake_state='none'")
+            db.execute("INSERT INTO meta(key, value) VALUES('follow_wakes', '1')")
+        db.execute("DROP INDEX IF EXISTS follows_wake")
+        db.execute("CREATE INDEX IF NOT EXISTS follows_friend_wake ON follows(src, wake_state) WHERE state='active'")
+        db.execute("COMMIT")
+    except BaseException:
+        db.execute("ROLLBACK")
+        raise
 
 
 def ensure_stats(db):
@@ -726,6 +763,7 @@ class Store(object):
             for statement in INBOX_TABLES + SWEEP_INDEXES + CHANGE_TABLES:
                 db.execute(statement)
             ensure_stats(db)
+            ensure_follow_wakes(db)
         finally:
             db.close()
         self._idle, self._idle_lock = [], threading.Lock()
@@ -1695,15 +1733,41 @@ def change_graph(db, now, pairs, mutate, code):
             narrow_contact(db, bot_id, pid, now, code)
 
 
+def open_friend_wake(db, src, dst, now):
+    """Let `src` be woken once about `dst` for a friendship that just became mutual. A record that was never
+    used (state none, no attempts) is already due, so it is left alone. An unfollow does not call this."""
+    row = db.execute("SELECT wake_state, wake_seq FROM follows WHERE src=? AND dst=? AND state='active'",
+                     (src, dst)).fetchone()
+    if row is None or (row["wake_state"] == "none" and row["wake_seq"] == 0):
+        return
+    db.execute("UPDATE follows SET wake_state='none', wake_id=NULL, wake_seq=0, wake_ts=NULL, wake_detail=NULL, "
+               "updated_ts=? WHERE src=? AND dst=?", (int(now), src, dst))
+
+
 def set_edge(db, src, dst, state, now):
-    row = db.execute("SELECT * FROM follows WHERE src=? AND dst=?", (src, dst)).fetchone()
+    """Write one follow edge. Each bot's wake record is its own outgoing edge, so both owners can be woken
+    once for the same friendship. An unfollow keeps that record and wakes nobody. Following again, while the
+    other side still follows, starts a new record for both bots. A one-way follow never wakes."""
+    row = db.execute("SELECT state FROM follows WHERE src=? AND dst=?", (src, dst)).fetchone()
+    reverse = db.execute("SELECT state FROM follows WHERE src=? AND dst=?", (dst, src)).fetchone()
+    mutual = state == "active" and reverse is not None and reverse["state"] == "active"
+    became_active = False
     if row is None:
         if state == "active":
             db.execute("INSERT INTO follows(src, dst, state, revision, created_ts, updated_ts) VALUES(?,?,?,1,?,?)",
                        (src, dst, state, int(now), int(now)))
+            became_active = True
     elif row["state"] != state:
-        db.execute("UPDATE follows SET state=?, revision=revision+1, updated_ts=? WHERE src=? AND dst=?",
-                   (state, int(now), src, dst))
+        if state == "active":
+            db.execute("UPDATE follows SET state=?, revision=revision+1, updated_ts=?, wake_state='none', "
+                       "wake_id=NULL, wake_seq=0, wake_ts=NULL, wake_detail=NULL WHERE src=? AND dst=?",
+                       (state, int(now), src, dst))
+            became_active = True
+        else:
+            db.execute("UPDATE follows SET state=?, revision=revision+1, updated_ts=? WHERE src=? AND dst=?",
+                       (state, int(now), src, dst))
+    if became_active and mutual:
+        open_friend_wake(db, dst, src, now)
 
 
 def recheck_bot(db, bot_id, old_pol, new_pol, now):
@@ -4648,8 +4712,15 @@ class Api(object):
                 retry = self.wake_retry_ts(m) if retry is None else min(retry, self.wake_retry_ts(m))
         checks = db.execute("SELECT id FROM checks WHERE worker_id=? AND answered_ts IS NULL AND expires_ts>? AND "
                             "wake_state='none' ORDER BY id", (worker["id"], int(now))).fetchall()
+        follows, follow_retry = self.pending_follows(db, bot, now, getattr(r, "follows", None))
+        if follow_retry is not None:
+            retry = follow_retry if retry is None else min(retry, follow_retry)
         listing = {"jobs": jobs, "checks": [{"check_id": c["id"]} for c in checks],
                    "replies": self.pending_replies(db, bot, now)}
+        # Absent unless this poll asked. A connector that did not opt in, and an older connector, then hash the
+        # same listing they always did, so a follow does not end their wait.
+        if follows is not None:
+            listing["follows"] = follows
         # The cursor names this listing: a poll that sends it back with `wait` is held until the listing differs
         # (a change wakes it, a refused wake's retry time ends the wait) or the wait is over.
         cursor = hashlib.sha256(canonical(listing).encode("ascii")).hexdigest()[:32]
@@ -4674,6 +4745,41 @@ class Api(object):
             if released_to_caller(m, result_block(db, target, contact, m)):
                 replies.append({"message_id": m["id"], "from_bot_id": target["id"], "state": m["state"]})
         return replies
+
+    def pending_follows(self, db, bot, now, mode):
+        """Friendship wakes the connector asked for. `mode` None means it did not ask: return None so the listing
+        omits `follows`. `mutual` lists friendships that just became mutual, each this bot's own not-yet-woken
+        record: the other bot's id and this bot's follow revision. The other owner has a separate record.
+        A one-way follow is never listed.
+        -> (follows or None, retry time of a wake that is not due yet)."""
+        if mode != "mutual":
+            return None, None
+        return self.pending_mutual(db, bot["id"], now)
+
+    def pending_mutual(self, db, bot_id, now):
+        """`follows_friend_wake` is (src, wake_state) WHERE state='active', which is this filter. The reverse
+        edge is a primary-key lookup, so the join does not scan."""
+        rows = db.execute("SELECT f.dst, f.revision, f.wake_state, f.wake_seq, f.wake_ts FROM follows f "
+                          "JOIN follows r ON r.src=f.dst AND r.dst=f.src AND r.state='active' "
+                          "WHERE f.src=? AND f.state='active' AND f.wake_state IN ('none', 'refused') "
+                          "ORDER BY f.updated_ts, f.rowid", (bot_id,))
+        found, retry = [], None
+        for edge in rows:
+            if self.follow_wake_due(edge, now):
+                found.append({"bot_id": edge["dst"], "revision": edge["revision"], "kind": "friends"})
+                if len(found) == 200:
+                    break
+            else:
+                at = self.wake_retry_ts(edge)
+                if at is not None:
+                    retry = at if retry is None else min(retry, at)
+        return found, retry
+
+    def follow_wake_due(self, edge, now):
+        if edge["wake_state"] == "none":
+            return True
+        retry = self.wake_retry_ts(edge)
+        return retry is not None and now >= retry
 
     def wake_fields(self, body):
         fields(body, ("step", "wake_id", "phase", "outcome", "detail", "route"), ("step", "wake_id"))
@@ -4743,6 +4849,51 @@ class Api(object):
         chk = db.execute("SELECT * FROM checks WHERE id=?", (chk["id"],)).fetchone()
         return 200, {"ok": True, "check_id": chk["id"], "step": "result", "duplicate": False,
                      "route_evidence": settle_check(db, chk, now, self.limits["quiet_wake_seconds"])}
+
+    def connector_follow_wake(self, db, r):
+        """The same durable ledger as a job wake, stored on this bot's own outgoing edge. `intent` is recorded
+        before the connector calls the host, `result` after. An intent without a result, an uncertain or an
+        accepted wake is never repeated. The other owner's record is a different row. A one-way follow is not due."""
+        worker, now, body = r.subject, r.now, r.body
+        wake_id = self.wake_fields(body)
+        me, other = worker["bot_id"], r.params["fid"]
+        phase = body.get("phase")
+        # The shared result post names the wake id and the outcome, not the phase. Intent still must say which.
+        if body["step"] == "intent" and phase != "friends":
+            raise Fail(400, "invalid_phase", "phase: friends")
+        if phase not in (None, "friends"):
+            raise Fail(400, "invalid_phase", "phase: friends")
+        mine = db.execute("SELECT * FROM follows WHERE src=? AND dst=?", (me, other)).fetchone()
+        theirs = db.execute("SELECT state FROM follows WHERE src=? AND dst=?", (other, me)).fetchone()
+        if mine is None and theirs is None:
+            raise Fail(404, "not_found")
+
+        def answer(state, duplicate, seq=None):
+            out = {"ok": True, "friend_bot_id": other, "wake_state": state, "duplicate": duplicate}
+            if seq is not None:
+                out["wake_seq"] = seq
+            return 200, out
+
+        if body["step"] == "intent":
+            if mine is not None and mine["wake_id"] == wake_id and mine["wake_state"] == "intent":
+                return answer("intent", True)
+            mutual = mine is not None and theirs is not None and mine["state"] == "active" and \
+                theirs["state"] == "active"
+            if not mutual or not self.follow_wake_due(mine, now):
+                return 409, {"ok": False, "error": "not_due",
+                             "wake_state": mine["wake_state"] if mine is not None else "none"}
+            db.execute("UPDATE follows SET wake_state='intent', wake_id=?, wake_seq=wake_seq+1, wake_ts=?, "
+                       "wake_detail=NULL WHERE src=? AND dst=?", (wake_id, int(now), me, other))
+            return answer("intent", False, mine["wake_seq"] + 1)
+        if mine is None or mine["wake_id"] != wake_id:
+            return 409, {"ok": False, "error": "wake_mismatch", "detail": "a newer wake intent replaced this one"}
+        if mine["wake_state"] != "intent":
+            if mine["wake_state"] == body["outcome"]:
+                return answer(mine["wake_state"], True)
+            return 409, {"ok": False, "error": "wake_recorded", "wake_state": mine["wake_state"]}
+        db.execute("UPDATE follows SET wake_state=?, wake_detail=?, wake_ts=? WHERE src=? AND dst=?",
+                   (body["outcome"], short_detail(body.get("detail")), int(now), me, other))
+        return answer(body["outcome"], False)
 
     # ---- private capability services
     def capability_redeem(self, db, r):
@@ -4888,6 +5039,7 @@ ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
     ("GET", r"/v1/connector/jobs", "connector_jobs", ("connector",)),
     ("POST", r"/v1/connector/messages/(?P<mid>msg_[a-z2-7]{16})/wake", "connector_wake", ("connector",)),
     ("POST", r"/v1/connector/checks/(?P<chk>chk_[a-z2-7]{16})/wake", "connector_check_wake", ("connector",)),
+    ("POST", r"/v1/connector/follows/(?P<fid>%s)/wake" % BOT_ID, "connector_follow_wake", ("connector",)),
     ("POST", r"/v1/capability/redeem", "capability_redeem", ("verifier",)),
 ]]
 
@@ -4906,19 +5058,25 @@ def change_seq(db, bot_id):
 
 
 def wait_params(query):
-    """`wait` (seconds, 0-30) and `cursor` (from the previous listing) of a connector poll."""
+    """`wait` (seconds, 0-30), `cursor` (from the previous listing) and `follows` of a connector poll.
+
+    `follows` is omitted unless the connector opted in to new friendships (`mutual`). Any other query is
+    refused, as before."""
     try:
         q = urllib.parse.parse_qs(query, keep_blank_values=True, strict_parsing=True) if query else {}
     except ValueError:
         raise Fail(400, "query_not_supported")
-    if set(q) - {"wait", "cursor"} or any(len(v) != 1 for v in q.values()):
+    if set(q) - {"wait", "cursor", "follows"} or any(len(v) != 1 for v in q.values()):
         raise Fail(400, "query_not_supported")
     wait, cursor = q.get("wait", ["0"])[0], q.get("cursor", [None])[0]
+    follows = q.get("follows", [None])[0]
     if not re.match(r"^[0-9]{1,2}$", wait) or int(wait) > CONNECTOR_WAIT_MAX or \
             (cursor is not None and not re.match(r"^[0-9a-f]{32}$", cursor)):
         raise Fail(400, "invalid_wait", "wait: 0-%d seconds; cursor: the cursor of the previous listing"
                    % CONNECTOR_WAIT_MAX)
-    return int(wait), cursor
+    if follows not in (None, "mutual"):
+        raise Fail(400, "invalid_follows", "follows: mutual")
+    return int(wait), cursor, follows
 
 
 class ChangeWatcher(object):
@@ -5372,7 +5530,7 @@ def make_handler(api):
                 self._route = name
                 req = Request()
                 req.params, req.now, req.client_ip = m.groupdict(), C.now_ts(), client_ip(self, cfg)
-                req.wait, req.cursor = wait_params(url.query) if name == "connector_jobs" else (0, None)
+                req.wait, req.cursor, req.follows = wait_params(url.query) if name == "connector_jobs" else (0, None, None)
                 auth = self.headers.get("Authorization") or ""
                 req.token = auth[7:].strip() or None if auth.startswith("Bearer ") else None
                 if auth and req.token is None:
@@ -5930,6 +6088,7 @@ def cmd_init(home, a):
         for statement in INBOX_TABLES + SWEEP_INDEXES + CHANGE_TABLES:
             db.execute(statement)
         ensure_stats(db)
+        ensure_follow_wakes(db)
         db.execute("BEGIN IMMEDIATE")
         db.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,))
         db.execute("INSERT INTO meta(key, value) VALUES('created_at', ?)", (C.iso(now),))

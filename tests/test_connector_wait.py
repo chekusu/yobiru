@@ -1,9 +1,9 @@
 """Connector polls that wait for a change, and a connector that outlives a gateway restart.
 
 The gateway names each connector listing with a cursor. A poll that sends the cursor back with `wait` is held until
-the listing differs (a new job, a reply to what the bot sent, a binding check, a refused wake's retry time) or the
-wait is over, without taking a request slot. `connector run` uses it when the gateway offers a cursor, polls an
-older gateway as before, and tries again after an outage instead of exiting.
+the listing differs (a new job, a reply to what the bot sent, a binding check, a refused wake's retry
+time, or a follow the connector asked to be woken for) or the wait is over, without taking a request slot. `connector run` uses it when the gateway offers a
+cursor, polls an older gateway as before, and tries again after an outage instead of exiting.
 """
 import json
 import os
@@ -164,7 +164,9 @@ class GatewayWaitTests(WaitCase):
     def test_wait_and_cursor_are_checked_and_other_routes_take_no_query(self):
         for query, error in (("wait=31", "invalid_wait"), ("wait=-1", "invalid_wait"), ("wait=x", "invalid_wait"),
                              ("cursor=ABC", "invalid_wait"), ("wait=1&wait=2", "query_not_supported"),
-                             ("limit=5", "query_not_supported")):
+                             ("limit=5", "query_not_supported"), ("follows=nope", "invalid_follows"),
+                             ("follows=all", "invalid_follows"),
+                             ("follows=mutual&follows=all", "query_not_supported")):
             with self.subTest(query=query):
                 status, obj = C.api_call(self.gw.url, "GET", "/v1/connector/jobs?" + query, None, self.ctok)
                 self.assertEqual((400, error), (status, obj["error"]))
