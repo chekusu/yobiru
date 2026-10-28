@@ -106,7 +106,40 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(result["message_handled"])
         self.assertEqual("idle", bridge.Bridge(self.cfg).step()["state"])
         self.assertEqual(1, len(self.launches()))
+        self.assertNotIn("--model", self.launches()[0])
         self.assertNotIn("UNTRUSTED BODY", " ".join(self.launches()[0]))
+
+    def test_configured_model_is_forwarded_as_one_exact_option(self):
+        models = ("sonnet", "claude-sonnet-4-6", "claude-opus-4-6[1m]",
+                  "anthropic/claude-sonnet-4.6",
+                  "arn:aws:bedrock:us-east-1:123456789012:inference-profile/anthropic.claude-sonnet-4-6")
+        (self.data / "inbox" / (self.mid + ".json")).unlink()
+        for index, model in enumerate(models):
+            with self.subTest(model=model):
+                self.record("%016x" % (index + 1))
+                result = bridge.Bridge(dict(self.cfg, model=model)).step()
+                self.assertEqual("dispatched", result["state"])
+                args = self.launches()[-1]
+                self.assertEqual(1, args.count("--model"))
+                option = args.index("--model")
+                self.assertEqual(model, args[option + 1])
+                self.assertLess(option + 1, args.index("--"))
+        self.assertEqual(len(models), len(self.launches()))
+        self.assertFalse(any("--model" in args for args in self.calls() if "--bg" not in args))
+
+    def test_invalid_configured_model_fails_before_calls_or_writes(self):
+        invalid = (None, "", True, 42, [], {}, " sonnet", "sonnet ", "son net",
+                   "--help", "-sonnet", "/sonnet", ".sonnet", "[1m]",
+                   "a\tb", "a\nb", "a\rb", "a\0b", "sonnet\u00a0", "sönnet", "a" * 257)
+        before = snapshot(self.root)
+        for model in invalid:
+            with self.subTest(model=model):
+                with self.assertRaisesRegex(bridge.BridgeError, "model"):
+                    bridge.Bridge(dict(self.cfg, model=model))
+                self.assertEqual(before, snapshot(self.root))
+                self.assertEqual([], self.calls())
+        self.assertEqual("a", bridge.validate_config(dict(self.cfg, model="a"))["model"])
+        self.assertEqual("a" * 256, bridge.validate_config(dict(self.cfg, model="a" * 256))["model"])
         self.assertFalse(any(c and c[0] in ("stop", "kill", "rm") for c in self.calls()))
         self.assertNotIn("acked_at", json.loads((self.data / "inbox" / (self.mid + ".json")).read_text()))
 
@@ -407,7 +440,7 @@ class InstallTests(unittest.TestCase):
         (self.data / "config.json").write_text(json.dumps(self.original))
         self.args = argparse.Namespace(plugin_root=str(REPO / "plugins/yobiru"), tailmsg_home=str(self.data),
                                        bridge_home=str(self.target), agent=None, claude_path=sys.executable,
-                                       workdir=str(self.root), permission_mode=None, apply=False)
+                                       workdir=str(self.root), permission_mode=None, model=None, apply=False)
 
     def test_preview_writes_nothing_and_apply_freezes_plugin_without_starting_anything(self):
         before = snapshot(self.root)

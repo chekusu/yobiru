@@ -25,6 +25,7 @@ import unicodedata
 
 sys.dont_write_bytecode = True
 ID_RE = re.compile(r"[A-Za-z0-9_-]{8,64}\Z")
+MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,255}\Z")
 MAX_BYTES = 4 * 1024 * 1024
 PERMISSIONS = ("manual", "plan", "auto", "acceptEdits")
 PHASES = ("intent", "uncertain", "dispatched")
@@ -93,6 +94,8 @@ def validate_config(cfg):
     cfg["agent"] = unicodedata.normalize("NFC", cfg["agent"])
     if cfg.get("permission_mode", "manual") not in PERMISSIONS:
         raise BridgeError("unsupported permission mode")
+    if "model" in cfg and (not isinstance(cfg["model"], str) or not MODEL_RE.fullmatch(cfg["model"])):
+        raise BridgeError("invalid model identifier")
     for field, default, lower, upper in (("poll_seconds", 3, 1, 300), ("batch_delay_seconds", 30, 0, 3600),
                                          ("command_timeout", 120, 1, 300), ("max_batch", 20, 1, 100)):
         value = cfg.setdefault(field, default)
@@ -295,8 +298,10 @@ class Bridge:
         self.save(state)  # fsync intent and directory before invoking Claude
         args = ["--bg", "--remote-control", name, "--session-id", sid, "--name", name,
                 "--permission-mode", self.cfg["permission_mode"], "--no-chrome",
-                "--plugin-dir", self.cfg["plugin_root"], "--append-system-prompt", instructions,
-                "--", self.prompt(ids)]
+                "--plugin-dir", self.cfg["plugin_root"], "--append-system-prompt", instructions]
+        if "model" in self.cfg:
+            args.extend(["--model", self.cfg["model"]])
+        args.extend(["--", self.prompt(ids)])
         code, out = self.call(args, timeout=self.cfg["command_timeout"])
         state["runs"][sid].update(phase="uncertain", launch_exit=code)
         background_id = launch_background_id(out)

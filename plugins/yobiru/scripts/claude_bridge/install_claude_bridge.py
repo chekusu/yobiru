@@ -100,6 +100,8 @@ def install(args):
                instructions=(existing or {}).get("instructions", str(target / "CLAUDE_DISPATCHER.md")), python=str(Path(sys.executable).resolve()),
                entry=str(installed_plugin / "scripts" / "claude_bridge" / "claude_bridge.py"))
     cfg["permission_mode"] = args.permission_mode or cfg.get("permission_mode", "manual")
+    if args.model is not None:
+        cfg["model"] = args.model
     validate_config(cfg)
     changed = copy.deepcopy(original)
     agents = changed.setdefault("agents", {})
@@ -128,6 +130,7 @@ def install(args):
     templates = service_templates(cfg)
     plan = {"applied": False, "starts_service": False, "launches_claude": False,
             "bridge_home": str(target), "agent": agent, "permission_mode": cfg["permission_mode"],
+            "model": cfg.get("model"),
             "package_sha256": digest, "package_files": len(files), "keeps_state": bool(existing),
             "instructions": "preserve existing local instructions; create template only when absent",
             "services": [str(target / "services" / name) for name in templates]}
@@ -198,6 +201,7 @@ def main(argv=None):
     ap.add_argument("--claude-path")
     ap.add_argument("--workdir")
     ap.add_argument("--permission-mode", choices=PERMISSIONS)
+    ap.add_argument("--model", metavar="ID", help="session model alias or full ID; omitted upgrades preserve the saved selection")
     ap.add_argument("--apply", action="store_true")
     args = ap.parse_args(argv)
     try:
