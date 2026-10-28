@@ -4,11 +4,11 @@
   "files": {
     "scripts/tailmsg.py": {
       "source": "tailmsg.py",
-      "sha256": "a36f9acb27542053ee798cbfbd0427e7c245c568f3664f0ddcd95d5c96f8ebfc"
+      "sha256": "a0674af12741467c4f90779dbb59949833f1f54a30db08fb0de73012fdcdf052"
     },
     "scripts/codex_bridge/CODEX_DISPATCHER.md": {
       "source": "CODEX_DISPATCHER.md",
-      "sha256": "9a5261e13ce1e949b9625c111ab3ae14603c91bb9fe376edba1b55591f8e7eac"
+      "sha256": "1ed9c09fd5f679d6ea6234ee05b282b90932f8b1cea96aee08e600e56e1c6620"
     },
     "scripts/codex_bridge/codex_bridge.py": {
       "source": "codex_bridge.py",

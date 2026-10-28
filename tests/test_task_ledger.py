@@ -50,6 +50,76 @@ class TaskLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different task"):
             core.save_outgoing_request(self.ctx, changed, "receiver.example.ts.net", 9123, "idea-001122")
 
+    def test_trusted_authorization_generation_and_internal_attempt(self):
+        core.accept_request(self.ctx, self.rec)
+        core.respond_request(self.ctx, self.mid, "blocked", "needs user authorization")
+        task_id = core.task_snapshots(self.home)[0]["task_id"]
+        auth = core.authorize_task(self.ctx, task_id, {"actions": ["build"]}, target_agent="codex",
+                                   target_host="mac-studio", expected_generation=0)
+        self.assertEqual((1, "active"), (auth["generation"], auth["status"]))
+        with self.assertRaisesRegex(ValueError, "untrusted"):
+            core.authorize_task(self.ctx, task_id, {"actions": ["build"]}, issuer_kind="agent",
+                                expected_generation=1)
+        attempt = core.create_task_attempt(self.ctx, task_id, auth["authorization_id"], expected_generation=1,
+                                           operation_key="build-1", operation_digest="digest", action="build")
+        self.assertEqual((2, "pending"), (attempt["attempt_no"], attempt["state"]))
+        self.assertEqual("blocked", core.request_snapshot(self.home, self.mid)["state"])
+        self.assertEqual("pending", core.task_snapshots(self.home)[0]["latest_state"])
+        core.transition_task_attempt(self.ctx, attempt["attempt_id"], "running", expected_generation=1)
+        task = core.task_snapshots(self.home)[0]
+        self.assertEqual(("running", "open", "none"), (task["latest_state"], task["resolution"], task["attention"]))
+        with self.assertRaisesRegex(ValueError, "generation mismatch"):
+            core.create_task_attempt(self.ctx, task_id, auth["authorization_id"], expected_generation=0,
+                                     operation_key="build-2", operation_digest="d")
+        self.assertEqual("needs_attention", core.task_snapshots(self.home)[0]["attention"])
+
+    def test_authorization_revoke_and_operation_idempotency(self):
+        core.accept_request(self.ctx, self.rec)
+        task_id = core.task_snapshots(self.home)[0]["task_id"]
+        auth = core.authorize_task(self.ctx, task_id, {"actions": ["test"]})
+        first = core.create_task_attempt(self.ctx, task_id, auth["authorization_id"], expected_generation=1,
+                                         operation_key="test-1", operation_digest="same", action="test")
+        again = core.create_task_attempt(self.ctx, task_id, auth["authorization_id"], expected_generation=1,
+                                         operation_key="test-1", operation_digest="same", action="test")
+        self.assertTrue(again["idempotent"])
+        self.assertEqual(first["attempt_id"], again["attempt_id"])
+        with self.assertRaisesRegex(ValueError, "different attempt"):
+            core.create_task_attempt(self.ctx, task_id, auth["authorization_id"], expected_generation=1,
+                                     operation_key="test-1", operation_digest="changed", action="test")
+        revoked = core.revoke_task_authorization(self.ctx, auth["authorization_id"], expected_generation=1)
+        self.assertEqual("revoked", revoked["status"])
+        with self.assertRaisesRegex(ValueError, "generation mismatch"):
+            core.create_task_attempt(self.ctx, task_id, auth["authorization_id"], expected_generation=2,
+                                     operation_key="test-2", operation_digest="d")
+
+    def test_late_old_request_event_does_not_overwrite_new_attempt(self):
+        core.accept_request(self.ctx, self.rec)
+        task_id = core.task_snapshots(self.home)[0]["task_id"]
+        auth = core.authorize_task(self.ctx, task_id, {"actions": ["build"]})
+        attempt = core.create_task_attempt(self.ctx, task_id, auth["authorization_id"], expected_generation=1,
+                                           operation_key="build-1", operation_digest="d", action="build")
+        core.transition_task_attempt(self.ctx, attempt["attempt_id"], "running", expected_generation=1)
+        # A late lifecycle event from the generation-zero request remains in its own attempt history.
+        with core.request_db(self.ctx) as db:
+            db.execute("BEGIN IMMEDIATE")
+            core.task_sync(db, "incoming", self.mid, "timed_out")
+        snapshot = core.task_snapshots(self.home)[0]
+        self.assertEqual(("running", "open"), (snapshot["latest_state"], snapshot["resolution"]))
+
+    def test_expired_authorization_is_persisted_and_keeps_attention_open(self):
+        core.accept_request(self.ctx, self.rec)
+        task_id = core.task_snapshots(self.home)[0]["task_id"]
+        auth = core.authorize_task(self.ctx, task_id, {"actions": ["build"]})
+        with core.request_db(self.ctx) as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("UPDATE task_authorizations SET expires_at=? WHERE authorization_id=?",
+                       ("2000-01-01T00:00:00Z", auth["authorization_id"]))
+        with self.assertRaisesRegex(ValueError, "expired"):
+            core.create_task_attempt(self.ctx, task_id, auth["authorization_id"], expected_generation=1,
+                                     operation_key="expired", operation_digest="d", action="build")
+        self.assertEqual("expired", core.authorization_snapshot(self.home, auth["authorization_id"])["status"])
+        self.assertEqual("needs_attention", core.task_snapshots(self.home)[0]["attention"])
+
 
 if __name__ == "__main__":
     unittest.main()

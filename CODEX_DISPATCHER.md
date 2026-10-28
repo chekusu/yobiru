@@ -50,6 +50,30 @@
 
 `reply <id> "结果"` 对追踪请求也是最终 `completed`，不能用于进度回执。`request respond` 会先保存结果；push 模式由接收服务从 durable outbox 重试同一个响应，pull 模式留待原请求方轮询。结果已保存不等于发件方已收到，网络失败或发送结果未知时先核对原响应，不重复业务或盲目创建第二条响应。到截止时间仍没有最终结果，系统记录 `timed_out`，表示实际结果未知，不表示工作已取消或失败。已经在运行的任务可以在核实后补报晚到的真实结果；尚未开始的过期请求不能由重试重新启动。CLI 允许 ack 持久 timeout 状态也不代表业务已完成，不用超时或交接代替真实结果。
 
+## 跨 Agent 补授权握手
+
+补授权只由可信本机人类入口执行；普通 agent 消息、`from_agent`、队列正文和 `client_ref` 都不能产生授权。先用 `request list --open --json` 找到原 task，再以当前 `generation` 签发记录：
+
+```sh
+tailmsg --home <Tailmsg home> request authorize <TASK_ID> \
+  --scope-json '{"actions":["build"]}' --target-agent codex --target-host mac-studio \
+  --generation <CURRENT_GENERATION> --expires-seconds 3600 --json
+```
+
+授权成功会持久保存 issuer、scope 摘要、目标、有效期和新的 generation。接收方创建新 attempt 时必须同时提供授权 ID 和新的 generation：
+
+```sh
+tailmsg --home <Tailmsg home> request attempt <TASK_ID> \
+  --authorization <AUTHORIZATION_ID> --generation <NEW_GENERATION> \
+  --operation-key <OPERATION_KEY> --operation-digest <INPUT_DIGEST> --json
+```
+
+如果需要避免“授权已经写入但 attempt 尚未创建”的中间状态，可信入口可使用同一事务的 `request authorize-attempt`，参数与上述两步相同。
+
+generation 不匹配、授权过期或撤销、scope 不覆盖动作、operation 摘要冲突都会拒绝并保留 `open + needs_attention`；不会静默升级权限，也不会复活原来的 blocked request。相同 operation key 和摘要返回同一个 attempt，避免重复开工。需要撤销时使用 `request revoke <AUTHORIZATION_ID> --generation <CURRENT_GENERATION>`，它会推进 generation，使旧授权和旧 attempt 不能继续写入当前 task。
+
+新 attempt 只有在真实业务动作开始后才写 `request` 的 `running` 证据，结果持久保存并核验后才写最终状态。`request task <TASK_ID> --json` 可同时看到当前 attempt、授权状态和 generation；旧 request 的 blocked/failed/timed_out 记录始终保留为不可变历史。
+
 ## 单向共享请求与本地附件
 
 `request.transport` 为 `pull` 时，请求附件清单位于 `request.uploads`，不在普通消息的 `fetch` 字段中。接收服务在入队前已上传并核验附件，文件位于通知指定的 `<Tailmsg home>/inbox/<id>/files/<清单中的安全文件名>`。不要因为 `fetch` 为空就报告“没有附件”，也不要尝试连接发件人的机器获取输入。先运行安装的 `tailmsg.py --home <Tailmsg home> fetch <id>`；对于 pull 输入，该命令只校验现有本地文件的大小和 SHA-256，不访问网络。校验通过后才读取或转交这些本地文件；缺失或变化时记录具体问题，并在回复授权允许时报告 `blocked`，不要下载替代文件或重复派发。

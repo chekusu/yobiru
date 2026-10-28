@@ -113,6 +113,11 @@ Messaging (passed unchanged to the bundled tailmsg.py):
   request send PEER[/AGENT] TEXT [--transport push|pull] [--file F] [--timeout-seconds 900] [--client-ref REF]
   request status ID [--refresh] [--json]     request list [--open] [--json]
   request resolve TASK_ID [--by OWNER] [--json]
+  request authorize TASK_ID --scope-json JSON [--generation N] [--expires-seconds N] [--json]
+  request attempt TASK_ID --authorization AUTH_ID --generation N [--operation-key KEY] [--json]
+  request authorize-attempt TASK_ID --scope-json JSON --generation N [--operation-key KEY] [--json]
+  request revoke AUTH_ID [--generation N] [--json]
+  request task TASK_ID [--json]
   request resume ID                     retry the same pull request upload and submission
   request respond ID TEXT --state running|completed|failed|rejected|blocked
   send PEER[/AGENT] TEXT [--file F]... [--wake now|batch|none] [--agent A] [--kind K]
