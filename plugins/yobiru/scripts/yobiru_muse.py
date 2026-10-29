@@ -12,11 +12,46 @@ CONNECT = "Ask Muse to connect the official Tailscale connector (Settings > Conn
 FALLBACK = "If that connector or its CLI/network access is unavailable, use Yobiru Friends with the intended bot's share link; see the yobiru-bot-contacts skill."
 
 
+def _local_identity_ready(cfg, cli, add):
+    """Plain status can diagnose CLI availability, never authenticate a pull sender."""
+    stdout, error = cli.run_tailscale(cfg["tailscale_cmd"], ["status", "--json"], timeout=5)
+    if error:
+        _, plain_error = cli.run_tailscale(cfg["tailscale_cmd"], ["status"], timeout=5)
+        if plain_error:
+            add("error", "tailscale_unavailable", "Official connector status could not be read: " + error)
+        else:
+            add("error", "tailscale_json_unavailable",
+                "The official connector answers plain `tailscale status`, but `tailscale status --json` failed: " + error +
+                ". Pull requests require this environment's trusted StableID and DNSName; plain status, IP and HTTP health "
+                "cannot supply them. Use --peer with the intended receiver's exact Tailscale IP to diagnose its route.")
+        return False
+    try:
+        status = json.loads(stdout)
+        own = status.get("Self") if isinstance(status, dict) else None
+        if not isinstance(own, dict):
+            raise ValueError("missing Self")
+    except (ValueError, TypeError):
+        add("error", "tailscale_invalid_status", "Tailscale returned no usable status object.")
+        return False
+    if status.get("BackendState") != "Running":
+        add("error", "tailscale_not_connected", "Finish sign-in/device approval in the official connector.")
+        return False
+    if not cli.core().stable_peer_id(own.get("ID")) or not isinstance(own.get("DNSName"), str) or not own["DNSName"].rstrip("."):
+        add("error", "tailscale_identity_unavailable", "Pull requests need this execution environment's StableID and DNSName. Do not copy an identity from another device.")
+        return False
+    ips = own.get("TailscaleIPs")
+    if not isinstance(ips, list) or not any(isinstance(ip, str) and cli.core().is_tailnet_ip(ip) for ip in ips):
+        add("error", "tailscale_address_unavailable", "The official connector did not expose a usable tailnet address to this environment.")
+        return False
+    add("ok", "tailscale_identity", "This environment has an authenticated Tailscale identity; inbound reachability is not required.")
+    return True
+
+
 def check(home, cli, peer=None):
     """Read config and LocalAPI; optional bounded peer probes. Never creates a home."""
     result = {"host": "muse", "transport": "pull", "changed": False,
               "receiver_required": False, "delivery_verified": False,
-              "local_ready": False, "peer_checked": bool(peer), "checks": [],
+              "local_ready": False, "peer_checked": False, "checks": [],
               "connect": CONNECT, "fallback": FALLBACK}
     checks = result["checks"]
     def add(state, reason, detail):
@@ -35,32 +70,10 @@ def check(home, cli, peer=None):
         return result
     if raw is None:
         add("warn", "setup_needed", "No Yobiru config exists; check is read-only. Configure a separate data home after connecting Tailscale.")
-    stdout, error = cli.run_tailscale(cfg["tailscale_cmd"], ["status", "--json"], timeout=5)
-    if error:
-        add("error", "tailscale_unavailable", "Official connector CLI/LocalAPI is unavailable: " + error)
-        return result
-    try:
-        status = json.loads(stdout)
-        own = status.get("Self") if isinstance(status, dict) else None
-        if not isinstance(own, dict):
-            raise ValueError("missing Self")
-    except (ValueError, TypeError):
-        add("error", "tailscale_invalid_status", "Tailscale returned no usable status object.")
-        return result
-    if status.get("BackendState") != "Running":
-        add("error", "tailscale_not_connected", "Finish sign-in/device approval in the official connector.")
-        return result
-    if not cli.core().stable_peer_id(own.get("ID")) or not isinstance(own.get("DNSName"), str) or not own["DNSName"].rstrip("."):
-        add("error", "tailscale_identity_unavailable", "Pull requests need this execution environment's StableID and DNSName. Do not copy an identity from another device.")
-        return result
-    ips = own.get("TailscaleIPs")
-    if not isinstance(ips, list) or not any(isinstance(ip, str) and cli.core().is_tailnet_ip(ip) for ip in ips):
-        add("error", "tailscale_address_unavailable", "The official connector did not expose a usable tailnet address to this environment.")
-        return result
-    add("ok", "tailscale_identity", "This environment has an authenticated Tailscale identity; inbound reachability is not required.")
-    result["local_ready"] = raw is not None
+    result["local_ready"] = _local_identity_ready(cfg, cli, add) and raw is not None
     if peer:
         target, port, _ = cli.parse_peer_spec(peer, int(cfg["port"]))
+        result["peer_checked"] = True
         checks.extend(cli.peer_doctor_checks({"cfg": cfg}, target, port, timeout=3))
         result["peer_pull_advertised"] = any(c["check"] == "peer-pull" and c["status"] == "ok" for c in checks)
     return result

@@ -14,6 +14,10 @@ The actual execution environment must expose Python 3.8+, `tailscale status --js
 
 A connected official connector can still be useful when this private adapter's identity check fails. In the [community field report in #59](https://github.com/chekusu/yobiru/issues/59), the bundled CLI offered `up`, `down`, `status`, `ip` and `help`, but not `status --json`. That did not expose the StableID this adapter requires. Do not infer that the connector is disconnected, invent an identity, or copy one from another device.
 
+When the JSON command fails, `muse check` tries a bounded plain `tailscale status` query without displaying its output. If that succeeds, it reports `tailscale_json_unavailable`: structured identity is unavailable even though the CLI responds. Plain status, `tailscale ip` and HTTP health cannot supply the trusted StableID required by the pull transport, so `local_ready` remains false and the command exits 2.
+
+An explicitly requested `--peer` check still runs after a local identity failure. For a limited CLI, use the intended receiver's exact Tailscale IP, for example `muse check --peer <RECEIVER_TAILSCALE_IP>:7766/AGENT`; hostname resolution still needs JSON status. The read-only `/health` and `/info` probes report route, receiver access and advertised pull support separately from local readiness. A successful probe does not verify delivery or make the private adapter ready to send.
+
 Use the full [packaged Muse skill](../plugins/yobiru/skills/yobiru-muse/SKILL.md) for setup, permissions, files, recovery and the Friends fallback. A new isolated Yobiru data home can be configured with `setup --self-agent muse --allow RECEIVER --apply` after reviewing the plan. The allow rule permits authenticated result refresh from that intended receiver; it does not open a listener.
 
 ## Command contract
