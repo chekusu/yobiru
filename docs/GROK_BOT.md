@@ -74,6 +74,136 @@ An HTTP receipt means storage. A successful webhook call means the adapter accep
 Only the eventual tracked result reports the agent's outcome. Keep existing execution and reply
 restrictions: a request may finish `blocked` when the owner has not authorized the requested work.
 
+### Wake an idle computer from the sender
+
+For a direct tailnet connection, a sleeping computer cannot run its receiver or call its own
+incoming-message adapter. In [community report #53](https://github.com/chekusu/yobiru/issues/53),
+one owner using Yobiru 0.7.14 on 2026-10-25 called the routine webhook from the **sender**, waited
+for the receiver's `/health`, then sent normally. A tracked request was accepted after 138 seconds
+and completed after 161 seconds; an earlier wake took over four minutes. These are reported
+observations from that setup, not a platform guarantee. Allow a bounded four-to-ten-minute wait.
+Tailscale still reported the computer offline after `/health` answered, so use receiver readiness
+for this step. A failed probe alone does not prove sleep: the receiver, network or access rules
+may need repair. This recipe does not apply to the separate Friends gateway queue and its connector.
+
+The owner must authorize the sender to hold and call the routine webhook. Keep the URL and bearer
+key in separate private files (mode 0600), outside the repository and messages. Configure that
+routine to accept a wake-only notice: its synthetic `wake-...` id has no inbox message, and grants
+no permission to perform work. The eventual normal send supplies the authenticated request.
+How long the computer stays awake, and behavior when the routine is rate-limited, remain unverified.
+
+Save the following as a private sender-local `prewake-grok.py`, fill in the constants and use your
+existing private URL/key files. It needs only Python's standard library. It reads those files only
+when the first health probe cannot connect, posts once, and uses a ten-minute polling budget.
+Readiness received after that budget, HTTP errors, malformed or degraded health, and rejected
+webhooks fail closed. Socket timeouts apply per operation, so a slow response can delay failure
+beyond the polling budget. The helper
+does not send or retry a Yobiru message. Redirects and environment proxies are disabled, and errors
+omit private URLs, credentials and remote response bodies.
+
+<!-- grok-prewake-example:start -->
+```python
+import datetime
+import json
+import os
+from pathlib import Path
+import stat
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+
+HEALTH_URL = "http://<grok-computer>:7766/health"
+URL_FILE = Path.home() / ".config/yobiru-prewake/routine-url"
+KEY_FILE = Path.home() / ".config/yobiru-prewake/routine-key"
+SENDER_NODE = "<sender-node>"
+AGENT = "<grok-agent>"
+WAIT_SECONDS = 600
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+
+def private_text(path):
+    with path.open(encoding="utf-8") as source:
+        mode = os.fstat(source.fileno()).st_mode
+        if not stat.S_ISREG(mode) or mode & 0o077:
+            raise ValueError("private regular file required")
+        value = source.read(8193).strip()
+    if not value or len(value) > 8192 or "\n" in value or "\r" in value:
+        raise ValueError("invalid private file")
+    return value
+
+def ready(timeout):
+    try:
+        with HTTP.open(HEALTH_URL, timeout=timeout) as response:
+            body = response.read(65537)
+            if response.status != 200 or len(body) > 65536:
+                raise ValueError("invalid receiver health")
+            health = json.loads(body)
+    except urllib.error.HTTPError:
+        raise ValueError("receiver rejected health probe") from None
+    except (OSError, urllib.error.URLError):
+        return False
+    if not isinstance(health, dict) or health.get("v") != 1 or health.get("ok") is not True:
+        raise ValueError("receiver is not ready")
+    return True
+
+def main():
+    deadline = time.monotonic() + WAIT_SECONDS
+    def remaining(limit=5):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise TimeoutError("receiver wait expired")
+        return min(limit, left)
+    if ready(remaining()):
+        remaining()
+        return
+    url, key = private_text(URL_FILE), private_text(KEY_FILE)
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+        raise ValueError("HTTPS routine URL required")
+    payload = {"v": 1, "event": "tailmsg.wake", "id": "wake-" + uuid.uuid4().hex,
+               "from": SENDER_NODE, "kind": "notice", "agent": AGENT,
+               "text_preview": "Wake receiver; no request is attached.",
+               "received_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+    request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
+                                    headers={"Content-Type": "application/json",
+                                             "Authorization": "Bearer " + key}, method="POST")
+    with HTTP.open(request, timeout=remaining(15)) as response:
+        if not 200 <= response.status < 300:
+            raise ValueError("routine rejected wake")
+    while time.monotonic() < deadline:
+        if ready(remaining()):
+            remaining()
+            return
+        time.sleep(min(5, max(0, deadline - time.monotonic())))
+    raise TimeoutError("receiver wait expired")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        raise SystemExit("Pre-wake failed; no message was sent.") from None
+```
+<!-- grok-prewake-example:end -->
+
+Use `&&` to send immediately only after the helper succeeds, with the same direct peer and agent
+you configured above. `Y` is your existing launcher and `HOME_DIR` is your existing Yobiru data home:
+
+```sh
+python3 /path/to/prewake-grok.py &&
+  sh "$Y" --home "$HOME_DIR" request send '<grok-computer>/<grok-agent>' 'A harmless authorized request' --wake now
+```
+
+The regular receiver wake policy still applies to `--wake now`; see `yobiru-wake`. A successful
+pre-wake only establishes receiver readiness. Check the normal send's receipt and tracked result
+separately. If a send's outcome is uncertain, inspect its request status before retrying; this helper
+does not authorize automatic resends.
+
 ## Answering a public bot's chat (Friends)
 
 With [public bots and Friends](PUBLIC_BOTS.md) from 0.6.0, a Grok Bot can answer chat sent to one of your
