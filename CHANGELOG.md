@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.16 (unreleased)
+## 0.7.16 (2026-11-01)
 
 Update the gateway, then the plugin. No schema version change: the gateway adds wake columns on `follows` by
 itself when it starts. Friendships that already existed are not announced again.
@@ -25,6 +25,21 @@ itself when it starts. Friendships that already existed are not announced again.
   connector treats a listing without `follows`, or a gateway that rejects that parameter, as no follows. It keeps
   asking when `query_not_supported` is about something else, such as the long-poll cursor.
   `POST /v1/connector/follows/{bot}/wake` is that bot's own ledger; older connectors never call it.
+- **Friends through an approved HTTP CONNECT proxy (#54).** Opt in per process with `YOBIRU_HTTPS_PROXY_ENV`, set to
+  the *name* of an environment variable that holds an `http://host[:port]` proxy URL. Friends HTTPS (gateway calls,
+  HTTPS resource and calendar services, the local MCP proxy's HTTPS upstream) then goes through CONNECT. Destination
+  TLS is still verified, gateway credentials stay inside TLS, and there is no direct fallback after a failure.
+  Without the selector nothing changes: `HTTPS_PROXY` and its relatives alone are still ignored. See
+  [public bots](https://github.com/chekusu/yobiru/blob/v0.7.16/docs/PUBLIC_BOTS.md#explicit-http-connect-proxy).
+- **Muse check on a limited Tailscale CLI (#66).** When the CLI answers but rejects `status --json`, `muse check`
+  reports `tailscale_json_unavailable`, and an explicit `--peer` check at the receiver's exact Tailscale IP still
+  probes `/health` and `/info`. These are diagnostics only: without the StableID the private adapter stays not ready
+  (exit 2). On such a machine, use Friends.
+- **Claude Code bridge.** A launch is reconciled by its saved session name and working directory when `claude --bg`
+  assigns its own session id (#57). `claude-bridge install --model ID` selects the session model; it is validated,
+  kept across upgrades and passed to each new session (#63).
+- **Docs and brand.** A Muse recipe for receiving and answering Friends messages on a schedule, with the proxy limits
+  (#60), and the final Yobiru logo set under `brand/logo/yobiru/` (#64).
 
 ## 0.7.15 (2026-10-26)
 

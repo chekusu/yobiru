@@ -2,7 +2,7 @@
 
 Yobiru can dispatch authenticated inbox IDs into visible Claude Code background Remote Control sessions. This optional adapter uses `claude --bg --remote-control --session-id UUID`; it does not use headless `-p`, an SDK or a hidden API run. It requires a trusted working directory, a locally authenticated Claude CLI that supports those options and `claude agents --json --all` with session identity fields, and a working Yobiru receiver. Current implementation supports macOS and Linux, Python 3.8+.
 
-The `v0.7.15` release includes this bridge. Install its plugin archive only after verifying the matching `SHA256SUMS`; keep the native Claude account and Remote Control acceptance boundary separate from automated tests.
+Releases since `v0.7.15` include this bridge. Install its plugin archive only after verifying the matching `SHA256SUMS`; keep the native Claude account and Remote Control acceptance boundary separate from automated tests.
 
 ## Preview, install and start
 
