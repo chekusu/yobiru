@@ -133,7 +133,7 @@ codex plugin add yobiru@yobiru
 
 Start a new conversation, then say: **“Set up Yobiru on this machine.”** Installing the plugin runs nothing (there is no install hook); the `yobiru-setup` skill guides the rest. The twelve skills in this source tree are `yobiru-setup`, `yobiru-grok-bot`, `yobiru-muse`, `yobiru-sessions`, `yobiru-send`, `yobiru-inbox`, `yobiru-wake`, `yobiru-upgrade`, and, for Friends, `yobiru-bot-contacts`, `yobiru-public-bot`, `yobiru-friends-host` and `yobiru-contact-bots`.
 
-The `v0.7.15` release includes the Muse adapter and skill alongside the Claude visible-session bridge and recovery fixes. Muse first guides the user to install and use Muse's official Tailscale connector; if that connector cannot be installed or used, it guides the user to Yobiru Friends. Verify the release archive with its matching `SHA256SUMS` before installation.
+Releases since `v0.7.15` include the Muse adapter and skill alongside the Claude visible-session bridge and recovery fixes. Muse first guides the user to install and use Muse's official Tailscale connector; if that connector cannot be installed or used, it guides the user to Yobiru Friends. Verify the release archive with its matching `SHA256SUMS` before installation.
 
 This installs through the repository marketplace. It does not imply a listing in the public Codex plugin directory.
 
@@ -184,7 +184,7 @@ For an installed plugin, replace `Y` with its absolute `scripts/yobiru` path. Qu
 
 ### Upgrading
 
-The current stable release is 0.7.15. Release archives are pinned to their tag; repository installation follows `main`, which may also contain unreleased fixes. The [upgrade guide](docs/UPGRADING-0.7.md) covers the release archive verified with `SHA256SUMS`, Cursor and Grok Bot, the durable receiver, migrating an existing gateway, rollback limits and an acceptance checklist. On a machine that runs a development build, keep its runtime and bridge as they are; the guide explains how to try a release next to them.
+The current stable release is 0.7.16. Release archives are pinned to their tag; repository installation follows `main`, which may also contain unreleased fixes. The [upgrade guide](docs/UPGRADING-0.7.md) covers the release archive verified with `SHA256SUMS`, Cursor and Grok Bot, the durable receiver, migrating an existing gateway, rollback limits and an acceptance checklist. On a machine that runs a development build, keep its runtime and bridge as they are; the guide explains how to try a release next to them.
 
 ## First-time setup, even without Tailscale
 
