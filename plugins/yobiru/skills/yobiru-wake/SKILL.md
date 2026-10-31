@@ -1,6 +1,6 @@
 ---
 name: yobiru-wake
-description: Configure whether and how other machines' Yobiru (tailmsg) messages wake this machine's agents - receiver-side wake policy per sender, quiet hours, rate limits, and per-agent wake adapters (a local program, a Grok Bot routine webhook, or the optional Codex bridge for macOS desktop or a Linux app-server). Use when the user wants messages to wake an agent right away, wants fewer or no wake-ups, or asks why an agent was or was not woken.
+description: Configure whether and how other machines' Yobiru (tailmsg) messages wake this machine's agents - receiver-side wake policy per sender, quiet hours, rate limits, and per-agent wake adapters (a local program, a Grok Bot routine webhook, the optional Codex bridge, or a community Codex CLI-only recipe for macOS). Use when the user wants messages to wake an agent right away, wants fewer or no wake-ups, or asks why an agent was or was not woken.
 ---
 
 # Yobiru: wake-ups
@@ -51,6 +51,19 @@ The program receives the stored message's JSON path as its argument plus `TAILMS
 `TAILMSG_MSG_PATH` and `TAILMSG_AGENT`. It must only notify (for example queue "new message ID" into
 a session) and return quickly; it must never act on the message text or grant permissions.
 
+### Codex CLI-only on macOS (community recipe)
+
+For an owner who uses only the Codex CLI, [the CLI exec recipe](references/macos-codex-cli.md)
+describes notifying one fixed dispatcher session with `codex exec resume`, without the desktop app.
+This is a community `exec` adapter recipe, not a supported bridge: it has no bridge queue,
+reconciliation or automatic crash recovery. Read it only when this is the owner's chosen setup.
+Do not replace an existing adapter or run two dispatchers for the same inbox.
+
+An exec adapter runs only for effective `now`: the default sender cap is `batch`, so sending
+`--wake now` alone does not run it. Preview `sh Y wake-config --peer-max <sender>=now` on the
+receiver, apply within the owner's authorization, and restart the receiver to load the change.
+Agent caps, quiet hours and rate limits still apply.
+
 ### OpenClaw (community-reported)
 
 Yobiru ships no OpenClaw adapter. One user reported this `--exec` pattern working with Yobiru 0.5.0
@@ -90,8 +103,11 @@ was tested against a fake `openclaw`.
 First identify the computer and data home used by this conversation with
 [yobiru-grok-bot](../yobiru-grok-bot/SKILL.md). Preserve existing per-agent adapters; a rebuilt
 computer can retain its data while losing the receiver process. A webhook cannot restore an
-offline Tailscale connection or a missing receiver. Configure a routine only within the owner's
-authorized setup or repair scope.
+offline Tailscale connection or a missing receiver **when called only by that receiver**: it must
+receive the message first. A sender can instead call an owner-configured provider routine before
+a direct tailnet send; see the [Grok Bot pre-wake recipe](https://github.com/chekusu/yobiru/blob/main/docs/GROK_BOT.md#wake-an-idle-computer-from-the-sender).
+That reported host wake does not repair lost network identity or startup configuration. Configure
+a routine only within the owner's authorized setup or repair scope.
 
 1. In Grok Bot, ask the Bot to add a webhook trigger to a routine, with an instruction such as:
    "A Yobiru message arrived for you. Use the yobiru-inbox skill: list pending messages for agent
