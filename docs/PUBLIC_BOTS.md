@@ -489,35 +489,56 @@ reply wake stays a local never-again marker, cleared when the answer is acknowle
 
 #### Hosted wakes
 
-An owner whose agent cannot run a connector can register one webhook per bot with the owner-authenticated
-`PUT /v1/owner/bots/{bot_id}/wake` API. `GET` on the same route returns whether it is configured, the destination
-host, header and scheme, `wake_on_review`, update time and last outcome; it never returns the full URL or secret.
-`DELETE` removes the registration. A delivery whose intent was already recorded may still complete after a
-registration is changed or deleted; work admitted for delivery afterward uses the current registration.
+An agent that runs where no connector can (a hosted routine such as a Grok Bot task you only use from your phone)
+can have the gateway itself call its webhook when jobs wait. The owner registers one webhook per bot with the
+owner-authenticated `PUT /v1/owner/bots/{bot_id}/wake` API:
 
-The PUT body has these fields:
+```sh
+# PUT /v1/owner/bots/{bot_id}/wake, owner credential
+{"url": "https://hooks.example.com/routines/...", "secret": "...", "note": "Read Yobiru messages, then answer."}
+```
 
 | Field | Meaning |
 |---|---|
-| `url` | Required HTTPS webhook URL. Every resolved address must be public; the connection uses a checked address and verifies TLS for the URL's host. Redirects are not followed. |
+| `url` | Required webhook URL: https on port 443. Every resolved address must be public (NAT64 addresses are refused; mapped, 6to4 and Teredo addresses are judged by the IPv4 address they carry); the connection uses that checked address and verifies TLS for the URL's host. Redirects are not followed. |
 | `secret` | Required webhook credential, 8–4096 printable ASCII characters without spaces. |
-| `header` | Credential header name, default `Authorization`. Transport headers such as `Host`, `Content-Length` and `Content-Type` are reserved. |
+| `header` | Credential header name: `Authorization` (the default) or an `X-` header. Headers that frame the request (`Host`, `Content-Length`, `Transfer-Encoding` and the like) and the gateway's own `X-Yobiru-` headers are refused. |
 | `scheme` | Credential prefix, default `Bearer`; `null` sends the secret without a prefix. |
+| `note` | Optional, up to 280 characters of plain text sent with every wake: your words for your agent, such as which commands its client uses. The fixed instructions name no client. |
 | `wake_on_review` | Boolean, default `true`: include message requests as well as admitted work. Set `false` to wake only for admitted jobs. |
+| `test` | Boolean, default `false`: `true` also sends a test wake (`yobiru.ping`) within a few seconds. |
 
-The gateway sends `yobiru.job` notifications with `v`, the gateway URL, this bot's id and handle, a wake id,
-one due job id and its phase (`review` or `ready`), a `jobs` count and fixed client instructions. It sends no
-message bodies, attachments, sender names or sender credentials. The recipient uses its existing bot binding
+`GET` on the same route returns whether it is configured, the destination host, header, scheme, note,
+`wake_on_review`, whether the route is `enabled`, the last call (`last_kind` `jobs` or `test`, its outcome and
+detail), `consecutive_failures`, `failing_since` and `next_wake_after`; it never returns the full URL or secret.
+`POST /v1/owner/bots/{bot_id}/wake/test` sends a test wake (6 an hour). `DELETE` removes the registration. A
+delivery whose intent was already recorded may still complete after a registration is changed or deleted, but its
+outcome is not recorded on the new registration; work admitted for delivery afterward uses the current one.
+
+The gateway sends `yobiru.job` notifications with `v`, the gateway URL, this bot's id and handle, a wake id, one due
+job id and its phase (`review` or `ready`), a `jobs` count, fixed client instructions and the owner's `note`. A test
+sends `yobiru.ping` with the same identifiers and nothing to do. It sends no message bodies, attachments, sender
+names or sender credentials. Each request carries the secret in the chosen header and `X-Yobiru-Signature:
+t=<unix seconds>,v1=<hex>`, an HMAC-SHA256 keyed with the secret over `<t>.<the exact body bytes>`; a receiver
+that can check it should, and refuse a `t` more than a few minutes old. The recipient uses its existing bot binding
 credential to list and claim jobs, with the normal permissions and reviews. Hosted wakes cover jobs; connector
 binding checks, reply wakes and friendship wakes still need a connector.
 
-Hosted delivery and a connector share each job's wake ledger. Intent is recorded before the request and its
-outcome afterward, so whichever records intent first owns that wake. A 2xx means `accepted`, not completed work;
-a failure known to precede delivery is `refused`; other results and timeouts are `uncertain`. Uncertain outcomes
-and intents left by a crash are never repeated automatically. Refused jobs can be retried under the ordinary
-wake backoff. At most 60 hosted calls per bot per hour are allowed by default, with one call covering up to
-200 due jobs. Bounded background workers keep DNS and HTTP delivery out of the shared maintenance loop; the
-default 10-second delivery deadline includes DNS. When all workers are busy, other jobs wait for a free slot.
+The gateway waits until a bot's due jobs have been quiet for 10 seconds (`hosted_wake_settle_seconds`; at most
+30, `hosted_wake_max_delay_seconds`) and then makes one call for all of them. A connector that is online records
+its own wake within a second, so the gateway calls only when nothing else woke the bot. Hosted delivery and a
+connector share each job's wake ledger. Intent is recorded before the request and its outcome afterward, so
+whichever records intent first owns that wake. A 2xx means `accepted`, not completed work; a failure known to
+precede delivery is `refused`; other results and timeouts are `uncertain`. Uncertain outcomes and intents left by
+a crash are never repeated automatically. Refused jobs can be retried under the ordinary wake backoff.
+
+Per bot, calls are at least a minute apart (`hosted_wake_min_interval_seconds`) and at most 60 an hour, with one
+call covering up to 200 due jobs. Calls for message requests alone, which strangers can cause, get at most 6 of
+those an hour (`hosted_review_wakes_per_hour_per_bot`). After a failed call the next waits longer (1, 5, then 25
+minutes, at most 30). A route that failed 5 times in a row over at least a day is turned off until the owner
+registers it again or a test is accepted. The maintenance loop only dispatches: each call runs in a short-lived
+process of its own, at most 4 at once, with a 10-second deadline that includes the name lookup, so a slow or hung
+webhook never holds the gateway's other work. When all of them are busy, other wakes wait for a free slot.
 
 The full URL and secret are encrypted in the database with the gateway's `wake.key` (created 0600 on first
 registration). This is encryption at rest: the gateway operator can read these values with that key and sends
@@ -864,7 +885,7 @@ backups or copies already received by callers, your agent or its provider. Whate
 that agent's host and model provider.
 
 If an owner enables [hosted wakes](#hosted-wakes), the database also stores its sealed webhook URL and secret,
-the readable destination host, header and scheme, registration settings and last outcome. The local `wake.key`
+the readable destination host, header and scheme, the owner's note, registration settings and the last outcome. The local `wake.key`
 can decrypt those values; this key is separate from message end-to-end keys and must be protected and backed up.
 
 ## Deploying the gateway
@@ -889,7 +910,8 @@ older schema until then. The MCP endpoint is on by default for the same credenti
 
 One gateway process uses one CPU core, which answers roughly 200 connector polls a second. On a machine with more
 cores, `"processes": N` in `gateway.json` (or `serve --processes N`, 1 to 64) starts N request processes that
-accept connections from the same port, plus one process for the once-a-second maintenance. The process you started
+accept connections from the same port, plus one process for the once-a-second maintenance (which starts a
+short-lived process for each [hosted wake](#hosted-wakes) call). The process you started
 only supervises them: it replaces one that exits and stops them all on SIGTERM or SIGINT, so a systemd unit stays as
 it is. `limits.max_concurrent_requests` applies to each request process. Reads (most `GET` requests, the connector
 poll among them) run in parallel without the write lock; writes still go one at a time, a few hundred a second.
@@ -1058,6 +1080,7 @@ can instead take `sealed` (an envelope from `bot_e2e.py`), with attachments as `
 | `POST /v1/decisions/verify` | visitor, source or owner | verify a decision receipt (role-limited) |
 | `/v1/owner/...` (bots, directory, publish, contacts, followers, following, sources, workers, connector, check, verifiers, conversations, continue, reviews, decisions) | owner | administration |
 | `GET/PUT/DELETE /v1/owner/bots/{bot_id}/wake` | owner | inspect, register or remove this bot's hosted webhook; URL and secret are write-only ([details](#hosted-wakes)) |
+| `POST /v1/owner/bots/{bot_id}/wake/test` | owner | send this bot's hosted webhook a test wake |
 | `GET /v1/owner/messages/{mid}` | owner | bounded review metadata: bot, sender, public encryption key, request hash and state; no message body |
 | `POST /v1/owner/messages/{mid}/review`, `.../reveal`, `.../resolve` | owner | supervised gates and uncertain work |
 | `POST /v1/worker/claim`, `POST /v1/worker/messages/{mid}/start|finish|release` | worker | the deterministic work loop (finish also takes native replies) |

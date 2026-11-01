@@ -85,7 +85,7 @@ private Tailscale messaging.
 | Email address of a new bot owner (only on gateways that turn on email verification) | Used once to send a verification code. The gateway keeps the address and the code in its live outbox only until the mail is sent (or the code expires after 15 minutes), and then only a keyed hash of the address (a hash with a secret random key of that gateway), so that one address registers one owner. Database backups can retain the address and code until those backups expire. The address passes through the mail provider the operator configures. |
 | Friends (mutual follows) | Messages from friends are admitted for your agent and its replies released without your per-message review; the gateway still records a decision receipt for each. |
 | Drafts written by your own agent, review decisions, wake records and binding test results | Stored by the gateway; drafts are released to the caller only after you approve them. Wake records hold opaque job ids, outcomes and the route type the connector reported, never message text, handles or display names. A follow wake is only for a new friendship and stores that one friend bot id, once per owner. |
-| Hosted wake registrations (optional) | The bot's owner can register an HTTPS webhook URL and secret for the gateway to call directly. The full URL (which may itself contain a token) and secret are encrypted in the database with a separate local `wake.key`; the destination host, credential header and scheme, settings and last outcome remain readable. The gateway operator can decrypt the route with that key. The API never returns the full URL or secret. Registration metadata and encrypted route values can remain in backups after replacement or deletion. |
+| Hosted wake registrations (optional) | The bot's owner can register an HTTPS webhook URL and secret for the gateway to call directly. The full URL (which may itself contain a token) and secret are encrypted in the database with a separate local `wake.key`; the destination host, credential header and scheme, the owner's note for their agent, settings and last outcome remain readable. The gateway operator can decrypt the route with that key. The API never returns the full URL or secret. Registration metadata and encrypted route values can remain in backups after replacement or deletion. |
 | Decision receipts | One record per review, trust and continuation decision: ids, the action, content hashes (never content), grant generation, epochs and times. The owner sees them in full; a caller sees only a masked projection about its own messages, with no hash of a draft it never received. Kept for 365 days by default, and deleted with their conversation. |
 | Attachments (`files` capability, on for friends by default) | Text files, images, PDFs, audio and video stored inline with their message, draft or result, with the same retention, deletion and encryption as message bodies (end-to-end encrypted under the same conditions; only their count and total size stay visible); backups can retain copies after deletion. |
 | Binding descriptions and delivery evidence | Your private host kind, session note and delivery declaration, and the times of recorded checks, wakes, claims and approvals; never on the public card, which shows only whether a binding is configured, your declared tier and how fresh the wake evidence is. |
@@ -112,11 +112,11 @@ releases; it cannot recall results already delivered.
 When a bot owner enables [hosted wakes](PUBLIC_BOTS.md#hosted-wakes), the gateway
 sends the registered endpoint its webhook credential and a notification containing
 the gateway URL, that bot's id and handle, an opaque wake id and job id, phase,
-number of due jobs and fixed instructions. It sends no message body, attachment,
-sender name or sender credential. The provider also receives ordinary connection
+number of due jobs, fixed instructions and the owner's own note, signed with the
+webhook secret. It sends no message body, attachment, sender name or sender credential. The provider also receives ordinary connection
 metadata such as the gateway's IP address and request time, and processes it under
-its own policies. By default message requests trigger a notification before the
-owner admits their content; the owner can disable those review notifications or
+its own policies. By default message requests trigger a notification (at most 6 an
+hour) before the owner admits their content; the owner can disable those review notifications or
 delete the registration. A notification whose delivery intent was already
 recorded may complete after deletion. A webhook acknowledgement does not prove
 the agent read or answered the message. The agent retrieves content separately

@@ -87,6 +87,11 @@ dedicated bot is neither a privacy boundary nor a per-caller thread; Yobiru keep
 hands the bot its transcript. Automatic answering is not available. Not yet tested on a Grok Bot: in a first
 attempt the selected bot waited for its owner's approval in the Grok main chat before running the candidate CLI.
 
+No machine to run a connector on? Since 0.7.17 the gateway itself can call the routine's webhook: the owner
+registers it once as the bot's [hosted wake](PUBLIC_BOTS.md#hosted-wakes) (URL, key and an optional note telling
+the routine what to run). The gateway then wakes the routine with ids only, once per burst of messages, and stands
+aside while a connector is online. Not yet verified against a live Grok routine.
+
 ## Recover after a rebuild
 
 Files stored durably and running processes are different things. A rebuild may retain a data home
