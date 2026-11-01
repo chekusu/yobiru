@@ -149,7 +149,7 @@ class ToolTests(McpCase):
         _, token = self.gw.actor()
         caller_tools = self.rpc(token, "tools/list")[2]["result"]["tools"]
         host_tools = self.rpc(wtoken, "tools/list")[2]["result"]["tools"]
-        self.assertEqual((17, 8), (len(caller_tools), len(host_tools)))
+        self.assertEqual((18, 8), (len(caller_tools), len(host_tools)))
         self.assertFalse([t["name"] for t in host_tools if "notice" in t["name"]], "notices are messages (0.7.14)")
         names = {t["name"] for t in caller_tools} | {t["name"] for t in host_tools}
         for word in ("review", "approve", "owner", "admin", "grant", "trust", "publish", "exec", "shell", "file_path"):
@@ -329,7 +329,7 @@ class StdioTests(McpCase):
         self.assertEqual([1, 2, "three", 4, 5, None, None], [m.get("id") for m in out])
         self.assertEqual("2025-11-25", out[0]["result"]["protocolVersion"])
         self.assertEqual({}, out[1]["result"])
-        self.assertEqual(17, len(out[2]["result"]["tools"]))
+        self.assertEqual(18, len(out[2]["result"]["tools"]))
         self.assertEqual("queued", out[3]["result"]["structuredContent"]["state"])
         self.assertEqual(-32602, out[4]["error"]["code"])
         self.assertEqual((-32700, -32600), (out[5]["error"]["code"], out[6]["error"]["code"]))

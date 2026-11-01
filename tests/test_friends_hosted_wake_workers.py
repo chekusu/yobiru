@@ -171,6 +171,68 @@ class HostedWakeWorkerTests(unittest.TestCase):
         self.assertIsNone(current["last_outcome"])
 
 
+class HostedWakeFairnessTests(unittest.TestCase):
+    def test_replenished_routes_do_not_starve_a_later_registration(self):
+        with tempfile.TemporaryDirectory(prefix="yobiru wake fairness ") as tmp:
+            gw = FriendsGateway(Path(tmp)).start()
+            self.addCleanup(gw.stop)
+            callers = []
+            for index in range(G.HOSTED_WAKE_WORKERS + 1):
+                bot = gw.bot("fairwake%d" % index)
+                gw.policy(bot, offered=["faq", "chat"], visitor=["faq", "chat"])
+                _, token = gw.actor()
+                cid = gw.conversation(bot, token)
+                status, sent = gw.send(cid, token, kind="chat", text="synthetic fairness test",
+                                       deadline_seconds=60)
+                self.assertEqual(202, status, sent)
+                callers.append((bot, cid, token, sent["message_id"]))
+            gw.stop()
+            store = G.Store(gw.home, G.load_config(gw.home))
+            for index, (bot, _, _, _) in enumerate(callers):
+                gw.sql("INSERT INTO hosted_wakes(bot_id,url_sealed,secret_sealed,url_host,header,scheme,"
+                       "on_review,created_ts,updated_ts) VALUES(?,?,?,?,?,?,1,?,1)",
+                       (bot, G.seal_route(gw.home, bot, "https://example.invalid/wake"),
+                        G.seal_route(gw.home, bot, SECRET), "example.invalid", "Authorization", "Bearer", index // 2))
+
+            # Simulate transport only; admission, outcome recording, expiry and the sweep are real.
+            pool = store.hosted_wake_workers = G.HostedWakeWorkers()
+            self.addCleanup(pool.close)
+            pool.context = mock.Mock()
+            pool.context.Pipe.side_effect = lambda **kwargs: (
+                mock.Mock(**{"poll.return_value": True, "recv.return_value": ("accepted", "http 202")}), mock.Mock())
+            deliveries = []
+            clock = [C.now_ts()]
+
+            def process(**kwargs):
+                child = mock.Mock(**{"is_alive.return_value": True})
+                deliveries.append((clock[0], kwargs["args"][2]["bot_id"], child))
+                return child
+            pool.context.Process.side_effect = process
+            api = G.Api(store)
+            deadline = gw.sql("SELECT deadline_ts FROM messages WHERE id=?", (callers[-1][3],))[0]["deadline_ts"]
+            with mock.patch.object(G.C, "now_ts", side_effect=lambda: clock[0]):
+                for tick in range(7):
+                    G.maintenance(store)
+                    # New requests arrive at every older route while its preceding wake is in flight.
+                    # Seven queued requests per caller remain within the default pending and rate limits.
+                    if tick < 6:
+                        for _, cid, token, _ in callers[:-1]:
+                            with store.tx() as db:
+                                r = G.Request()
+                                r.params, r.now = {"cid": cid}, clock[0] + 1
+                                r.subject = api.authenticate(db, ("actor",), token, r.now)
+                                r.body = {"op_key": "replenish-%d" % tick, "kind": "chat", "text": "synthetic refill"}
+                                self.assertEqual(202, api.message_send(db, r)[0])
+                    for _, _, child in deliveries:
+                        child.is_alive.return_value = False
+                    clock[0] += 10
+            later = [(at, bot) for at, bot, _ in deliveries if bot == callers[-1][0]]
+            self.assertTrue(later, "a later registration expired without a wake while older routes refilled")
+            self.assertEqual(deliveries[0][0] + 10, later[0][0], "the next freed batch must serve the waiting route")
+            self.assertLess(later[0][0], deadline)
+            self.assertEqual(1, gw.sql("SELECT wake_seq FROM messages WHERE id=?", (callers[-1][3],))[0]["wake_seq"])
+
+
 @unittest.skipUnless(sys.platform.startswith("linux"), "reads child process trees from /proc")
 class HostedWakeShutdownTests(unittest.TestCase):
     def test_sigterm_to_gateway_pid_reaps_inflight_workers(self):

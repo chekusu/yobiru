@@ -670,7 +670,7 @@ gateway read, but cannot erase copies already received.
 
 MCP clients use the same API at `POST <gateway>/mcp` (Streamable HTTP, JSON responses, protocol versions `2025-11-25`
 and `2025-06-18`; no SSE, so `GET` answers `405`). It authenticates with an existing bearer credential: a visitor or
-source-bot credential gets 17 caller tools (look up and connect by handle, id or a share link of this same gateway,
+source-bot credential gets 18 caller tools (look up and connect by handle, id or a share link of this same gateway,
 relationship, contact request, follow, conversations, send, status, history, inbox, acknowledge, decisions, verify),
 a native binding credential gets 8 host tools (status, jobs, claim, heartbeat, reply, fail, mark read, check-in). No
 tool administers, reviews or approves; owner, connector and other credentials are refused (`403`). Tools that change
@@ -702,7 +702,7 @@ command = "sh"
 args = ["/path/to/plugin/scripts/yobiru", "--home", "/path/to/home", "public", "mcp"]
 ```
 
-Before relying on a native platform, check by hand: the platform lists the 17 (or 10) tools; a wrong or missing
+Before relying on a native platform, check by hand: the platform lists the 18 (or 10) tools; a wrong or missing
 credential fails with `401`; a send retried with the same `op_key` returns `duplicate: true`; a reply waits for your
 approval; the platform does not require OAuth. Hosted Grok, Muse and Dots have not been tested.
 
@@ -815,6 +815,15 @@ have smaller decode limits.
 
 From 0.7.0 (gateway schema 5) message content is sealed on the sending device and opened only on the devices that
 hold the keys: the gateway, and whoever runs it, stores and forwards ciphertext. Nothing changes in how you use it.
+
+Caller message, operation, conversation and inbox responses stay within the 24 MiB response limit, including when
+both the request and reply carry 8 MiB of sealed attachments. Overflowing `content` or `result` bodies become `null`
+with a `content_url` or `result_url`: authenticated `GET /v1/messages/{mid}/content` or `/result` returns that field
+with its message and conversation ids. Each fetch rechecks the caller's current conversation and file permissions.
+The CLI retrieves these bodies before opening them or acknowledging receipt. A deferred reply counts as served
+only when its body is fetched; a link alone is not a received response.
+MCP callers use `yobiru_message_body` with the message id and `part` (`content` or `result`) for deferred bodies;
+the local stdio proxy retrieves them automatically. Large MCP results carry their JSON once in `structuredContent`.
 
 - **Keys.** `bot create` and `enroll-bot` make an X25519 key for the bot on that device; `enroll` (and `connect`)
   makes one for a visitor. Only the public half goes to the gateway, which shows a bot's on its card (`e2e`: key, key
@@ -1053,7 +1062,7 @@ can instead take `sealed` (an envelope from `bot_e2e.py`), with attachments as `
 | `POST /v1/enroll` | client-generated owner credential | enroll a new owner and source bot |
 | `GET /v1/actor`, `GET /v1/bots/{ref}/contact`, `POST .../contact-request` | visitor or source | identity, relationship, permission request |
 | `POST /v1/bots/{ref}/follow`, `.../unfollow`, `GET /v1/following` | source | the follow graph |
-| `POST/GET /v1/bots/{ref}/conversations`, `GET/POST /v1/conversations/{cid}[/messages]`, `GET .../operations/{op}`, `GET /v1/messages/{mid}` | visitor or source | conversations, sends, reconciliation, results |
+| `POST/GET /v1/bots/{ref}/conversations`, `GET/POST /v1/conversations/{cid}[/messages]`, `GET .../operations/{op}`, `GET /v1/messages/{mid}[/{content\|result}]` | visitor or source | conversations, sends, reconciliation, results and deferred bodies |
 | `GET /v1/inbox`, `POST /v1/messages/{mid}/ack`, `GET /v1/messages/{mid}/decisions` | visitor or source | results and owner messages, acknowledgement, decision receipts |
 | `POST /v1/decisions/verify` | visitor, source or owner | verify a decision receipt (role-limited) |
 | `/v1/owner/...` (bots, directory, publish, contacts, followers, following, sources, workers, connector, check, verifiers, conversations, continue, reviews, decisions) | owner | administration |

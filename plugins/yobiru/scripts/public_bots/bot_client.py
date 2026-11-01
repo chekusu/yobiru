@@ -236,9 +236,40 @@ def gateway_with(creds, role, explicit=None, bot=None):
     die("credentials for several gateways; pass --gateway URL")
 
 
+CALLER_VIEW_PATH = re.compile(r"/v1/(?:messages/msg_[a-z2-7]{16}|inbox|conversations/cnv_[a-z2-7]{16}"
+                              r"(?:/operations/[A-Za-z0-9_-]{8,64})?)")
+
+
+def caller_response_bodies(base, token, view):
+    """Fetch deferred caller bodies before unsealing, hashing, saving files or acknowledging receipt."""
+    messages = view.get("messages", view.get("items", [view]))
+    if not isinstance(messages, list) or any(not isinstance(message, dict) for message in messages):
+        die("invalid caller body list")
+    for message in messages:
+        for part in ("content", "result"):
+            path = message.get(part + "_url")
+            if path is None:
+                continue
+            mid, cid = message.get("message_id"), message.get("conversation_id")
+            if not isinstance(mid, str) or not re.fullmatch(r"msg_[a-z2-7]{16}", mid) or \
+                    not isinstance(cid, str) or not re.fullmatch(r"cnv_[a-z2-7]{16}", cid) or \
+                    path != "/v1/messages/%s/%s" % (mid, part):
+                die("invalid caller body link")
+            body = call(base, "GET", path, None, token)
+            if body.get("message_id") != mid or body.get("conversation_id") != cid or \
+                    not isinstance(body.get(part), dict):
+                die("invalid caller body context")
+            message[part] = body[part]
+            if isinstance(body.get("lifecycle"), dict):
+                message["lifecycle"] = body["lifecycle"]
+            del message[part + "_url"]
+    return view
+
+
 def call(base, method, path, body=None, token=None, accept=(200, 201, 202)):
     try:
-        return C.api_ok(base, method, path, body, token, accept=accept)[1]
+        obj = C.api_ok(base, method, path, body, token, accept=accept)[1]
+        return caller_response_bodies(base, token, obj) if method == "GET" and CALLER_VIEW_PATH.fullmatch(path) else obj
     except C.ApiError as e:
         fail(e)
     except ValueError as e:
@@ -1946,7 +1977,7 @@ def cmd_status(st, a):
                 sys.exit(2)
             log.confirm(a.op_key, obj["message_id"])
             if not a.wait:
-                out(dict(obj, stored=True))
+                out(dict(caller_response_bodies(base, token, obj), stored=True))
                 return
             record = log.get(a.op_key)
         out(dict(unseal(st, base, wait_final(base, token, record["message_id"], a.wait or 0)), op_key=a.op_key))
@@ -3879,11 +3910,25 @@ def cmd_mcp(st, a):
             version = answer["result"].get("protocolVersion")
         result = answer.get("result")
         if msg["method"] == "tools/call" and isinstance(result, dict) and not result.get("isError") and \
-                json.dumps(result.get("structuredContent")).find('"sealed"') >= 0:
-            # sealed bodies are opened here, with this device's keys: the agent reads text, never envelopes
-            data = unseal(st, base, result["structuredContent"])
-            answer["result"] = dict(result, structuredContent=data, content=[
-                {"type": "text", "text": json.dumps(data, ensure_ascii=False, sort_keys=True)}])
+                isinstance(result.get("structuredContent"), dict):
+            data = result["structuredContent"]
+            name = (msg.get("params") or {}).get("name")
+            caller_view = name in ("yobiru_message_status", "yobiru_operation_status", "yobiru_history", "yobiru_inbox")
+            messages = data.get("messages", data.get("items", [data])) if caller_view else []
+            deferred = isinstance(messages, list) and any(isinstance(m, dict) and m.get(part + "_url") is not None
+                                                        for m in messages for part in ("content", "result"))
+            if deferred:
+                try:
+                    # Fetch even when every sealed body was deferred, so the initial view contains no envelope.
+                    data = caller_response_bodies(base, token, data)
+                except (SystemExit, C.ApiError, ValueError, KeyError, TypeError):
+                    send(M.result(msg["id"], M.tool_error("body_unavailable", "a deferred message body could not be "
+                                                       "received; nothing was acknowledged", 503)))
+                    continue
+            if deferred or json.dumps(data).find('"sealed"') >= 0:
+                # Open with this device's keys, then preserve existing media blocks and add newly opened files.
+                data = unseal(st, base, data)
+                answer["result"] = M.tool_result(200, dict(data, ok=True), blocks=result.get("content", [])[1:])
         send(answer)
 
 
