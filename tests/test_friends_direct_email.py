@@ -13,6 +13,7 @@ gateway only queues the mail; `mail-relay` delivers it and then forgets the addr
 Real bot_gateway.py subprocesses with synthetic homes on loopback; the relay runs in-process with a fake sender.
 """
 import json
+import struct
 import subprocess
 import sys
 import tempfile
@@ -347,6 +348,25 @@ class EmailEnrollmentTests(unittest.TestCase):
         sent.clear()
         G.relay_once(store, mail, send=fake)
         self.assertEqual([], [m for m in sent if m["To"] == "carol@example.com"], "sent once")
+
+    def test_the_mail_carries_the_logo_inside_and_loads_nothing_from_elsewhere(self):
+        mail = {"from": "Yobiru <no-reply@yobiru.test>", "reply_to": None}
+        for lang in ("en", "zh", "ja"):
+            msg = G.mail_message(mail, "https://gw.example.com", {"lang": lang, "code": "123456",
+                                                                   "address": "frank@example.com"}, 15)
+            self.assertEqual(["multipart/alternative", "text/plain", "multipart/related", "text/html", "image/png"],
+                             [p.get_content_type() for p in msg.walk()], lang)
+            page = msg.get_body(("html",)).get_content()
+            self.assertIn('<img src="cid:%s" width="143" height="48" alt="yobiru"' % G.MAIL_LOGO_CID, page)
+            self.assertNotRegex(page, r'src="(?!cid:)', "no image or script is fetched when the mail is opened")
+            logo = [p for p in msg.walk() if p.get_content_type() == "image/png"][0]
+            self.assertEqual("<%s>" % G.MAIL_LOGO_CID, logo["Content-ID"])
+            self.assertEqual("inline", logo.get_content_disposition())
+            self.assertEqual(G.MAIL_LOGO_PNG, logo.get_content())
+        png = G.MAIL_LOGO_PNG
+        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual((429, 144), struct.unpack(">II", png[16:24]), "143x48 px at 3x")
+        self.assertLess(len(png), 8192)
 
     def test_a_failed_send_is_retried_then_given_up(self):
         cid, _, _ = self.challenge("dave@example.com")

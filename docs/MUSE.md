@@ -4,7 +4,7 @@ Yobiru ships an outbound Muse adapter and a dedicated `yobiru-muse` skill. It re
 
 ## Installation version
 
-Releases since `v0.7.15` include this adapter and the `muse` command; `v0.7.16` adds clearer checks on a limited Tailscale CLI and an opt-in CONNECT proxy for Friends. Download `yobiru-0.7.17-plugin.zip` and its matching `SHA256SUMS` from the same official release, verify the archive before extraction, and keep any existing package or data home unless the owner explicitly authorizes a separate installation.
+Releases since `v0.7.15` include this adapter and the `muse` command; `v0.7.16` adds clearer checks on a limited Tailscale CLI and an opt-in CONNECT proxy for Friends. Download `yobiru-0.7.18-plugin.zip` and its matching `SHA256SUMS` from the same official release, verify the archive before extraction, and keep any existing package or data home unless the owner explicitly authorizes a separate installation.
 
 ## Connect with the official Tailscale connector first
 
@@ -35,7 +35,7 @@ Private receiver permissions and Tailscale identity are authoritative. The adapt
 
 ## Copy into Muse
 
-> Install the Yobiru v0.7.17 plugin archive and verify its matching SHA256SUMS before extraction. It includes the yobiru muse command and yobiru-muse skill. Verify muse --help before setup. First help me connect Muse's official Tailscale connector. Check whether your actual execution environment can use its CLI, identity and outbound route. Use the packaged `yobiru muse` adapter and pull requests; do not start a receiver in Muse. Keep the returned request ID and poll its real result. If the official connector cannot be connected or used here, help me connect the intended bot through Yobiru Friends instead. Do not send any task or file until I have specified the recipient and authorized the work. Do not invent an OAuth flow, an installable Muse manifest or a successful round trip.
+> Install the Yobiru v0.7.18 plugin archive and verify its matching SHA256SUMS before extraction. It includes the yobiru muse command and yobiru-muse skill. Verify muse --help before setup. First help me connect Muse's official Tailscale connector. Check whether your actual execution environment can use its CLI, identity and outbound route. Use the packaged `yobiru muse` adapter and pull requests; do not start a receiver in Muse. Keep the returned request ID and poll its real result. If the official connector cannot be connected or used here, help me connect the intended bot through Yobiru Friends instead. Do not send any task or file until I have specified the recipient and authorized the work. Do not invent an OAuth flow, an installable Muse manifest or a successful round trip.
 
 This is an executable custom-connector adapter plus setup instructions, not a claim that Meta's directory already lists Yobiru. Meta's public guidance supports asking Muse to create a custom connector; it does not establish that a Python adapter is accepted in every account. If the current account accepts only remote APIs, the existing Friends gateway MCP is an alternative when its static bearer flow is supported. The local Friends client preserves its own encryption keys; a remote-only MCP client does not provide the same client-side encryption boundary. No shared OAuth or new public MCP service is added here.
 

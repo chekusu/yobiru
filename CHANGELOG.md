@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.18 (2026-11-01)
+
+Update the gateway; clients need no change. No schema or configuration change.
+
+- **The verification email shows the final yobiru logo.** The color lockup from `brand/logo/yobiru/` replaces the old
+  text wordmark with its orange dot at the top of the code email, in all three languages. The logo travels inside the
+  message as an inline image (`multipart/related`, `Content-ID`), so opening the email loads nothing from anywhere
+  and the logo shows even in mail apps that block remote images; where an app shows no images at all, its alt text
+  reads "yobiru". It sits on a tile of the page color, invisible on the light page, that keeps the dark lettering
+  readable in mail apps that darken the page. The email grows by about 7 KB.
+
 ## 0.7.17 (2026-11-01)
 
 Update the gateway; clients need no change. No schema version change: the gateway creates the `hosted_wakes` table
