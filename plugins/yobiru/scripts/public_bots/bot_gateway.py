@@ -6968,8 +6968,8 @@ def cmd_serve(home, a):
 
 
 MAIL_KEYS = {"smtp_host", "smtp_port", "security", "username", "password_file", "from", "reply_to"}
-# Verification email: plain text plus an HTML part in the yobiru.com style (calm neutrals, one orange signal dot,
-# the code in a monospace tile). Inline styles and tables only, so mail clients render it as designed.
+# Verification email: plain text plus an HTML part in the yobiru.com style (calm neutrals, the yobiru logo, the code in
+# a monospace tile). Inline styles and tables only, so mail clients render it as designed.
 MAIL_TEXT = {
     "en": {"subject": "Your Yobiru verification code: {code}",
            "title": "Your verification code",
@@ -7010,7 +7010,7 @@ MAIL_HTML = """<!doctype html>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fbfbfa;">
 <tr><td align="center" style="padding:40px 16px;">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;">
-<tr><td style="padding:0 8px 24px 8px;font-family:{font};font-size:22px;font-weight:700;letter-spacing:-0.04em;color:#121214;line-height:1;">yobiru<span style="display:inline-block;width:5px;height:5px;margin-left:2px;border-radius:50%;background:#ff5b1f;"></span></td></tr>
+<tr><td style="padding:0 0 16px 0;"><img src="cid:{logo_cid}" width="143" height="48" alt="yobiru" style="display:block;width:143px;height:48px;border:0;outline:none;text-decoration:none;font-family:{font};font-size:22px;font-weight:700;letter-spacing:-0.04em;color:#121214;"></td></tr>
 <tr><td style="background:#ffffff;border:1px solid rgba(18,18,20,0.10);border-radius:24px;padding:36px 32px;">
 <p style="margin:0 0 12px 0;font-family:{font};font-size:24px;font-weight:600;letter-spacing:-0.02em;color:#121214;line-height:1.25;">{title}</p>
 <p style="margin:0 0 28px 0;font-family:{font};font-size:15px;color:#48484f;line-height:1.6;">{lead}</p>
@@ -7025,6 +7025,80 @@ MAIL_HTML = """<!doctype html>
 """
 
 
+# The color lockup of the final logo (brand/logo/yobiru/yobiru-lockup-color.svg, 123x32 px) on a 143x48 px tile of the
+# page color with rounded corners, at 3x. The tile is invisible on the light page and keeps the dark ink readable in
+# mail apps that darken the page. It travels inside the message (multipart/related, Content-ID), so opening the mail
+# loads nothing from anywhere and the logo shows even where remote images are blocked.
+MAIL_LOGO_CID = "logo@yobiru"
+MAIL_LOGO_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAa0AAACQCAMAAACMG8TCAAADAFBMVEX7+/r6+vn5+fj5+Pf29vX09PP78Orz8/Ly8vHx8fDv7+777uju7u376eDt"
+    "7ezs7Ovr6+rp6ejo6Ofn5+br5uPl5eTk5OPi4uL73M7h4eHh4eDh4d/g4N/d3d3c3Nva2tnY2Nf81cPX19fW1tbV1dXU1NTT09PS0tLR0dD7x7D7"
+    "vKDPz87Nzc3MzMzLy8vKysrIyMfHx8bGxsXDw8LBwcC+vr69vb28vLy6urm4uLf8r423t7a1tbWzs7OwsLCurq6srKyqqqn8oXr9mm/8kmT8ilio"
+    "qKimpqejo6OgoKCdnZ2ampqYmJiWlpaVlZWUlJOSkpKRkZGPj4+MjIyKioqIiIiGhof8f0n9czj9aSn9YyGEhISCgoJ/f39+fn58fHx7e3t5eXt4"
+    "eHl2dnZzc3Nvb3Bubm9tbW1ra2poaGhmZmZjY2NiYmNhYWJgYGFgYGBgYF9fX2D9XhpzXlXnWBugRiBdXV5dXVxmOCVcXF1bW1xaWltZWVlXV1dW"
+    "VldUVFZTU1NRUVFPT1BNTU1LS01LS0tJSUpISEdFRUZERENCQkJBQUFAQEA9PT08PDw7Ozs5OTk2Njc1NTc1NTRLMSYzMzUwMDIuLjAsLC0rKywq"
+    "KisqKiooKCokJCYiIiQgICEeHh8dHR8cHB4bGx0aGhwZGRsYGBoVFRcTExUSEhT7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7"
+    "+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7"
+    "+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7"
+    "+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/r7+/oAAAD7g8U+AAABAHRSTlP/////////////////////////"
+    "////////////////////////////////////////////////////////////////////////////////////////////////////////////////"
+    "/////////////////////////////////////////////////////////////////////////////////////////wECBgkKDg8RFhcZGhwdHh8g"
+    "ISQmKiwtMTQ4SElKTE9TVVhbXGRweHt8foWGiJCYmZqeoKSoqaqrrLS3uMDKzs/Q0djg4uPl6Orw8fP19vf4+fv8/f4AcAWDrAAAEVFJREFUeNrt"
+    "nXtcFccVx1fFKAYF5SMaKqIGRQUfCPgExQdvEAVBRAFFEEExkY8hUdEgig9EJLkihCiYgOImMYlN0mfS5tXW1qQxbaNpTGysUZs29pVYU03c3svd"
+    "e+/M7szO7N2N7vYzv79wd2fu3vO9Z/bMOTMrJ6B16oPzl65eu8Ex3VnduHb10vkPTmGocIhjJ9+9eJ3Z7a7q+sV3TlLReuMyM5Yh9NmbRFqvXrzN"
+    "7GQQ3f70NUVaP/roFjOSgXTrj6/gaf3qK2Ygg+mrUzhav2eDoAGHw/eRtE5cYKYxpD55Xk7r5b8yuxhUf3lFSuvE58wqxsV1QkLrU2YTA+sCTOsM"
+    "s4ihdQak9ZtvmUEMrW9/4aL1wr+ZPQyuf73opHWWWcPwOuug9eP/MmMYXl+/JNL6mNnCBPrQTutn3zBTmEDfvN5Fi9WzzKHLNlov3GSGMIVuvmil"
+    "dZrZwSQ6baXFUu9m0ccC9wyrQJpF/3yGe4tZwTR6i3tPr64Gj527ODunvLw8Jzt27vQxfZlxddd73Dl9UM2zcYK1ePpwZmBddZbTJciYU47WkjmD"
+    "mY11DDO4Kzr0Mq8cr9gxzMp66Qp3TXsn95QrKnsss7M++oLTI/++pJzEqwcztQ76UpdexpSTlM2eX8bRmGwir+nMSsbRWCKv2HsMe/M+WSvUN/Kd"
+    "vzfAtLh6jFls0tHQf2UHv1Zto5nVPM+PNrN/DY5VxpVjxGD+/hKr2fn1qtp4xO+yNeLHm/z5RYgODRfLe2/pMju/UUWbEYVt9kYmohUat7S0qtZS"
+    "u+3B/Lgg19Qr1kyxht+KdtHuFdRtxm/inZpgDlQhi3ZZQNXEOE/NVcY1xzDfoduU9Z1Ou2+iHQN38oDM4FsBC2osMtVEO4wwxyTeNQy0O61v9ePN"
+    "RWvA0gYLUsX96bxrjBFp0fqWN0QrxOiwEvdbcKoNFq+Zp4xruIl9qz9Ey+ARfJ9VFgXVBYqXKc+8lvQ1r2/5QrTGGRpWcI1FUXsGihMvZeda3MO0"
+    "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")
+
+
 def mail_parts(lang, code, issuer, minutes):
     """-> (subject, plain text, html) of one verification email."""
     import html as _html
@@ -7035,7 +7109,7 @@ def mail_parts(lang, code, issuer, minutes):
     text = "%s\n\n    %s\n\n%s\n%s\n\n%s\n%s\n\n%s\nhttps://yobiru.com\n" % (
         fill["title"], code, fill["lead"], fill["expiry"], fill["rule"], fill["ignore"], fill["footer"])
     page = MAIL_HTML.format(lang={"zh": "zh-CN"}.get(lang, lang), font=MAIL_FONTS[lang], code=_html.escape(code),
-                            **{k: _html.escape(v) for k, v in fill.items() if k != "subject"})
+                            logo_cid=MAIL_LOGO_CID, **{k: _html.escape(v) for k, v in fill.items() if k != "subject"})
     return fill["subject"], text, page
 
 
@@ -7079,6 +7153,8 @@ def mail_message(mail, issuer, row, minutes):
         msg["Reply-To"] = mail["reply_to"]
     msg.set_content(text)
     msg.add_alternative(page, subtype="html")
+    msg.get_body(("html",)).add_related(MAIL_LOGO_PNG, "image", "png", cid="<%s>" % MAIL_LOGO_CID,
+                                        disposition="inline", filename="yobiru.png")
     return msg
 
 
