@@ -73,7 +73,11 @@ MCP_DEFAULTS = {"enabled": True, "allowed_origins": []}
 # others can open conversations with them) is off unless the operator allows it.
 # email_verification: a new self-enrolled owner proves control of an email address first, and one address names at
 # most one owner. The gateway itself sends nothing: codes wait in an outbox that `mail-relay` delivers.
-ENROLLMENT_DEFAULTS = {"visitors": True, "bots": True, "self_enrolled_publish": False, "email_verification": False}
+# join_by_email: a new machine that proves the address of an existing self-enrolled owner gets one new bot of that
+# owner, with a manager credential for that bot only (POST /v1/enroll/join); the owner credential never leaves the
+# owner's own devices, and the owner is told by email.
+ENROLLMENT_DEFAULTS = {"visitors": True, "bots": True, "self_enrolled_publish": False, "email_verification": False,
+                       "join_by_email": True}
 # Partners: services the operator trusts to vouch that one of their users controls an email address, so that user
 # enrolls here without a second code. gateway.json `partners` maps a name to {"secret_file": PATH} (relative to the
 # gateway home, mode 0600, at least 32 characters); the partner keeps the same secret. An attestation names this
@@ -101,7 +105,8 @@ LIMIT_DEFAULTS = {
     "email_codes_per_hour_per_address": 3,
     "email_code_ttl_seconds": 900,
     "email_code_attempts": 5,                   # wrong codes before a challenge is spent
-    "bots_per_self_enrolled_owner": 2,
+    "bots_per_self_enrolled_owner": 10,         # retired bots (unpublished, every credential revoked) not counted
+    "bots_joined_per_day_per_owner": 3,         # bots an existing owner's address adds from new machines (join)
     "new_contacts_per_hour_per_bot": 30,        # first-time visitors admitted to one bot
     "pending_contact_requests_per_bot": 50,
     "contact_requests_per_hour_per_actor": 5,
@@ -422,6 +427,15 @@ INBOX_TABLES = (
     "CREATE INDEX IF NOT EXISTS hosted_wake_claims_wake ON hosted_wake_claims(wake_id)",
     "CREATE TRIGGER IF NOT EXISTS delete_hosted_wake_claim AFTER DELETE ON messages BEGIN "
     "DELETE FROM hosted_wake_claims WHERE message_id=OLD.id; END",
+    # Notices to an owner's address (a bot added by join). Apart from mail_outbox, whose rows are codes: an older
+    # relay never sees these. The address lives only until the relay sent the mail, as a code's does.
+    "CREATE TABLE IF NOT EXISTS mail_notices (id TEXT PRIMARY KEY, kind TEXT NOT NULL, address TEXT, lang TEXT, "
+    "detail TEXT NOT NULL, created_ts INTEGER NOT NULL, expires_ts INTEGER NOT NULL, sent_ts INTEGER, "
+    "attempts INTEGER NOT NULL DEFAULT 0, error TEXT)",
+    # The address of an open email challenge, sealed with the wake key, so a join can tell the owner there. Gone
+    # once the challenge is used or expired.
+    "CREATE TABLE IF NOT EXISTS challenge_addresses (challenge_id TEXT PRIMARY KEY, sealed TEXT NOT NULL, "
+    "expires_ts INTEGER NOT NULL)",
 )
 # note: the owner's words for their agent, sent with each wake. failures/failing_since_ts/next_ts: consecutive
 # failed calls and when the next may go. disabled_ts: turned off after failing too long (a new PUT or an accepted
@@ -1462,10 +1476,38 @@ def email_field(value):
     return address, "%s@%s" % (local, domain)
 
 
-def email_unused(db, email_hash):
+# A retired bot: unpublished, and no credential could still act for it (no manager or source credential and no
+# worker binding left). It keeps its row and handle but no longer counts towards the owner's bot quota.
+RETIRED = ("(b.state='unpublished' AND NOT EXISTS (SELECT 1 FROM credentials c WHERE c.subject=b.id AND c.kind IN "
+           "('manager','source') AND c.revoked_ts IS NULL) AND NOT EXISTS (SELECT 1 FROM workers w WHERE "
+           "w.bot_id=b.id AND w.revoked_ts IS NULL))")
+
+
+def email_unused(db, email_hash, join=None):
     if db.execute("SELECT 1 FROM owners WHERE email_hash=?", (email_hash,)).fetchone():
+        extra = {"join": join} if join else {}
         raise Fail(409, "email_in_use", "this email address already owns a bot on this gateway; one address "
-                                        "registers one owner")
+                                        "registers one owner" + ("; add a bot to that owner with %s and the same "
+                                                                 "code" % join if join else ""), **extra)
+
+
+def email_owner(db, email_hash):
+    """The self-enrolled owner of this address (for join), or 404. Only someone who proved the address asks."""
+    row = db.execute("SELECT * FROM owners WHERE email_hash=?", (email_hash,)).fetchone()
+    if row is None or row["kind"] != "self_enrolled":
+        raise Fail(404, "no_owner_for_email", "no owner on this gateway uses this email address; enroll a new owner "
+                                              "with POST /v1/enroll and the same code")
+    return row
+
+
+JOIN_LABEL = "email-join"           # credentials of a bot an existing owner's address added from a new machine
+NOTICE_TTL_SECONDS = 86400
+
+
+def queue_notice(db, kind, address, lang, detail, now):
+    db.execute("INSERT INTO mail_notices(id, kind, address, lang, detail, created_ts, expires_ts) VALUES(?,?,?,?,?,?,?)",
+               (C.new_id("eml"), kind, address, lang if lang in MAIL_LANGS else "en", canonical(detail), int(now),
+                int(now) + NOTICE_TTL_SECONDS))
 
 
 def gateway_secret(db):
@@ -2109,6 +2151,7 @@ def owner_bot_view(cfg, db, bot):
                           "status!='revoked'", (bot["id"],)).fetchone()[0]
     count = lambda q, *a: db.execute(q, a).fetchone()[0]  # noqa: E731
     owner = db.execute("SELECT kind FROM owners WHERE id=?", (bot["owner_id"],)).fetchone()
+    managers = manager_rows(db, bot["id"])
     now = C.now_ts()
     return {"bot_id": bot["id"], "handle": "@" + bot["handle"],
             "address": "%s/@%s" % (cfg["public_base_url"], bot["handle"]),
@@ -2127,7 +2170,19 @@ def owner_bot_view(cfg, db, bot):
                              bot["id"]),
             "workers": [worker_view(w, bot, cfg["limits"], now) for w in workers],
             "verifiers": [{"verifier_id": v["id"], "label": v["label"], "created_at": ts_iso(v["created_ts"]),
-                           "revoked_at": ts_iso(v["revoked_ts"])} for v in verifiers]}
+                           "revoked_at": ts_iso(v["revoked_ts"])} for v in verifiers],
+            "managers": [manager_view(m) for m in managers],
+            "added_via": "email_join" if managers and managers[0]["label"] == JOIN_LABEL else None}
+
+
+def manager_rows(db, bot_id):
+    return db.execute("SELECT * FROM credentials WHERE kind='manager' AND subject=? ORDER BY created_ts, rowid",
+                      (bot_id,)).fetchall()
+
+
+def manager_view(c):
+    return {"credential_id": c["hash"][:16], "label": c["label"], "created_at": ts_iso(c["created_ts"]),
+            "revoked_at": ts_iso(c["revoked_ts"])}
 
 
 def worker_view(w, bot, limits=None, now=None):
@@ -2466,20 +2521,30 @@ def wake_key(home):
         tmp.unlink()
 
 
-def seal_route(home, bot_id, text):
+def seal_text(home, aad, text):
     nonce = os.urandom(12)
-    return "v1." + E.b64e(nonce + E.aead_encrypt(wake_key(home), nonce, text.encode("utf-8"),
-                                                 ("hosted-wake|" + bot_id).encode("ascii")))
+    return "v1." + E.b64e(nonce + E.aead_encrypt(wake_key(home), nonce, text.encode("utf-8"), aad.encode("ascii")))
+
+
+def open_text(home, aad, sealed):
+    raw = E.b64d(sealed[3:]) if sealed.startswith("v1.") else b""
+    if len(raw) < 28:
+        raise ValueError("sealed text is malformed")
+    try:
+        return E.aead_decrypt(wake_key(home), raw[:12], raw[12:], aad.encode("ascii")).decode()
+    except (E.E2EError, UnicodeDecodeError):
+        raise ValueError("sealed text cannot be opened")
+
+
+def seal_route(home, bot_id, text):
+    return seal_text(home, "hosted-wake|" + bot_id, text)
 
 
 def open_route(home, bot_id, sealed):
-    raw = E.b64d(sealed[3:]) if sealed.startswith("v1.") else b""
-    if len(raw) < 28:
-        raise ValueError("sealed wake route is malformed")
     try:
-        return E.aead_decrypt(wake_key(home), raw[:12], raw[12:], ("hosted-wake|" + bot_id).encode("ascii")).decode()
-    except (E.E2EError, UnicodeDecodeError):
-        raise ValueError("sealed wake route cannot be opened")
+        return open_text(home, "hosted-wake|" + bot_id, sealed)
+    except ValueError as e:
+        raise ValueError(str(e).replace("sealed text", "sealed wake route"))
 
 
 def hosted_wake_view(row):
@@ -2533,7 +2598,8 @@ class Api(object):
         elif name == "owner_send":
             sender = db.execute("SELECT owner_id FROM bots WHERE id=?", (row["conv_actor"],)).fetchone()
             files_ok = subject is not None and row["conv_actor"] == params.get("bid") and sender is not None and \
-                sender["owner_id"] == subject["id"] and "files" in current_caps(db, row, row["conv_actor"])
+                sender["owner_id"] == subject["id"] and subject.get("scope_bot_id") in (None, row["conv_actor"]) and \
+                "files" in current_caps(db, row, row["conv_actor"])
         else:
             files_ok = name == "worker_finish" and "files" in json.loads(row["policy"])["offered"]
         if files_ok:
@@ -2554,6 +2620,13 @@ class Api(object):
         if kind == "owner":
             row = db.execute("SELECT * FROM owners WHERE id=?", (cred["subject"],)).fetchone()
             return dict(row) if row else None
+        if kind == "manager":
+            # One bot of an owner: the owner's subject, narrowed by scope_bot_id in own_bot and the listings.
+            bot = db.execute("SELECT * FROM bots WHERE id=?", (cred["subject"],)).fetchone()
+            row = db.execute("SELECT * FROM owners WHERE id=?", (bot["owner_id"],)).fetchone() if bot else None
+            if row is None:
+                return None
+            return dict(row, scope_bot_id=bot["id"], credential_id=cred["hash"][:16], credential_kind="manager")
         if kind == "actor":
             row = db.execute("SELECT * FROM actors WHERE id=?", (cred["subject"],)).fetchone()
             return {"kind": "actor", "id": row["id"], "display_name": row["display_name"]} if row else None
@@ -2579,10 +2652,17 @@ class Api(object):
         return None
 
     def own_bot(self, db, owner, bot_id):
+        """The owner's bot, or 404. A manager credential reaches its one bot only: any other is the same 404."""
         bot = db.execute("SELECT * FROM bots WHERE id=?", (bot_id,)).fetchone()
-        if bot is None or bot["owner_id"] != owner["id"]:
+        if bot is None or bot["owner_id"] != owner["id"] or owner.get("scope_bot_id") not in (None, bot["id"]):
             raise Fail(404, "not_found")
         return bot
+
+    def owner_only(self, r):
+        """Routes a manager credential may never use: they reach beyond its one bot."""
+        if r.subject.get("scope_bot_id") is not None:
+            raise Fail(403, "bot_scoped", "this credential administers bot %s only; do this on a device that holds "
+                                          "the owner credential" % r.subject["scope_bot_id"])
 
     def find_bot(self, db, ref):
         try:
@@ -2614,7 +2694,8 @@ class Api(object):
                                     "email_verification": self.enrollment["email_verification"],
                                     "email_code": "POST /v1/enroll/email" if self.enrollment["email_verification"]
                                     else None,
-                                    "email_attestation_partners": sorted(self.cfg["partners"])},
+                                    "email_attestation_partners": sorted(self.cfg["partners"]),
+                                    "join_by_email": self.join_route()},
                      "federation": "none: identities are scoped to this gateway",
                      "e2e": {"alg": E.ALG, "sealed_bodies": True},
                      "messages": {"kinds": sorted(KIND_CAPABILITY), "owner_send": True,
@@ -2725,15 +2806,26 @@ class Api(object):
                    (cid, email_hash, keyed(db, "code", cid, code), int(now), expires))
         db.execute("INSERT INTO mail_outbox(id, challenge_id, address, code, lang, created_ts, expires_ts) "
                    "VALUES(?,?,?,?,?,?,?)", (C.new_id("eml"), cid, address, code, lang, int(now), expires))
+        db.execute("INSERT INTO challenge_addresses(challenge_id, sealed, expires_ts) VALUES(?,?,?)",
+                   (cid, seal_text(self.store.home, "email-challenge|" + cid, address), expires))
         return 202, {"ok": True, "challenge_id": cid, "sent_to": mask_email(address), "expires_at": C.iso(expires),
                      "attempts": L["email_code_attempts"],
                      "next": "ask the owner for the 6-digit code from this email, then enroll with "
                              "email_challenge {id, code}",
                      "note": "the same answer is given whether or not this address already owns a bot here"}
 
-    def email_check(self, db, raw, now):
+    def join_route(self):
+        """The join route where an address can be proven here (an email code or a partner attestation), else None.
+        enroll_join answers 404 join_off exactly when this is None."""
+        on = self.enrollment["join_by_email"] and self.enrollment["bots"] and \
+            (self.enrollment["email_verification"] or bool(self.cfg["partners"]))
+        return "POST /v1/enroll/join" if on else None
+
+    def email_check(self, db, raw, now, existing=False):
         """-> (email_hash, None) for a valid unused code, or (None, (status, body)) to answer with. A wrong code is
-        counted in this request's own transaction, so it is answered, never raised (a raise would roll it back)."""
+        counted in this request's own transaction, so it is answered, never raised (a raise would roll it back).
+        `existing`: the address must name an owner (join); otherwise it must not (a new owner). Either refusal is
+        raised, so the challenge stays usable for the other route."""
         L = self.limits
         if not isinstance(raw, dict) or set(raw) != {"id", "code"} or not isinstance(raw["id"], str) or \
                 not isinstance(raw["code"], str):
@@ -2748,12 +2840,17 @@ class Api(object):
             left = L["email_code_attempts"] - row["attempts"] - 1
             return None, (400, {"ok": False, "error": "email_code_invalid", "attempts_left": left,
                                 "detail": "the code does not match" + ("" if left else "; ask for a new one")})
-        email_unused(db, row["email_hash"])
+        if existing:
+            email_owner(db, row["email_hash"])
+        else:
+            email_unused(db, row["email_hash"], self.join_route())
         db.execute("UPDATE email_challenges SET used_ts=? WHERE id=?", (int(now), row["id"]))
+        db.execute("DELETE FROM challenge_addresses WHERE challenge_id=?", (row["id"],))
         return row["email_hash"], None
 
-    def partner_email(self, db, raw, owner_hash, now):
-        """-> the keyed hash of an address a configured partner vouches for, for this owner credential only."""
+    def partner_email(self, db, raw, owner_hash, now, existing=False):
+        """-> the keyed hash of an address a configured partner vouches for, for this owner credential only (for
+        join: this manager credential; the signed fields are the same)."""
         if not isinstance(raw, dict) or set(raw) != {"partner", "email", "exp", "sig"} or \
                 not isinstance(raw["partner"], str) or not isinstance(raw["email"], str) or \
                 not C.int_in(raw["exp"], 0, 10 ** 12) or not isinstance(raw["sig"], str):
@@ -2769,7 +2866,10 @@ class Api(object):
         if not hmac.compare_digest(expected, raw["sig"]):
             raise Fail(400, "invalid_attestation", "the signature does not match this gateway, address and credential")
         email_hash = keyed(db, "email", canon)
-        email_unused(db, email_hash)
+        if existing:
+            email_owner(db, email_hash)
+        else:
+            email_unused(db, email_hash, self.join_route())
         return email_hash
 
     def enroll_bot(self, db, r):
@@ -2840,6 +2940,107 @@ class Api(object):
         owner = db.execute("SELECT * FROM owners WHERE id=?", (owner_id,)).fetchone()
         bot = db.execute("SELECT * FROM bots WHERE id=?", (bot_id,)).fetchone()
         return 201, dict(self.enrolled_view(db, owner, bot), duplicate=False)
+
+    def enroll_join(self, db, r):
+        """A new bot of an existing self-enrolled owner, for a new machine that proves the owner's address (the same
+        email challenge as enroll_bot, or a partner attestation). The bearer is a client-generated manager credential
+        and the body carries the hash of a client-generated source credential; both are saved by the client first,
+        so a retry returns the same bot. The machine gets credentials for this one bot only: never the owner
+        credential, and nothing about the owner's other bots. The owner is told by email."""
+        token, body, now, L = r.token, r.body, r.now, self.limits
+        if C.token_kind(token) != "manager":
+            raise Fail(401, "unauthorized", "send a new client-generated manager credential as the bearer token")
+        fields(body, ("display_name", "handle", "description", "source_credential_sha256", "email_challenge",
+                      "email_attestation", "email", "lang", "e2e_key"), ("display_name", "source_credential_sha256"))
+        e2e_key = e2e_key_field(body)
+        source_hash = body["source_credential_sha256"]
+        if not isinstance(source_hash, str) or not C.HASH_RE.match(source_hash):
+            raise Fail(400, "invalid_source_credential", "source_credential_sha256: 64 lowercase hex digits")
+        name = C.clean_label(text_field(body, "display_name", 80))
+        desc = text_field(body, "description", 500, multiline=True, required=False) or ""
+        lang = body.get("lang")
+        if lang is not None and lang not in MAIL_LANGS:
+            raise Fail(400, "invalid_lang", "lang: %s" % ", ".join(MAIL_LANGS))
+        manager_hash = C.token_hash(token)
+        if manager_hash == source_hash:
+            raise Fail(400, "invalid_source_credential", "use two different credentials")
+        cred = db.execute("SELECT * FROM credentials WHERE hash=?", (manager_hash,)).fetchone()
+        if cred is not None:
+            if cred["kind"] != "manager" or cred["revoked_ts"] is not None:
+                raise Fail(401, "unauthorized")
+            src = db.execute("SELECT * FROM credentials WHERE hash=? AND kind='source'", (source_hash,)).fetchone()
+            bot = db.execute("SELECT * FROM bots WHERE id=?", (cred["subject"],)).fetchone()
+            if bot is None or src is None or src["subject"] != bot["id"]:
+                raise Fail(409, "enrollment_conflict", "this manager credential enrolled a different source credential")
+            owner = db.execute("SELECT * FROM owners WHERE id=?", (bot["owner_id"],)).fetchone()
+            return 200, dict(self.joined_view(db, owner, bot), duplicate=True)
+        if self.join_route() is None:
+            raise Fail(404, "join_off", "this gateway does not add bots to existing owners by email")
+        if db.execute("SELECT 1 FROM credentials WHERE hash=?", (source_hash,)).fetchone():
+            raise Fail(409, "enrollment_conflict", "that source credential is already registered")
+        handle = handle_field(body["handle"]) if body.get("handle") is not None else None
+        if body.get("email_attestation") is not None:
+            email_hash = self.partner_email(db, body["email_attestation"], manager_hash, now, existing=True)
+            address = email_field(body["email_attestation"]["email"])[0]
+        else:
+            raw = body.get("email_challenge")
+            cid = raw.get("id") if isinstance(raw, dict) else None
+            sealed = db.execute("SELECT sealed FROM challenge_addresses WHERE challenge_id=?",
+                                (cid,)).fetchone() if isinstance(cid, str) else None
+            email_hash, answer = self.email_check(db, raw, now, existing=True)
+            if answer is not None:
+                return answer
+            # The owner is told at the address the code went to: sealed with the challenge, or given again.
+            address = None
+            if sealed is not None:
+                try:
+                    address = open_text(self.store.home, "email-challenge|" + cid, sealed["sealed"])
+                except ValueError:
+                    address = None
+            if body.get("email") is not None:
+                given, canon = email_field(body["email"])
+                if not hmac.compare_digest(keyed(db, "email", canon), email_hash):
+                    raise Fail(400, "email_mismatch", "email: not the address this code was sent to")
+                address = address or given
+            if address is None:
+                raise Fail(400, "email_required", "email: the address the code was sent to (the owner is told "
+                                                  "there)")
+            if lang is None:
+                sent = db.execute("SELECT lang FROM mail_outbox WHERE challenge_id=?",
+                                  (body["email_challenge"]["id"],)).fetchone()
+                lang = sent["lang"] if sent is not None else None
+        # Every refusal from here on is raised: the transaction rolls back and the code stays usable.
+        owner = email_owner(db, email_hash)
+        # A new handle only: one the owner reserved (an earlier name of one of their bots) stays the owner's to give.
+        if handle is not None and db.execute("SELECT 1 FROM handles WHERE handle=?", (handle,)).fetchone():
+            raise Fail(409, "handle_unavailable")
+        self.bot_quota(db, owner["id"])
+        if not take(db, "enroll-bot:ip:%s" % r.client_ip, L["bot_enroll_per_hour_per_ip"], 3600, now) or \
+                not take(db, "enroll-bot:all", L["bot_enroll_per_hour"], 3600, now) or \
+                not take(db, "join:owner:%s" % owner["id"], L["bots_joined_per_day_per_owner"], 86400, now):
+            raise Fail(429, "rate_limited", "too many new bots; retry later")
+        bot_id = C.new_id("bot")
+        handle = handle or self.auto_handle(db)
+        if not db.execute("SELECT 1 FROM handles WHERE handle=?", (handle,)).fetchone():
+            db.execute("INSERT INTO handles(handle, owner_id, claimed_ts) VALUES(?,?,?)", (handle, owner["id"], int(now)))
+        db.execute("INSERT INTO bots(id, owner_id, handle, display_name, description, policy, state, worker_epoch, "
+                   "created_ts, updated_ts, e2e_key, e2e_key_ts) VALUES(?,?,?,?,?,?,'draft',0,?,?,?,?)",
+                   (bot_id, owner["id"], handle, name, desc, canonical(DEFAULT_POLICY), int(now), int(now), e2e_key,
+                    int(now) if e2e_key else None))
+        for digest, kind in ((manager_hash, "manager"), (source_hash, "source")):
+            db.execute("INSERT INTO credentials(hash, kind, subject, created_ts, label) VALUES(?,?,?,?,?)",
+                       (digest, kind, bot_id, int(now), JOIN_LABEL))
+        bot = db.execute("SELECT * FROM bots WHERE id=?", (bot_id,)).fetchone()
+        queue_notice(db, "bot_added", address, lang, {"bot_id": bot_id, "handle": handle, "display_name": name,
+                                                       "credential_id": manager_hash[:16]}, now)
+        return 201, dict(self.joined_view(db, owner, bot), duplicate=False)
+
+    def joined_view(self, db, owner, bot):
+        return dict(self.enrolled_view(db, owner, bot), joined_existing_owner=True, credential="manager",
+                    scope="administers this one bot of the owner (contacts, reviews, wakes, bindings, profile); it "
+                          "cannot create bots or reach the owner's other bots. The owner sees and can revoke it.",
+                    notice="A new bot of an existing owner on this gateway, added by proving the owner's email "
+                           "address. Its credentials prove continuity of their holder, not a person.")
 
     # ---- caller (a visitor actor or a source bot)
     def actor_me(self, db, r):
@@ -3339,9 +3540,11 @@ class Api(object):
     # ---- owner
     def owner_me(self, db, r):
         row = db.execute("SELECT email_hash FROM owners WHERE id=?", (r.subject["id"],)).fetchone()
+        scope = r.subject.get("scope_bot_id")
         return 200, {"ok": True, "owner_id": r.subject["id"], "label": r.subject["label"],
                      "self_enrolled": r.subject["kind"] == "self_enrolled",
-                     "email_verified": bool(row and row["email_hash"])}
+                     "email_verified": bool(row and row["email_hash"]),
+                     "scope": {"bot_id": scope, "credential": "manager"} if scope else None}
 
     def claim_handle(self, db, owner, handle, bot_id, now):
         taken = db.execute("SELECT owner_id FROM handles WHERE handle=?", (handle,)).fetchone()
@@ -3350,6 +3553,11 @@ class Api(object):
         other = db.execute("SELECT id FROM bots WHERE handle=?", (handle,)).fetchone()
         if other is not None and other["id"] != bot_id:
             raise Fail(409, "handle_unavailable")
+        # A manager credential takes new handles only: a handle the owner keeps from an earlier name still answers
+        # old share links, so only the owner credential may give it to a bot again.
+        if taken is not None and owner.get("scope_bot_id") is not None and other is None:
+            raise Fail(409, "handle_unavailable", "this handle is reserved by the owner; only the owner credential "
+                                                  "can use it again")
         if taken is None:
             db.execute("INSERT INTO handles(handle, owner_id, claimed_ts) VALUES(?,?,?)", (handle, owner["id"], int(now)))
 
@@ -3357,10 +3565,9 @@ class Api(object):
         body, now = r.body, r.now
         fields(body, ("handle", "display_name", "description", "policy", "e2e_key"), ("handle", "display_name"))
         e2e_key = e2e_key_field(body)
-        if r.subject["kind"] == "self_enrolled" and db.execute(
-                "SELECT COUNT(*) FROM bots WHERE owner_id=?", (r.subject["id"],)).fetchone()[0] >= \
-                self.limits["bots_per_self_enrolled_owner"]:
-            raise Fail(409, "too_many_bots", "self-enrolled owners have a small bot quota on this gateway")
+        self.owner_only(r)
+        if r.subject["kind"] == "self_enrolled":
+            self.bot_quota(db, r.subject["id"])
         handle = handle_field(body["handle"])
         name = C.clean_label(text_field(body, "display_name", 80))
         desc = text_field(body, "description", 500, multiline=True, required=False) or ""
@@ -3374,8 +3581,21 @@ class Api(object):
         bot = db.execute("SELECT * FROM bots WHERE id=?", (bot_id,)).fetchone()
         return 201, dict(owner_bot_view(self.cfg, db, bot), ok=True)
 
+    def bot_quota(self, db, owner_id):
+        if db.execute("SELECT COUNT(*) FROM bots b WHERE b.owner_id=? AND NOT " + RETIRED, (owner_id,)).fetchone()[0] \
+                >= self.limits["bots_per_self_enrolled_owner"]:
+            raise Fail(409, "too_many_bots", "self-enrolled owners have a small bot quota on this gateway; retire a "
+                                             "bot first (revoke its managers with everything)")
+
+    def owner_bots(self, db, owner):
+        """The bots a credential administers: all of the owner's, or the one bot of a manager credential."""
+        if owner.get("scope_bot_id") is not None:
+            return db.execute("SELECT * FROM bots WHERE id=? AND owner_id=?",
+                              (owner["scope_bot_id"], owner["id"])).fetchall()
+        return db.execute("SELECT * FROM bots WHERE owner_id=? ORDER BY created_ts", (owner["id"],)).fetchall()
+
     def bot_list(self, db, r):
-        rows = db.execute("SELECT * FROM bots WHERE owner_id=? ORDER BY created_ts", (r.subject["id"],)).fetchall()
+        rows = self.owner_bots(db, r.subject)
         return 200, {"ok": True, "bots": [owner_bot_view(self.cfg, db, b) for b in rows]}
 
     def bot_get(self, db, r):
@@ -3869,14 +4089,88 @@ class Api(object):
         if w is None:
             raise Fail(404, "not_found")
         if w["revoked_ts"] is None:
-            db.execute("UPDATE workers SET revoked_ts=? WHERE id=?", (int(now), w["id"]))
-            db.execute("UPDATE credentials SET revoked_ts=COALESCE(revoked_ts, ?) WHERE subject=? AND "
-                       "kind IN ('worker','connector')", (int(now), w["id"]))
-            if w["adapter"] == "native":
-                quarantine_where(db, "binding_revoked", "(lease_worker=? OR draft_worker=?)", (w["id"], w["id"]))
-            else:
-                requeue_where(db, "lease_worker=?", (w["id"],))
+            self.revoke_worker(db, w, now)
         return 200, {"ok": True, "worker_id": w["id"], "revoked": True}
+
+    def revoke_worker(self, db, w, now):
+        db.execute("UPDATE workers SET revoked_ts=? WHERE id=?", (int(now), w["id"]))
+        db.execute("UPDATE credentials SET revoked_ts=COALESCE(revoked_ts, ?) WHERE subject=? AND "
+                   "kind IN ('worker','connector')", (int(now), w["id"]))
+        if w["adapter"] == "native":
+            quarantine_where(db, "binding_revoked", "(lease_worker=? OR draft_worker=?)", (w["id"], w["id"]))
+        else:
+            requeue_where(db, "lease_worker=?", (w["id"],))
+
+    # ---- manager credentials (one bot each): only the owner credential lists, issues and revokes them
+    def manager_list(self, db, r):
+        self.owner_only(r)
+        bot = self.own_bot(db, r.subject, r.params["bid"])
+        return 200, {"ok": True, "bot_id": bot["id"], "managers": [manager_view(m) for m in manager_rows(db, bot["id"])]}
+
+    def manager_issue(self, db, r):
+        """A manager credential for one existing bot, for a machine that should administer only that bot (instead
+        of holding the owner credential). With credential_sha256 the client keeps the secret."""
+        self.owner_only(r)
+        bot, now = self.own_bot(db, r.subject, r.params["bid"]), r.now
+        fields(r.body, ("credential_sha256", "label"))
+        label = C.clean_label(text_field(r.body, "label", 60, required=False) or "manager")
+        digest, token = r.body.get("credential_sha256"), None
+        if digest is None:
+            token = C.new_token("manager")
+            digest = C.token_hash(token)
+        elif not isinstance(digest, str) or not C.HASH_RE.match(digest):
+            raise Fail(400, "invalid_credential", "credential_sha256: 64 lowercase hex digits")
+        existing = db.execute("SELECT * FROM credentials WHERE hash=?", (digest,)).fetchone()
+        if existing is not None:
+            if existing["kind"] == "manager" and existing["subject"] == bot["id"] and existing["revoked_ts"] is None:
+                return 200, {"ok": True, "bot_id": bot["id"], "credential_id": digest[:16], "duplicate": True}
+            raise Fail(409, "credential_conflict")
+        if db.execute("SELECT COUNT(*) FROM credentials WHERE kind='manager' AND subject=? AND revoked_ts IS NULL",
+                      (bot["id"],)).fetchone()[0] >= 10:
+            raise Fail(409, "too_many_managers", "revoke an older manager credential first")
+        db.execute("INSERT INTO credentials(hash, kind, subject, created_ts, label) VALUES(?,?,?,?,?)",
+                   (digest, "manager", bot["id"], int(now), label))
+        out = {"ok": True, "bot_id": bot["id"], "credential_id": digest[:16], "label": label, "duplicate": False,
+               "scope": "administers this one bot (contacts, reviews, wakes, bindings, profile); never the owner's "
+                        "other bots, never new bots"}
+        if token is not None:
+            out["token"] = token
+        return 201, out
+
+    def manager_revoke(self, db, r):
+        """Revoke one manager credential. `everything` (the default) also revokes every source, worker, connector
+        and verifier credential of the bot and unpublishes it: the machine that held the manager could have minted
+        any of them. The bot and its handle stay with the owner, retired (it no longer counts towards the quota)
+        until the owner binds it again."""
+        self.owner_only(r)
+        bot, now = self.own_bot(db, r.subject, r.params["bid"]), r.now
+        fields(r.body, ("everything",))
+        everything = r.body.get("everything", True)
+        if not isinstance(everything, bool):
+            raise Fail(400, "invalid_field", "everything: true or false")
+        match = [c for c in manager_rows(db, bot["id"]) if c["hash"][:16] == r.params["mid"]]
+        if not match:
+            raise Fail(404, "not_found")
+        db.execute("UPDATE credentials SET revoked_ts=COALESCE(revoked_ts, ?) WHERE hash=?", (int(now), match[0]["hash"]))
+        out = {"ok": True, "bot_id": bot["id"], "credential_id": r.params["mid"], "revoked": True,
+               "everything": everything}
+        if everything:
+            db.execute("UPDATE credentials SET revoked_ts=COALESCE(revoked_ts, ?) WHERE subject=? AND "
+                       "kind IN ('manager','source')", (int(now), bot["id"]))
+            for w in db.execute("SELECT * FROM workers WHERE bot_id=? AND revoked_ts IS NULL", (bot["id"],)).fetchall():
+                self.revoke_worker(db, w, now)
+            db.execute("UPDATE verifiers SET revoked_ts=? WHERE bot_id=? AND revoked_ts IS NULL", (int(now), bot["id"]))
+            db.execute("UPDATE credentials SET revoked_ts=COALESCE(revoked_ts, ?) WHERE kind='verifier' AND subject IN "
+                       "(SELECT id FROM verifiers WHERE bot_id=?)", (int(now), bot["id"]))
+            # The hosted wake's URL and secret came from that machine too: a later binding sets its own.
+            db.execute("DELETE FROM hosted_wakes WHERE bot_id=?", (bot["id"],))
+            if bot["state"] != "unpublished":
+                db.execute("UPDATE bots SET state='unpublished', updated_ts=? WHERE id=?", (int(now), bot["id"]))
+                cancel_where(db, now, "bot_unpublished", "bot_id=?", (bot["id"],))
+                db.execute("UPDATE contacts SET epoch=epoch+1, generation=generation+1, updated_ts=? WHERE bot_id=?",
+                           (int(now), bot["id"]))
+            out["bot"] = owner_bot_view(self.cfg, db, self.own_bot(db, r.subject, bot["id"]))
+        return 200, out
 
     def connector_issue(self, db, r):
         """The connector wakes the selected native host with an opaque job id. It never receives message text."""
@@ -4344,10 +4638,11 @@ class Api(object):
         nothing here is on a card or visible to callers or the bot's agent. Built from the gateway's records alone:
         no local agent sessions are scanned and nothing is rebound by a name or a working directory."""
         owner, now = r.subject, r.now
-        bots = db.execute("SELECT * FROM bots WHERE owner_id=? ORDER BY created_ts", (owner["id"],)).fetchall()
+        bots = self.owner_bots(db, owner)
         in_use = {b["handle"] for b in db.execute("SELECT handle FROM bots").fetchall()}
-        reserved = [h["handle"] for h in db.execute("SELECT handle FROM handles WHERE owner_id=? ORDER BY claimed_ts",
-                                                    (owner["id"],)).fetchall() if h["handle"] not in in_use]
+        reserved = [] if owner.get("scope_bot_id") else \
+            [h["handle"] for h in db.execute("SELECT handle FROM handles WHERE owner_id=? ORDER BY claimed_ts",
+                                             (owner["id"],)).fetchall() if h["handle"] not in in_use]
         count = lambda q, *a: db.execute(q, a).fetchone()[0]  # noqa: E731
         out = []
         for bot in bots:
@@ -4417,10 +4712,11 @@ class Api(object):
         row = db.execute("SELECT * FROM decisions WHERE id=?", (did,)).fetchone()
         if row is None or ("issuer" in r.body and r.body["issuer"] != row["issuer"]):
             raise Fail(404, "not_found")
-        owner = C.token_kind(r.token) == "owner"
+        owner = C.token_kind(r.token) in ("owner", "manager")
         if owner:
             bot = db.execute("SELECT owner_id FROM bots WHERE id=?", (row["bot_id"],)).fetchone()
-            if bot is None or bot["owner_id"] != r.subject["id"]:
+            if bot is None or bot["owner_id"] != r.subject["id"] or \
+                    r.subject.get("scope_bot_id") not in (None, row["bot_id"]):
                 raise Fail(404, "not_found")
             view = decision_owner_view(row)
         else:
@@ -5209,6 +5505,9 @@ class Api(object):
 BOT_ID = r"bot_[a-z2-7]{16}"
 PRINCIPAL = r"(?:act|bot)_[a-z2-7]{16}"
 CALLER = ("actor", "source")
+# Owner routes. A manager credential (one bot of an owner) is let in too: every handler reaches bots through own_bot,
+# which narrows it to its bot, and the few owner-wide ones filter (bot_list, owner_directory) or refuse (owner_only).
+OWNER = ("owner", "manager")
 SHARE_RE = re.compile(r"/@(?P<ref>[^/]{1,64}?)(?P<json>\.json)?\Z")
 AVATAR_RE = re.compile(r"/@(?P<ref>[^/]{1,64})/avatar(?:/(?P<v>[0-9a-f]{16}))?\Z")
 ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
@@ -5218,6 +5517,7 @@ ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
     ("POST", r"/v1/actors", "enroll", None),
     ("POST", r"/v1/enroll", "enroll_bot", None),
     ("POST", r"/v1/enroll/email", "enroll_email", None),
+    ("POST", r"/v1/enroll/join", "enroll_join", None),
     ("GET", r"/v1/bots/(?P<ref>[^/]{1,64})", "public_profile", None),
     ("GET", r"/v1/actor", "actor_me", CALLER),
     ("POST", r"/v1/actor/key", "actor_key", CALLER),
@@ -5237,61 +5537,64 @@ ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
     ("POST", r"/v1/messages/(?P<mid>msg_[a-z2-7]{16})/ack", "message_ack", CALLER),
     ("GET", r"/v1/messages/(?P<mid>msg_[a-z2-7]{16})/decisions", "message_decisions", CALLER),
     ("GET", r"/v1/inbox", "caller_inbox", CALLER),
-    ("POST", r"/v1/decisions/verify", "decision_verify", CALLER + ("owner",)),
-    ("GET", r"/v1/owner", "owner_me", ("owner",)),
-    ("GET", r"/v1/owner/directory", "owner_directory", ("owner",)),
-    ("GET", r"/v1/owner/decisions/(?P<did>dec_[a-z2-7]{16})", "owner_decision", ("owner",)),
-    ("POST", r"/v1/owner/bots", "bot_create", ("owner",)),
-    ("GET", r"/v1/owner/bots", "bot_list", ("owner",)),
-    ("GET", r"/v1/owner/bots/(?P<bid>%s)" % BOT_ID, "bot_get", ("owner",)),
-    ("PATCH", r"/v1/owner/bots/(?P<bid>%s)" % BOT_ID, "bot_edit", ("owner",)),
-    ("POST", r"/v1/owner/bots/(?P<bid>%s)/publish" % BOT_ID, "bot_publish", ("owner",)),
-    ("PUT", r"/v1/owner/bots/(?P<bid>%s)/avatar" % BOT_ID, "avatar_set", ("owner",)),
-    ("GET", r"/v1/owner/bots/(?P<bid>%s)/wake" % BOT_ID, "hosted_wake_get", ("owner",)),
-    ("PUT", r"/v1/owner/bots/(?P<bid>%s)/wake" % BOT_ID, "hosted_wake_set", ("owner",)),
-    ("DELETE", r"/v1/owner/bots/(?P<bid>%s)/wake" % BOT_ID, "hosted_wake_clear", ("owner",)),
-    ("POST", r"/v1/owner/bots/(?P<bid>%s)/wake/test" % BOT_ID, "hosted_wake_test", ("owner",)),
-    ("DELETE", r"/v1/owner/bots/(?P<bid>%s)/avatar" % BOT_ID, "avatar_remove", ("owner",)),
-    ("POST", r"/v1/owner/bots/(?P<bid>%s)/unpublish" % BOT_ID, "bot_unpublish", ("owner",)),
-    ("GET", r"/v1/owner/bots/(?P<bid>%s)/contacts" % BOT_ID, "contact_list", ("owner",)),
-    ("POST", r"/v1/owner/bots/(?P<bid>%s)/contacts/(?P<aid>%s)" % (BOT_ID, PRINCIPAL), "contact_action", ("owner",)),
-    ("GET", r"/v1/owner/bots/(?P<bid>%s)/followers" % BOT_ID, "followers", ("owner",)),
-    ("GET", r"/v1/owner/bots/(?P<bid>%s)/following" % BOT_ID, "owner_following", ("owner",)),
-    ("POST", r"/v1/owner/bots/(?P<bid>%s)/sources" % BOT_ID, "source_issue", ("owner",)),
-    ("GET", r"/v1/owner/bots/(?P<bid>%s)/sources" % BOT_ID, "source_list", ("owner",)),
+    ("POST", r"/v1/decisions/verify", "decision_verify", CALLER + OWNER),
+    ("GET", r"/v1/owner", "owner_me", OWNER),
+    ("GET", r"/v1/owner/directory", "owner_directory", OWNER),
+    ("GET", r"/v1/owner/decisions/(?P<did>dec_[a-z2-7]{16})", "owner_decision", OWNER),
+    ("POST", r"/v1/owner/bots", "bot_create", OWNER),
+    ("GET", r"/v1/owner/bots", "bot_list", OWNER),
+    ("GET", r"/v1/owner/bots/(?P<bid>%s)" % BOT_ID, "bot_get", OWNER),
+    ("PATCH", r"/v1/owner/bots/(?P<bid>%s)" % BOT_ID, "bot_edit", OWNER),
+    ("POST", r"/v1/owner/bots/(?P<bid>%s)/publish" % BOT_ID, "bot_publish", OWNER),
+    ("PUT", r"/v1/owner/bots/(?P<bid>%s)/avatar" % BOT_ID, "avatar_set", OWNER),
+    ("GET", r"/v1/owner/bots/(?P<bid>%s)/wake" % BOT_ID, "hosted_wake_get", OWNER),
+    ("PUT", r"/v1/owner/bots/(?P<bid>%s)/wake" % BOT_ID, "hosted_wake_set", OWNER),
+    ("DELETE", r"/v1/owner/bots/(?P<bid>%s)/wake" % BOT_ID, "hosted_wake_clear", OWNER),
+    ("POST", r"/v1/owner/bots/(?P<bid>%s)/wake/test" % BOT_ID, "hosted_wake_test", OWNER),
+    ("DELETE", r"/v1/owner/bots/(?P<bid>%s)/avatar" % BOT_ID, "avatar_remove", OWNER),
+    ("POST", r"/v1/owner/bots/(?P<bid>%s)/unpublish" % BOT_ID, "bot_unpublish", OWNER),
+    ("GET", r"/v1/owner/bots/(?P<bid>%s)/contacts" % BOT_ID, "contact_list", OWNER),
+    ("POST", r"/v1/owner/bots/(?P<bid>%s)/contacts/(?P<aid>%s)" % (BOT_ID, PRINCIPAL), "contact_action", OWNER),
+    ("GET", r"/v1/owner/bots/(?P<bid>%s)/followers" % BOT_ID, "followers", OWNER),
+    ("GET", r"/v1/owner/bots/(?P<bid>%s)/following" % BOT_ID, "owner_following", OWNER),
+    ("POST", r"/v1/owner/bots/(?P<bid>%s)/sources" % BOT_ID, "source_issue", OWNER),
+    ("GET", r"/v1/owner/bots/(?P<bid>%s)/sources" % BOT_ID, "source_list", OWNER),
     ("POST", r"/v1/owner/bots/(?P<bid>%s)/sources/(?P<sid>[0-9a-f]{16})/revoke" % BOT_ID, "source_revoke",
-     ("owner",)),
-    ("POST", r"/v1/owner/bots/(?P<bid>%s)/workers" % BOT_ID, "worker_bind", ("owner",)),
-    ("GET", r"/v1/owner/bots/(?P<bid>%s)/workers" % BOT_ID, "worker_list", ("owner",)),
+     OWNER),
+    ("POST", r"/v1/owner/bots/(?P<bid>%s)/workers" % BOT_ID, "worker_bind", OWNER),
+    ("GET", r"/v1/owner/bots/(?P<bid>%s)/workers" % BOT_ID, "worker_list", OWNER),
     ("POST", r"/v1/owner/bots/(?P<bid>%s)/workers/(?P<wid>wrk_[a-z2-7]{16})/revoke" % BOT_ID, "worker_revoke",
-     ("owner",)),
-    ("PATCH", r"/v1/owner/bots/(?P<bid>%s)/workers/(?P<wid>wrk_[a-z2-7]{16})" % BOT_ID, "worker_describe", ("owner",)),
-    ("GET", r"/v1/owner/bots/(?P<bid>%s)/decisions" % BOT_ID, "owner_decisions", ("owner",)),
+     OWNER),
+    ("PATCH", r"/v1/owner/bots/(?P<bid>%s)/workers/(?P<wid>wrk_[a-z2-7]{16})" % BOT_ID, "worker_describe", OWNER),
+    ("GET", r"/v1/owner/bots/(?P<bid>%s)/decisions" % BOT_ID, "owner_decisions", OWNER),
     ("POST", r"/v1/owner/bots/(?P<bid>%s)/workers/(?P<wid>wrk_[a-z2-7]{16})/connector" % BOT_ID, "connector_issue",
-     ("owner",)),
+     OWNER),
     ("POST", r"/v1/owner/bots/(?P<bid>%s)/workers/(?P<wid>wrk_[a-z2-7]{16})/check" % BOT_ID, "binding_check",
-     ("owner",)),
-    ("POST", r"/v1/owner/bots/(?P<bid>%s)/verifiers" % BOT_ID, "verifier_bind", ("owner",)),
-    ("GET", r"/v1/owner/bots/(?P<bid>%s)/verifiers" % BOT_ID, "verifier_list", ("owner",)),
+     OWNER),
+    ("POST", r"/v1/owner/bots/(?P<bid>%s)/verifiers" % BOT_ID, "verifier_bind", OWNER),
+    ("GET", r"/v1/owner/bots/(?P<bid>%s)/managers" % BOT_ID, "manager_list", OWNER),
+    ("POST", r"/v1/owner/bots/(?P<bid>%s)/managers" % BOT_ID, "manager_issue", OWNER),
+    ("POST", r"/v1/owner/bots/(?P<bid>%s)/managers/(?P<mid>[0-9a-f]{16})/revoke" % BOT_ID, "manager_revoke", OWNER),
+    ("GET", r"/v1/owner/bots/(?P<bid>%s)/verifiers" % BOT_ID, "verifier_list", OWNER),
     ("POST", r"/v1/owner/bots/(?P<bid>%s)/verifiers/(?P<vid>ver_[a-z2-7]{16})/revoke" % BOT_ID, "verifier_revoke",
-     ("owner",)),
-    ("GET", r"/v1/owner/bots/(?P<bid>%s)/conversations" % BOT_ID, "owner_conversation_list", ("owner",)),
-    ("GET", r"/v1/owner/bots/(?P<bid>%s)/reviews(?P<full>/full)?" % BOT_ID, "reviews", ("owner",)),
-    ("GET", r"/v1/owner/bots/(?P<bid>%s)/reviews/after/(?P<after>msg_[a-z2-7]{16})" % BOT_ID, "reviews", ("owner",)),
-    ("GET", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/review-content/message", "review_message_content", ("owner",)),
-    ("GET", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})", "owner_conversation_get", ("owner",)),
-    ("GET", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})/context", "owner_conversation_context", ("owner",)),
+     OWNER),
+    ("GET", r"/v1/owner/bots/(?P<bid>%s)/conversations" % BOT_ID, "owner_conversation_list", OWNER),
+    ("GET", r"/v1/owner/bots/(?P<bid>%s)/reviews(?P<full>/full)?" % BOT_ID, "reviews", OWNER),
+    ("GET", r"/v1/owner/bots/(?P<bid>%s)/reviews/after/(?P<after>msg_[a-z2-7]{16})" % BOT_ID, "reviews", OWNER),
+    ("GET", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/review-content/message", "review_message_content", OWNER),
+    ("GET", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})", "owner_conversation_get", OWNER),
+    ("GET", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})/context", "owner_conversation_context", OWNER),
     ("GET", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})/messages/(?P<mid>msg_[a-z2-7]{16})/"
-     r"(?P<part>content|result|draft)", "owner_conversation_content", ("owner",)),
-    ("POST", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})/messages", "owner_reply", ("owner",)),
+     r"(?P<part>content|result|draft)", "owner_conversation_content", OWNER),
+    ("POST", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})/messages", "owner_reply", OWNER),
     ("POST", r"/v1/owner/bots/(?P<bid>%s)/conversations/(?P<cid>cnv_[a-z2-7]{16})/messages" % BOT_ID, "owner_send",
-     ("owner",)),
-    ("DELETE", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})", "owner_conversation_delete", ("owner",)),
-    ("POST", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})/continue", "conversation_continue", ("owner",)),
-    ("GET", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})", "owner_message_context", ("owner",)),
-    ("POST", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/review", "review_action", ("owner",)),
-    ("POST", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/reveal", "reveal", ("owner",)),
-    ("POST", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/resolve", "resolve", ("owner",)),
+     OWNER),
+    ("DELETE", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})", "owner_conversation_delete", OWNER),
+    ("POST", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})/continue", "conversation_continue", OWNER),
+    ("GET", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})", "owner_message_context", OWNER),
+    ("POST", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/review", "review_action", OWNER),
+    ("POST", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/reveal", "reveal", OWNER),
+    ("POST", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/resolve", "resolve", OWNER),
     ("GET", r"/v1/worker", "worker_me", ("worker",)),
     ("POST", r"/v1/worker/claim", "worker_claim", ("worker",)),
     ("GET", r"/v1/worker/jobs", "job_list", ("worker",)),
@@ -6600,7 +6903,10 @@ def maintenance(store):
         db.execute("UPDATE mail_outbox SET address=NULL, code=NULL WHERE expires_ts<? AND address IS NOT NULL",
                    (int(now),))
         db.execute("DELETE FROM mail_outbox WHERE expires_ts<?", (int(now) - 86400,))
+        db.execute("UPDATE mail_notices SET address=NULL WHERE expires_ts<? AND address IS NOT NULL", (int(now),))
+        db.execute("DELETE FROM mail_notices WHERE expires_ts<?", (int(now) - 86400,))
         db.execute("DELETE FROM email_challenges WHERE expires_ts<?", (int(now) - 86400,))
+        db.execute("DELETE FROM challenge_addresses WHERE expires_ts<?", (int(now),))
 
 
 # ---------------------------------------------------------------- commands
@@ -6974,24 +7280,28 @@ MAIL_TEXT = {
     "en": {"subject": "Your Yobiru verification code: {code}",
            "title": "Your verification code",
            "lead": "Give this code to your agent (for example your Grok Bot) to finish registering your bot on the "
-                   "Yobiru Friends gateway {issuer}.",
+                   "Yobiru Friends gateway {issuer}, or to add a new bot to the account you already have there. "
+                   "Give it only to an agent you set up yourself.",
            "expiry": "It expires in {minutes} minutes and works once.",
-           "rule": "One email address registers one owner on this gateway.",
+           "rule": "One email address registers one owner on this gateway; a bot added with this code gets credentials "
+                   "for itself only, never for your other bots.",
            "ignore": "Didn't ask for this? Ignore this email. Nothing is registered without the code.",
            "footer": "Yobiru Friends: let your agent talk with your friends' agents."},
     "zh": {"subject": "你的 Yobiru 验证码：{code}",
            "title": "你的验证码",
-           "lead": "把这个验证码告诉你的 Agent（比如你的 Grok Bot），它会用来完成在 Yobiru Friends 网关 {issuer} 上的注册。",
+           "lead": "把这个验证码告诉你的 Agent（比如你的 Grok Bot），它会用来完成在 Yobiru Friends 网关 {issuer} 上的注册，"
+                   "或者在你已有的账号下新增一个 bot。只告诉你自己设置的 Agent。",
            "expiry": "{minutes} 分钟内有效，只能使用一次。",
-           "rule": "一个邮箱在这个网关上只能注册一个主人。",
+           "rule": "一个邮箱在这个网关上只能注册一个主人；用这个验证码新增的 bot 只拿到它自己的凭据，管不了你的其他 bot。",
            "ignore": "不是你本人申请的？忽略这封邮件即可。没有验证码，什么都不会被注册。",
            "footer": "Yobiru Friends：让你的 Agent 和朋友的 Agent 直接聊。"},
     "ja": {"subject": "Yobiru 確認コード：{code}",
            "title": "確認コード",
            "lead": "このコードをあなたのエージェント（たとえば Grok Bot）に伝えると、Yobiru Friends ゲートウェイ {issuer} "
-                   "での登録が完了します。",
+                   "での登録、または既存のアカウントへの新しい bot の追加が完了します。自分で設定したエージェントにだけ伝えてください。",
            "expiry": "有効期限は {minutes} 分で、一度だけ使えます。",
-           "rule": "このゲートウェイでは、1 つのメールアドレスで登録できるオーナーは 1 人です。",
+           "rule": "このゲートウェイでは、1 つのメールアドレスで登録できるオーナーは 1 人です。このコードで追加した bot "
+                   "が受け取るのはその bot 自身の認証情報だけで、ほかの bot は操作できません。",
            "ignore": "心当たりがない場合は、このメールを無視してください。コードがなければ何も登録されません。",
            "footer": "Yobiru Friends：あなたのエージェントが、友だちのエージェントと話せるように。"},
 }
@@ -7099,6 +7409,59 @@ MAIL_LOGO_PNG = base64.b64decode(
     "ILz5GbOTIXT5DRkbOS1BOPnOxevMWHdV1y++exJBBkWrK+D44Pylq9duMLvdYd24dvXS+T/8EkPlf+QamTPNbA/TAAAAAElFTkSuQmCC")
 
 
+# The same card, with the bot's handle where the code goes (smaller, without the code's letter spacing).
+NOTICE_HTML = MAIL_HTML.replace("font-size:36px;font-weight:600;letter-spacing:0.32em;",
+                                "font-size:20px;font-weight:600;letter-spacing:0;")
+NOTICE_TEXT = {
+    "bot_added": {
+        "en": {"subject": "A new bot was added to your Yobiru account: {handle}",
+               "title": "A new bot was added",
+               "lead": "An agent that had the verification code sent to this address added the bot {name} to your "
+                       "account on the Yobiru Friends gateway {issuer}.",
+               "when": "Added {when} (UTC), credential {credential}.",
+               "rule": "It got credentials for this one bot only; it cannot reach your other bots or your owner "
+                       "credential.",
+               "ignore": "Not you? On a device with your owner credential run: yobiru public owner revoke-manager "
+                         "{bot_id} {credential}",
+               "footer": "Yobiru Friends: let your agent talk with your friends' agents."},
+        "zh": {"subject": "你的 Yobiru 账号新增了一个 bot：{handle}",
+               "title": "新增了一个 bot",
+               "lead": "一个拿到了发往这个邮箱的验证码的 Agent，在 Yobiru Friends 网关 {issuer} 上给你的账号新增了 bot {name}。",
+               "when": "新增时间 {when}（UTC），凭据 {credential}。",
+               "rule": "它只拿到这一个 bot 的凭据，碰不到你的其他 bot，也拿不到你的主人凭据。",
+               "ignore": "不是你本人操作的？在持有主人凭据的设备上运行：yobiru public owner revoke-manager {bot_id} {credential}",
+               "footer": "Yobiru Friends：让你的 Agent 和朋友的 Agent 直接聊。"},
+        "ja": {"subject": "Yobiru アカウントに新しい bot が追加されました：{handle}",
+               "title": "新しい bot が追加されました",
+               "lead": "このアドレス宛の確認コードを受け取ったエージェントが、Yobiru Friends ゲートウェイ {issuer} の"
+                       "あなたのアカウントに bot {name} を追加しました。",
+               "when": "追加日時 {when}（UTC）、認証情報 {credential}。",
+               "rule": "受け取ったのはこの bot だけの認証情報で、ほかの bot やオーナー認証情報には触れられません。",
+               "ignore": "心当たりがない場合は、オーナー認証情報のある端末で実行してください：yobiru public owner "
+                         "revoke-manager {bot_id} {credential}",
+               "footer": "Yobiru Friends：あなたのエージェントが、友だちのエージェントと話せるように。"},
+    },
+}
+
+
+def notice_parts(row, issuer):
+    """-> (subject, plain text, html) of one notice email."""
+    import html as _html
+    lang = row["lang"] if row["lang"] in MAIL_LANGS else "en"
+    t = NOTICE_TEXT[row["kind"]][lang]
+    detail = json.loads(row["detail"])
+    values = {"issuer": urllib.parse.urlsplit(issuer).netloc or issuer, "handle": "@" + detail["handle"],
+              "name": "%s (@%s)" % (detail["display_name"], detail["handle"]), "bot_id": detail["bot_id"],
+              "credential": detail["credential_id"], "when": C.iso(row["created_ts"]).replace("T", " ").rstrip("Z")}
+    fill = {k: v.format(**values) for k, v in t.items()}
+    text = "%s\n\n    %s\n\n%s\n%s\n\n%s\n%s\n\n%s\nhttps://yobiru.com\n" % (
+        fill["title"], values["handle"], fill["lead"], fill["when"], fill["rule"], fill["ignore"], fill["footer"])
+    page = NOTICE_HTML.format(lang={"zh": "zh-CN"}.get(lang, lang), font=MAIL_FONTS[lang],
+                              code=_html.escape(values["handle"]), expiry=_html.escape(fill["when"]),
+                              logo_cid=MAIL_LOGO_CID, **{k: _html.escape(v) for k, v in fill.items() if k not in ("subject", "when")})
+    return fill["subject"], text, page
+
+
 def mail_parts(lang, code, issuer, minutes):
     """-> (subject, plain text, html) of one verification email."""
     import html as _html
@@ -7139,10 +7502,10 @@ def load_mail_config(path):
             "password": password, "from": cfg["from"], "reply_to": cfg.get("reply_to")}
 
 
-def mail_message(mail, issuer, row, minutes):
+def mail_message(mail, issuer, row, minutes, parts=None):
     import email.message
     import email.utils
-    subject, text, page = mail_parts(row["lang"], row["code"], issuer, minutes)
+    subject, text, page = parts or mail_parts(row["lang"], row["code"], issuer, minutes)
     msg = email.message.EmailMessage()
     msg["From"], msg["To"] = mail["from"], row["address"]
     msg["Subject"] = subject
@@ -7185,27 +7548,48 @@ def smtp_send(mail, messages):
 
 
 def relay_once(store, mail, send=smtp_send, now=None):
-    """Deliver queued verification emails once. Rows are claimed (attempts+1) in one short transaction, sent with
-    no transaction open, and then finished: a sent row loses its address and code at once."""
+    """Deliver queued verification emails and owner notices once. Rows are claimed (attempts+1) in one short
+    transaction, sent with no transaction open, and then finished: a sent row loses its address (and code) at once."""
     now = C.now_ts() if now is None else now
     with store.tx() as db:
         rows = db.execute("SELECT * FROM mail_outbox WHERE sent_ts IS NULL AND address IS NOT NULL AND expires_ts>? "
                           "AND attempts<3 ORDER BY created_ts LIMIT 20", (int(now),)).fetchall()
+        notices = db.execute("SELECT * FROM mail_notices WHERE sent_ts IS NULL AND address IS NOT NULL AND "
+                             "expires_ts>? AND attempts<3 ORDER BY created_ts LIMIT 20", (int(now),)).fetchall()
         for row in rows:
             db.execute("UPDATE mail_outbox SET attempts=attempts+1 WHERE id=?", (row["id"],))
-    if not rows:
+        for row in notices:
+            db.execute("UPDATE mail_notices SET attempts=attempts+1 WHERE id=?", (row["id"],))
+    if not rows and not notices:
         return {"sent": 0, "failed": 0}
-    minutes = store.limits["email_code_ttl_seconds"] // 60
-    results = send(mail, [mail_message(mail, store.cfg["public_base_url"], row, minutes) for row in rows])
+    minutes, issuer = store.limits["email_code_ttl_seconds"] // 60, store.cfg["public_base_url"]
+    built, broken = [], []
+    for row in notices:
+        # A notice that cannot be built is set aside with its error: it never holds back the codes beside it.
+        try:
+            built.append((row, mail_message(mail, issuer, row, minutes, notice_parts(row, issuer))))
+        except Exception as e:  # noqa: BLE001
+            broken.append((row, type(e).__name__))
+    notices = [row for row, _ in built]
+    messages = [mail_message(mail, issuer, row, minutes) for row in rows] + [m for _, m in built]
+    results = send(mail, messages) if messages else []
     with store.tx() as db:
+        for row, err in broken:
+            db.execute("UPDATE mail_notices SET error=? WHERE id=?", (("render: " + err)[:60], row["id"]))
         for row, err in zip(rows, results):
             if err is None:
                 db.execute("UPDATE mail_outbox SET sent_ts=?, address=NULL, code=NULL, error=NULL WHERE id=?",
                            (int(C.now_ts()), row["id"]))
             else:
                 db.execute("UPDATE mail_outbox SET error=? WHERE id=?", (err[:60], row["id"]))
+        for row, err in zip(notices, results[len(rows):]):
+            if err is None:
+                db.execute("UPDATE mail_notices SET sent_ts=?, address=NULL, error=NULL WHERE id=?",
+                           (int(C.now_ts()), row["id"]))
+            else:
+                db.execute("UPDATE mail_notices SET error=? WHERE id=?", (err[:60], row["id"]))
     failed = sum(1 for e in results if e is not None)
-    return {"sent": len(rows) - failed, "failed": failed}
+    return {"sent": len(results) - failed, "failed": failed + len(broken)}
 
 
 def cmd_mail_relay(home, a):

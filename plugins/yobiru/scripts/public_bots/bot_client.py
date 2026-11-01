@@ -836,7 +836,8 @@ def forget_refused_enrollment(st, base, key, pending, status):
             "again later; the gateway recognizes it")
     if status is None or not 400 <= status < 500:
         return keep
-    same = ("token",) if key == "actor" else ("owner_token", "source_token")
+    same = {"actor": ("token",), "pending_join": ("manager_token", "source_token")}.get(key, ("owner_token",
+                                                                                         "source_token"))
 
     def drop(creds):
         entry = creds["gateways"].get(base) or {}
@@ -866,6 +867,8 @@ def cmd_enroll_bot(st, a):
 
     if a.email is not None:
         return request_email_code(st, base, a.email, a.lang)
+    if a.join:
+        return enroll_join(st, base, a)
 
     def plan(creds):
         entry = creds["gateways"].setdefault(base, {})
@@ -921,6 +924,10 @@ def cmd_enroll_bot(st, a):
                                "the owner for the 6-digit code from that email, then run it with --email-code CODE")
         elif obj.get("error") == "email_code_invalid":
             refused["attempts_left"] = obj.get("attempts_left")
+        elif obj.get("error") == "email_in_use" and obj.get("join") and a.email_code is not None:
+            # The address already owns a bot here: the same code (a refused enrollment never spends it) adds a new
+            # bot to that owner, with a credential for that bot only. The owner credential stays where it is.
+            return enroll_join(st, base, a)
         out(refused)
         sys.exit(2)
 
@@ -944,6 +951,94 @@ def cmd_enroll_bot(st, a):
          "email_verified": obj.get("email_verified", False), "verified_person": False,
          "note": "a new pseudonymous source bot of this gateway; its owner and source credentials are stored in %s, "
                  "never printed" % st.path("credentials.json")})
+
+
+def enroll_join(st, base, a):
+    """A new bot of the owner that already uses this email address at the gateway, from this machine. A manager
+    credential (this one bot only) and a source credential are generated and saved here before the request, so a
+    retry returns the same bot. The owner credential never comes here; the owner sees and can revoke the bot."""
+    def plan(creds):
+        entry = creds["gateways"].setdefault(base, {})
+        if (entry.get("owner") or {}).get("token"):
+            return "owner_exists"
+        if not entry.get("pending_join"):
+            entry["pending_join"] = {"manager_token": C.new_token("manager"), "source_token": C.new_token("source"),
+                                     "display_name": a.name, "handle": a.handle, "description": a.description,
+                                     "dispatches": 0, "e2e": new_keypair()}
+        entry["pending_join"]["dispatches"] = entry["pending_join"].get("dispatches", 0) + 1
+        return entry["pending_join"]
+    pending = st.update("credentials.json", plan)
+    if pending == "owner_exists":
+        die("this data home already holds an owner or bot credential for %s; use another data home for this bot"
+            % base)
+    if a.prepare:
+        out({"ok": True, "gateway": base, "owner_credential_sha256": C.token_hash(pending["manager_token"]),
+             "next": "have the partner sign an email attestation for this hash, then run enroll-bot --join again with "
+                     "--attestation-file FILE",
+             "note": "the credentials stay in %s and are reused by the next enroll-bot --join"
+                     % st.path("credentials.json")})
+        return
+    body = {"display_name": pending["display_name"],
+            "source_credential_sha256": C.token_hash(pending["source_token"])}
+    if pending.get("handle"):
+        body["handle"] = pending["handle"].lstrip("@").lower()
+    if pending.get("description"):
+        body["description"] = pending["description"]
+    if a.lang:
+        body["lang"] = a.lang
+    if pending.get("e2e") and gateway_e2e(base):
+        body["e2e_key"] = pending["e2e"]["public"]
+    if a.attestation_file is not None:
+        try:
+            body["email_attestation"] = C.read_json_file(a.attestation_file, 4096, what="attestation file")
+        except ValueError as e:
+            die(str(e))
+    elif a.email_code is not None:
+        challenge = (st.creds()["gateways"].get(base) or {}).get("email_challenge")
+        if not challenge:
+            die("no email code was requested for %s from this data home: run enroll-bot with --email first" % base)
+        body["email_challenge"] = {"id": challenge["id"], "code": a.email_code.strip()}
+    else:
+        die("enroll-bot --join needs --email-code CODE (after --email ADDRESS) or --attestation-file FILE")
+    try:
+        status, obj = C.api_call(base, "POST", "/v1/enroll/join", body, pending["manager_token"])
+    except C.ApiError as e:
+        out({"ok": False, "error": e.code, "detail": e.detail,
+             "next": "run the same enroll-bot command again: the saved credentials are reused"})
+        sys.exit(2)
+    except ValueError as e:
+        die(str(e))
+    if status not in (200, 201) or obj.get("ok") is not True:
+        note = forget_refused_enrollment(st, base, "pending_join", pending, status)
+        refused = {"ok": False, "error": obj.get("error"), "detail": obj.get("detail"), "http_status": status,
+                   "note": note}
+        if obj.get("error") == "email_code_invalid":
+            refused["attempts_left"] = obj.get("attempts_left")
+        out(refused)
+        sys.exit(2)
+
+    def done(creds):
+        entry = creds["gateways"][base]
+        entry["owner"] = {"owner_id": obj["owner_id"], "token": pending["manager_token"],
+                          "label": pending["display_name"], "self_enrolled": True, "scope_bot_id": obj["bot_id"]}
+        entry.setdefault("sources", {})[obj["bot_id"]] = {"token": pending["source_token"], "handle": obj["handle"],
+                                                          "credential_id": C.token_hash(pending["source_token"])[:16],
+                                                          "added_at": C.iso(C.now_ts())}
+        entry.setdefault("default_identity", obj["bot_id"])
+        if pending.get("e2e") and "e2e_key" in body:
+            keys = entry.setdefault("bot_keys", {}).setdefault(obj["bot_id"], [])
+            if all(k["public"] != pending["e2e"]["public"] for k in keys):
+                keys.append(pending["e2e"])
+        entry.pop("pending_join", None)
+        entry.pop("email_challenge", None)
+    st.update("credentials.json", done)
+    out({"ok": True, "gateway": base, "bot_id": obj["bot_id"], "handle": obj["handle"], "address": obj["address"],
+         "state": obj["state"], "can_publish": obj.get("can_publish"), "duplicate": obj.get("duplicate"),
+         "email_verified": obj.get("email_verified", False), "verified_person": False,
+         "joined_existing_owner": True, "credential": "manager",
+         "note": "a new bot of the owner that uses this email address; this machine holds a credential for this one "
+                 "bot only (stored in %s, never printed), and the owner was told by email"
+                 % st.path("credentials.json")})
 
 
 def request_email_code(st, base, email, lang):
@@ -2135,13 +2230,17 @@ def cmd_owner(st, a):
         base = norm_url(a.url)
         try:
             token = C.read_token_file(a.token_file, "owner")
-        except ValueError as e:
-            die(str(e))
+        except ValueError:
+            try:
+                token = C.read_token_file(a.token_file, "manager")    # one bot's manager credential
+            except ValueError as e:
+                die(str(e).replace("manager credential", "owner or manager credential"))
         obj = call(base, "GET", "/v1/owner", None, token)
 
         def save(creds):
-            creds["gateways"].setdefault(base, {})["owner"] = {"owner_id": obj["owner_id"], "token": token,
-                                                              "label": obj["label"]}
+            creds["gateways"].setdefault(base, {})["owner"] = dict(
+                {"owner_id": obj["owner_id"], "token": token, "label": obj["label"]},
+                **({"scope_bot_id": obj["scope"]["bot_id"]} if obj.get("scope") else {}))
         st.update("credentials.json", save)
         out({"ok": True, "gateway": base, "owner_id": obj["owner_id"],
              "note": "owner credential stored in %s; never share it with callers or workers" % st.path("credentials.json")})
@@ -2199,6 +2298,21 @@ def cmd_owner(st, a):
                                        dict(body, op_key=op), token), op_key=op)))
     elif a.owner_cmd == "delete-conversation":
         out(call(base, "DELETE", "/v1/owner/conversations/%s" % a.conversation_id, None, token))
+    elif a.owner_cmd == "managers":
+        out(call(base, "GET", "/v1/owner/bots/%s/managers" % owner_bot(base, token, a.bot), None, token))
+    elif a.owner_cmd == "revoke-manager":
+        out(call(base, "POST", "/v1/owner/bots/%s/managers/%s/revoke" % (owner_bot(base, token, a.bot),
+                                                                        a.credential_id),
+                 {"everything": not a.keep_others}, token))
+    elif a.owner_cmd == "issue-manager":
+        bot_id, secret = owner_bot(base, token, a.bot), C.new_token("manager")
+        write_new_token(a.token_file, secret)       # saved before the gateway knows its hash
+        body = {"credential_sha256": C.token_hash(secret)}
+        if a.label:
+            body["label"] = a.label
+        obj = call(base, "POST", "/v1/owner/bots/%s/managers" % bot_id, body, token)
+        out(dict(obj, token_file=str(Path(a.token_file).expanduser().absolute()),
+                 next="on the machine for this bot only: yobiru public owner login %s --token-file FILE" % base))
 
 
 def register_source(st, base, token, bot_id, handle, label):
@@ -2335,6 +2449,10 @@ def cmd_bot_link(base, token, bot_id, a):
 def cmd_bot(st, a):
     base, token = owner_session(st, a)
     if a.bot_cmd == "create":
+        scope = ((st.creds()["gateways"].get(base) or {}).get("owner") or {}).get("scope_bot_id")
+        if scope:
+            die("this data home holds a credential for bot %s only; create new bots on a device with the owner "
+                "credential, or with enroll-bot --join from a new data home" % scope)
         body = {"handle": a.handle, "display_name": a.name}
         if a.description is not None:
             body["description"] = a.description
@@ -4117,6 +4235,9 @@ def main(argv=None):
     p.add_argument("--prepare", action="store_true",
                    help="partners: save the new credentials and print the owner credential hash to have signed")
     p.add_argument("--attestation-file", help="partners: a signed email attestation (JSON) instead of --email-code")
+    p.add_argument("--join", action="store_true",
+                   help="the address already owns bots here: add one more bot to that owner, with a credential for "
+                        "this bot only (done automatically when the gateway says the address is in use)")
     p = sp.add_parser("source", help="store a source credential file minted by the bot's owner")
     p.add_argument("source_cmd", choices=("login",))
     p.add_argument("url")
@@ -4285,6 +4406,21 @@ def main(argv=None):
     p.add_argument("--gateway")
     p = os_.add_parser("delete-conversation")
     p.add_argument("conversation_id")
+    p.add_argument("--gateway")
+    p = os_.add_parser("managers", help="credentials that administer one bot only (machines added by email)")
+    p.add_argument("bot")
+    p.add_argument("--gateway")
+    p = os_.add_parser("revoke-manager", help="revoke a bot's manager credential, and by default every other "
+                                              "credential of that bot (it is unpublished)")
+    p.add_argument("bot")
+    p.add_argument("credential_id")
+    p.add_argument("--keep-others", action="store_true", help="revoke only this manager credential")
+    p.add_argument("--gateway")
+    p = os_.add_parser("issue-manager", help="a credential for one bot only, for a machine that should not hold "
+                                             "the owner credential")
+    p.add_argument("bot")
+    p.add_argument("--token-file", required=True, help="a new private file for the credential")
+    p.add_argument("--label")
     p.add_argument("--gateway")
 
     pb = sp.add_parser("bot", help="create, share, edit, publish or unpublish your bots")
