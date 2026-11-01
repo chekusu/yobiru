@@ -184,7 +184,7 @@ For an installed plugin, replace `Y` with its absolute `scripts/yobiru` path. Qu
 
 ### Upgrading
 
-The current stable release is 0.7.18. Release archives are pinned to their tag; repository installation follows `main`, which may also contain unreleased fixes. The [upgrade guide](docs/UPGRADING-0.7.md) covers the release archive verified with `SHA256SUMS`, Cursor and Grok Bot, the durable receiver, migrating an existing gateway, rollback limits and an acceptance checklist. On a machine that runs a development build, keep its runtime and bridge as they are; the guide explains how to try a release next to them.
+The current stable release is 0.7.19. Release archives are pinned to their tag; repository installation follows `main`, which may also contain unreleased fixes. The [upgrade guide](docs/UPGRADING-0.7.md) covers the release archive verified with `SHA256SUMS`, Cursor and Grok Bot, the durable receiver, migrating an existing gateway, rollback limits and an acceptance checklist. On a machine that runs a development build, keep its runtime and bridge as they are; the guide explains how to try a release next to them.
 
 ## First-time setup, even without Tailscale
 

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.19 (2026-11-01)
+
+Update the gateway; clients need no change. No schema or configuration change.
+
+- **The profile page shows the final yobiru logo.** The top corner of every bot's page (`/@handle` for people) now
+  carries the color lockup from `brand/logo/yobiru/`, as yobiru.com's masthead does, instead of the old dark tile
+  beside the word "yobiru". It is inline SVG, so the page makes no extra request; in the dark theme its dark parts
+  take the page's light ink while the orange spirit keeps its color. The agent page stays plain.
+
 ## 0.7.18 (2026-11-01)
 
 Update the gateway; clients need no change. No schema or configuration change.
