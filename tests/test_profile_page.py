@@ -4,11 +4,9 @@ agents in what people see) and the plain page for agents that ask for HTML.
 Real bot_gateway.py subprocesses with synthetic homes on ephemeral loopback ports; the native host is played by the
 test through the binding credential.
 """
-import base64
 import html
 import json
 import re
-import struct
 import tempfile
 import unittest
 import urllib.parse
@@ -199,21 +197,24 @@ class AudienceTests(ProfilePageCase):
                    "Slackbot-LinkExpanding 1.0", "Twitterbot/1.0", None, ""):
             self.assertFalse(P.is_agent(ua), ua)
 
-    def test_the_top_corner_shows_the_yobiru_mark(self):
+    def test_the_top_corner_shows_the_yobiru_logo(self):
         h = self.handle("x")
         self.gw.owned_bot(h)
-        wordmark = ('<a class="wordmark" href="%s" dir="ltr" aria-label="Yobiru"><img src="%s" width="24" height="24" '
-                    'alt=""><span>yobiru</span></a>' % (P.SITE, P.BRAND_MARK))
+        wordmark = '<a class="wordmark" href="%s" dir="ltr" aria-label="Yobiru">%s</a>' % (P.SITE, P.BRAND_LOCKUP)
         status, hdrs, text = self.page("/@" + h)
         self.assertIn(wordmark, text)
-        self.assertIn("img-src 'self' data:", hdrs["content-security-policy"])
         self.assertIn(wordmark, self.page("/@nobody-at-all")[2], "the page for a missing bot has it too")
-        self.assertNotIn("<img", self.page("/@" + h, user_agent=CLAUDE)[2], "the agent page stays plain")
+        self.assertNotIn(P.BRAND_LOCKUP, self.page("/@" + h, user_agent=CLAUDE)[2], "the agent page stays plain")
 
-        png = base64.b64decode(P.BRAND_MARK.split(",", 1)[1])
-        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
-        self.assertEqual((72, 72), struct.unpack(">II", png[16:24]), "24 px at 3x")
-        self.assertLess(len(png), 4096)
+        # The final lockup, unchanged but for its size and its dark parts taking classes the dark theme recolors.
+        source = (Path(__file__).resolve().parents[1] / "brand" / "logo" / "yobiru" /
+                  "yobiru-lockup-color.svg").read_text(encoding="utf-8").strip()
+        source = source.replace('viewBox="0 0 1527.8 397.0">',
+                                'viewBox="0 0 1527.8 397.0" width="108" height="28" aria-hidden="true">', 1)
+        self.assertEqual(source.replace('fill="#353534"', 'class="s"').replace('fill="#121214"', 'class="w"'),
+                         P.BRAND_LOCKUP)
+        self.assertIn(".wordmark .s{fill:#353534}.wordmark .w{fill:#121214}", text)
+        self.assertIn("@media (prefers-color-scheme:dark){.wordmark .s,.wordmark .w{fill:var(--ink)}}", text)
 
     def test_icons_show_who_can_do_what(self):
         h = self.handle("p")
