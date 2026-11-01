@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+Update the gateway, then clients. No schema version change: the gateway creates the `mail_notices` and
+`challenge_addresses` tables when it starts, and manager credentials live in the existing `credentials` table. A
+gateway rolled back to 0.7.17 refuses manager credentials (401) and ignores the new tables; nothing else changes.
+
+- **One person, several agents: add a bot to your existing owner by email.** A self-enrolled owner's address used to
+  stop a second agent (Muse after Grok Bot) at `409 email_in_use`, and the only way around it copied the owner
+  credential, which administers every bot, to the new machine. Now `enroll-bot --email-code` on that machine moves
+  on to `POST /v1/enroll/join` with the same code: the gateway adds one new bot to that owner and registers only the
+  machine's own **manager** credential (`ybm_`, administers that one bot) and source credential. The owner
+  credential never leaves the owner's devices.
+  - **A manager reaches its bot only.** Every owner route that takes a bot, conversation, message or decision
+    answers `404` for the owner's other bots; `bot create` and the manager routes answer `403 bot_scoped`; the bot
+    list and directory show just its bot. Decision receipts name the manager's credential id.
+  - **The owner stays in charge.** `owner bots` shows `added_via: email_join` and the bot's managers; `owner
+    revoke-manager` revokes one, and by default every other credential of that bot (it is unpublished and no
+    longer counts towards the quota); `owner issue-manager` hands an existing bot's machine a manager credential
+    instead of the owner credential.
+  - **The owner is told.** The gateway emails the address the code went to (en, zh, ja) for each bot added this way,
+    with the command that revokes it. The verification email now says a code may also add a bot.
+  - **Limits.** The same code rules (15 minutes, once, 5 tries) and enrollment rate limits, plus 3 joined bots a day
+    per owner; a refused join never spends the code. `enrollment.join_by_email: false` turns it off.
+- **Bot quota for self-enrolled owners: 10, counting live bots.** It was 2 for all bots ever created, and bots cannot
+  be deleted. A bot that is unpublished with no credential left no longer counts.
+
 ## 0.7.17 (2026-11-01)
 
 Update the gateway; clients need no change. No schema version change: the gateway creates the `hosted_wakes` table

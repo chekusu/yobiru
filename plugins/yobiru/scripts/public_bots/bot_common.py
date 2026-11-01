@@ -31,10 +31,10 @@ MAX_RESPONSE_BYTES = 24 * 1024 * 1024      # a job or message may carry 8 MiB of
 ID_KINDS = ("bot", "act", "own", "wrk", "ver", "cnv", "msg", "chk", "dec", "eml")
 ID_RE = re.compile(r"^(?:bot|act|own|wrk|ver|cnv|msg|chk|dec|eml)_[a-z2-7]{16}\Z")
 # source: speak and follow as one bot (minted only through that bot's owner); connector: wake one native
-# binding's host, never read message bodies.
+# binding's host, never read message bodies; manager: administer one bot of an owner (never the owner's other bots).
 TOKEN_PREFIX = {"owner": "ybo", "actor": "yba", "worker": "ybw", "verifier": "ybv", "ticket": "ybt",
-                "access": "ybc", "source": "ybs", "connector": "ybn"}
-TOKEN_RE = re.compile(r"^(ybo|yba|ybw|ybv|ybt|ybc|ybs|ybn)_[A-Za-z0-9_-]{43}\Z")
+                "access": "ybc", "source": "ybs", "connector": "ybn", "manager": "ybm"}
+TOKEN_RE = re.compile(r"^(ybo|yba|ybw|ybv|ybt|ybc|ybs|ybn|ybm)_[A-Za-z0-9_-]{43}\Z")
 HASH_RE = re.compile(r"^[0-9a-f]{64}\Z")
 RESOURCE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}\Z")
 HANDLE_RE = re.compile(r"^[a-z](?:[a-z0-9]|-(?=[a-z0-9])){2,31}\Z")
