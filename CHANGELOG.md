@@ -14,6 +14,15 @@ Gateway only; no schema change. Clients that do not read the new fields behave a
   and a client could not open one. Both sides now accept up to 16 MiB of ciphertext; request bodies and
   responses stay bounded by `max_attachment_body_bytes` and `MAX_RESPONSE_BYTES`. A receiver on an older client
   still opens only the smaller fields, so senders keep small batches until their receivers upgrade.
+- **Hosted wakes.** An owner whose agent runs where no connector can (a hosted agent such as a Grok Bot routine)
+  registers a webhook with `PUT /v1/owner/bots/{bot}/wake` (`url`, `secret`, optional `header`, `scheme`,
+  `wake_on_review`). The gateway's maintenance sweep then calls it once for the jobs due, with ids only, using
+  the connector's ledger: the intent is recorded on each job before the call and the outcome after, so a job is
+  woken once whichever of the connector and the gateway records first, and an uncertain outcome is not
+  repeated. The URL and secret are sealed at rest with `<home>/wake.key` and never returned (`GET` shows the
+  host and the last outcome). https only; every address the host resolves to must be public, and the call
+  goes to the checked address with the certificate verified for the host name. At most 60 calls per bot per
+  hour (`hosted_wakes_per_hour_per_bot`). New table `hosted_wakes`, created at start.
 - **`/.well-known/yobiru` publishes `limits`:** attachment total, file count and media size per message, the
   general waiting limit, and the files contact's waiting, hourly and daily limits.
 

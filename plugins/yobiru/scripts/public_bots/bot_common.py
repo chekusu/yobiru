@@ -884,21 +884,59 @@ def wake_url(url):
     return u
 
 
-def post_wake(url, headers, body, timeout=20.0):
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """Connects to an address checked beforehand, so a second DNS answer cannot redirect the request."""
+
+    def __init__(self, host, port, address, **kwargs):
+        http.client.HTTPConnection.__init__(self, host, port, **kwargs)
+        self._address = address
+
+    def connect(self):
+        self.sock = socket.create_connection((self._address, self.port), self.timeout)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """TLS to an address checked beforehand; the certificate is still verified for the URL's host name."""
+
+    def __init__(self, host, port, address, **kwargs):
+        http.client.HTTPSConnection.__init__(self, host, port, **kwargs)
+        self._address = address
+
+    def connect(self):
+        sock = socket.create_connection((self._address, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+def public_address(host, port):
+    """The address to call for an endpoint a gateway reaches on someone's behalf: refused (ValueError) unless every
+    address the name resolves to is public, so a webhook cannot point the gateway at its own network."""
+    try:
+        found = [info[4][0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
+    except (OSError, UnicodeError):
+        raise ValueError("the wake host does not resolve")
+    if not found or any(not ipaddress.ip_address(a.split("%")[0]).is_global for a in found):
+        raise ValueError("the wake host is not a public address")
+    return found[0]
+
+
+def post_wake(url, headers, body, timeout=20.0, address=None, agent="yobiru-connector"):
     """POST one wake notification. -> (outcome, detail). Redirects are not followed and the answer body is not
-    interpreted: a 2xx means the host accepted the wake (not that any work happened).
+    interpreted: a 2xx means the host accepted the wake (not that any work happened). With `address`, the
+    connection goes to that checked address instead of resolving the host again.
       accepted   2xx answer
       refused    no connection could be made: the request never left, so nothing was delivered
       uncertain  anything else once the request may have left: any non-2xx answer (a 5xx or a 429 can follow
                  work the host already queued), a timeout or a reset. It is never treated as not delivered."""
     u = wake_url(url)
     if u.scheme == "https":
-        conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout,
-                                           context=ssl.create_default_context())
+        context = ssl.create_default_context()
+        conn = _PinnedHTTPSConnection(u.hostname, u.port or 443, address, timeout=timeout, context=context) if address \
+            else http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout, context=context)
     else:
-        conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
+        conn = _PinnedHTTPConnection(u.hostname, u.port or 80, address, timeout=timeout) if address \
+            else http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
     data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    hdrs = {"Content-Type": "application/json", "User-Agent": "yobiru-connector/%d" % API_VERSION}
+    hdrs = {"Content-Type": "application/json", "User-Agent": "%s/%d" % (agent, API_VERSION)}
     hdrs.update(headers)
     target = (u.path or "/") + ("?" + u.query if u.query else "")
     with _Deadline(conn, timeout) as d:
