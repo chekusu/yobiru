@@ -281,6 +281,30 @@ class JoinTests(unittest.TestCase):
         self.assertTrue(again["revoked"], "revoking is idempotent")
         self.assertEqual(200, self.gw.call("GET", "/v1/owner/bots/%s" % first, None, owner)[0])
 
+    def test_revoking_everything_forgets_the_hosted_wake(self):
+        owner, _, manager, bot = self.joined(self.address())
+        self.gw.ok("PUT", "/v1/owner/bots/%s/wake" % bot, {"url": "http://127.0.0.1:9/wake", "secret": "s" * 16,
+                                                           "test": False}, manager)
+        cred = C.token_hash(manager)[:16]
+        self.gw.ok("POST", "/v1/owner/bots/%s/managers/%s/revoke" % (bot, cred), {}, owner)
+        self.assertEqual([], self.gw.sql("SELECT bot_id FROM hosted_wakes WHERE bot_id=?", (bot,)),
+                         "the wake URL and secret set from that machine are gone")
+        self.assertFalse(self.gw.ok("GET", "/v1/owner/bots/%s/wake" % bot, None, owner)["configured"])
+
+    def test_a_manager_never_takes_a_handle_the_owner_kept(self):
+        email = self.address()
+        owner, first, manager, bot = self.joined(email)
+        old = self.gw.ok("GET", "/v1/owner/bots/%s" % first, None, owner)["handle"].lstrip("@")
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % first, {"handle": old + "-new"}, owner)   # the old one is kept
+        status, obj, _, _ = self.join(self.challenge(email), handle=old)
+        self.assertEqual((409, "handle_unavailable"), (status, obj["error"]), "join cannot take it")
+        status, obj = self.gw.call("PATCH", "/v1/owner/bots/%s" % bot, {"handle": old}, manager)
+        self.assertEqual((409, "handle_unavailable"), (status, obj["error"]), "nor can a rename by the manager")
+        mine = self.gw.ok("GET", "/v1/owner/bots/%s" % bot, None, manager)["handle"].lstrip("@")
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot, {"handle": mine, "display_name": "Same handle"}, manager)
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % bot, {"handle": "jo-fresh-%d" % self.n}, manager)
+        self.gw.ok("PATCH", "/v1/owner/bots/%s" % first, {"handle": old}, owner)    # the owner still can
+
     def test_revoking_only_the_manager_keeps_the_rest(self):
         owner, _, manager, bot = self.joined(self.address())
         source = self.gw.source_for(bot, owner=manager)
@@ -342,6 +366,29 @@ class JoinTests(unittest.TestCase):
             finally:
                 gw.stop()
 
+    def test_a_partner_only_gateway_advertises_and_opens_join(self):
+        with tempfile.TemporaryDirectory(prefix="yobiru join partner ") as tmp:
+            gw = gateway(tmp, email_verification=False)
+            try:
+                self.assertEqual("POST /v1/enroll/join", gw.ok("GET", "/.well-known/yobiru")["enrollment"]
+                                 ["join_by_email"])
+                email, exp = "partner.only@example.com", int(time.time()) + 600
+
+                def attestation(token):
+                    return {"partner": "pinku", "email": email, "exp": exp,
+                            "sig": G.partner_signature(SECRET, gw.url, "pinku", email, C.token_hash(token), exp)}
+                owner = C.new_token("owner")
+                gw.ok("POST", "/v1/enroll", {"display_name": "First", "source_credential_sha256":
+                                             C.token_hash(C.new_token("source")),
+                                             "email_attestation": attestation(owner)}, owner)
+                manager = C.new_token("manager")
+                status, obj = gw.call("POST", "/v1/enroll/join", {"display_name": "Second", "source_credential_sha256":
+                                                                  C.token_hash(C.new_token("source")),
+                                                                  "email_attestation": attestation(manager)}, manager)
+                self.assertEqual(201, status, obj)
+            finally:
+                gw.stop()
+
     def test_join_can_be_turned_off(self):
         with tempfile.TemporaryDirectory(prefix="yobiru join off ") as tmp:
             gw = gateway(tmp, join_by_email=False)
@@ -371,7 +418,8 @@ class JoinTests(unittest.TestCase):
         def fake(mail_cfg, messages):
             sent.extend(messages)
             return [None] * len(messages)
-        G.relay_once(store, MAIL, send=fake)
+        while G.relay_once(store, MAIL, send=fake)["sent"]:    # the other tests' codes queue up here too
+            pass
         mine = [m for m in sent if m["To"] == email and "新增" in m["Subject"]]
         self.assertEqual(1, len(mine))
         handle = self.gw.ok("GET", "/v1/owner/bots/%s" % bot, None, manager)["handle"]
@@ -380,12 +428,37 @@ class JoinTests(unittest.TestCase):
             content = mine[0].get_body((part,)).get_content()
             self.assertIn(handle, content)
             self.assertIn("revoke-manager %s %s" % (bot, cred), content)
+        self.assertIn('src="cid:%s"' % G.MAIL_LOGO_CID, mine[0].get_body(("html",)).get_content())
+        logo = [p for p in mine[0].walk() if p.get_content_type() == "image/png"]
+        self.assertEqual([G.MAIL_LOGO_PNG], [p.get_content() for p in logo], "the logo travels inside the notice")
         row = self.gw.sql("SELECT * FROM mail_notices WHERE id=?", (notice["id"],))[0]
         self.assertEqual(None, row["address"])
         self.assertIsNotNone(row["sent_ts"])
         sent.clear()
-        G.relay_once(store, MAIL, send=fake)
+        while G.relay_once(store, MAIL, send=fake)["sent"]:
+            pass
         self.assertEqual([], [m for m in sent if m["To"] == email], "sent once")
+
+    def test_a_notice_that_cannot_be_built_never_holds_back_codes(self):
+        with tempfile.TemporaryDirectory(prefix="yobiru join relay ") as tmp:
+            gw = gateway(tmp)
+            try:
+                now = int(time.time())
+                gw.sql("INSERT INTO mail_notices(id, kind, address, lang, detail, created_ts, expires_ts) "
+                       "VALUES(?,?,?,?,?,?,?)", ("eml_" + "b" * 16, "bot_added", "owner@example.com", "en", "{}", now,
+                                                 now + 3600))
+                gw.ok("POST", "/v1/enroll/email", {"email": "new.person@example.com", "lang": "en"})
+                store, sent = G.Store(gw.home, G.load_config(gw.home)), []
+
+                def fake(mail_cfg, messages):
+                    sent.extend(messages)
+                    return [None] * len(messages)
+                self.assertEqual({"sent": 1, "failed": 1}, G.relay_once(store, MAIL, send=fake))
+                self.assertEqual(["new.person@example.com"], [m["To"] for m in sent], "the code still went out")
+                row = gw.sql("SELECT * FROM mail_notices")[0]
+                self.assertEqual((None, "render: KeyError"), (row["sent_ts"], row["error"]))
+            finally:
+                gw.stop()
 
     def test_every_language_renders(self):
         for lang in G.MAIL_LANGS:

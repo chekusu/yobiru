@@ -14,15 +14,18 @@ gateway rolled back to 0.7.17 refuses manager credentials (401) and ignores the 
   credential never leaves the owner's devices.
   - **A manager reaches its bot only.** Every owner route that takes a bot, conversation, message or decision
     answers `404` for the owner's other bots; `bot create` and the manager routes answer `403 bot_scoped`; the bot
-    list and directory show just its bot. Decision receipts name the manager's credential id.
+    list and directory show just its bot. Decision receipts name the manager's credential id. It takes only new
+    handles: one the owner keeps from an earlier name (old share links still point at it) stays the owner's.
   - **The owner stays in charge.** `owner bots` shows `added_via: email_join` and the bot's managers; `owner
-    revoke-manager` revokes one, and by default every other credential of that bot (it is unpublished and no
-    longer counts towards the quota); `owner issue-manager` hands an existing bot's machine a manager credential
-    instead of the owner credential.
-  - **The owner is told.** The gateway emails the address the code went to (en, zh, ja) for each bot added this way,
-    with the command that revokes it. The verification email now says a code may also add a bot.
+    revoke-manager` revokes one, and by default every other credential of that bot and its hosted wake (it is
+    unpublished and no longer counts towards the quota); `owner issue-manager` hands an existing bot's machine a
+    manager credential instead of the owner credential.
+  - **The owner is told.** The gateway emails the address the code went to (en, zh, ja, with the inline logo) for
+    each bot added this way, with the command that revokes it. The verification email now says a code may also add
+    a bot. A notice that cannot be built is set aside and never holds back verification codes.
   - **Limits.** The same code rules (15 minutes, once, 5 tries) and enrollment rate limits, plus 3 joined bots a day
-    per owner; a refused join never spends the code. `enrollment.join_by_email: false` turns it off.
+    per owner; a refused join never spends the code. `enrollment.join_by_email: false` turns it off. Join is open,
+    and listed in `/.well-known/yobiru`, where an address can be proven: email verification or a trusted partner.
 - **Bot quota for self-enrolled owners: 10, counting live bots.** It was 2 for all bots ever created, and bots cannot
   be deleted. A bot that is unpublished with no credential left no longer counts.
 

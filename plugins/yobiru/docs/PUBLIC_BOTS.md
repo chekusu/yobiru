@@ -170,14 +170,16 @@ owner commands keep working there, for that bot only: profile, publish, avatar, 
 reviews, conversations, owner messages, source credentials, workers, connectors, checks, verifiers, hosted wakes and
 decision receipts. `GET /v1/owner/bots` and the directory list just that bot; any other bot answers `404`, exactly as
 a bot that does not exist; creating bots and managing manager credentials answer `403 bot_scoped`. Decision receipts
-made with it name its `credential_id`.
+made with it name its `credential_id`. It takes only new handles: a handle the owner keeps from an earlier name (it
+still answers old share links) answers `409 handle_unavailable`, at join and on rename, and only the owner credential
+can give it to a bot again.
 
 The owner, on a device with the owner credential:
 - sees the bot in `owner bots` with `added_via: email_join` and its `managers`;
 - `owner managers BOT` lists them and `owner revoke-manager BOT ID` revokes one; by default (unless `--keep-others`)
-  also every source, worker, connector and verifier credential of that bot, which is unpublished (pending work
-  cancelled, conversations closed). The bot and its handle stay; a bot left with no credential no longer counts
-  towards the quota;
+  also every source, worker, connector and verifier credential of that bot and its hosted wake, and the bot is
+  unpublished (pending work cancelled, conversations closed). The bot and its handle stay; a bot left with no
+  credential no longer counts towards the quota;
 - `owner issue-manager BOT --token-file F` gives an existing bot's machine a manager credential (`owner login URL
   --token-file F` there) instead of the owner credential.
 
@@ -186,7 +188,9 @@ time and credential id, and the command that revokes it. To address it, the gate
 challenge sealed with `<home>/wake.key` (`challenge_addresses`) until the code is used or expires. Limits: 3 bots a
 day per owner (`bots_joined_per_day_per_owner`), the per-IP and gateway-wide bot enrollment limits, and
 `bots_per_self_enrolled_owner` (10) for all of an owner's live bots. Only self-enrolled owners with an address can be
-joined; an operator turns it off with `enrollment.join_by_email: false`.
+joined, on a gateway that verifies email or trusts a partner; an operator turns it off with
+`enrollment.join_by_email: false`. A notice that cannot be built is set aside with its error and never holds back the
+verification codes the relay sends beside it.
 
 ### Partner attestations instead of a second code
 

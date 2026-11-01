@@ -2815,7 +2815,10 @@ class Api(object):
                      "note": "the same answer is given whether or not this address already owns a bot here"}
 
     def join_route(self):
-        on = self.enrollment["join_by_email"] and self.enrollment["bots"] and self.enrollment["email_verification"]
+        """The join route where an address can be proven here (an email code or a partner attestation), else None.
+        enroll_join answers 404 join_off exactly when this is None."""
+        on = self.enrollment["join_by_email"] and self.enrollment["bots"] and \
+            (self.enrollment["email_verification"] or bool(self.cfg["partners"]))
         return "POST /v1/enroll/join" if on else None
 
     def email_check(self, db, raw, now, existing=False):
@@ -2971,7 +2974,7 @@ class Api(object):
                 raise Fail(409, "enrollment_conflict", "this manager credential enrolled a different source credential")
             owner = db.execute("SELECT * FROM owners WHERE id=?", (bot["owner_id"],)).fetchone()
             return 200, dict(self.joined_view(db, owner, bot), duplicate=True)
-        if not (self.enrollment["join_by_email"] and self.enrollment["bots"]):
+        if self.join_route() is None:
             raise Fail(404, "join_off", "this gateway does not add bots to existing owners by email")
         if db.execute("SELECT 1 FROM credentials WHERE hash=?", (source_hash,)).fetchone():
             raise Fail(409, "enrollment_conflict", "that source credential is already registered")
@@ -3008,11 +3011,9 @@ class Api(object):
                 lang = sent["lang"] if sent is not None else None
         # Every refusal from here on is raised: the transaction rolls back and the code stays usable.
         owner = email_owner(db, email_hash)
-        if handle is not None:
-            taken = db.execute("SELECT owner_id FROM handles WHERE handle=?", (handle,)).fetchone()
-            if (taken is not None and taken["owner_id"] != owner["id"]) or \
-                    db.execute("SELECT 1 FROM bots WHERE handle=?", (handle,)).fetchone():
-                raise Fail(409, "handle_unavailable")
+        # A new handle only: one the owner reserved (an earlier name of one of their bots) stays the owner's to give.
+        if handle is not None and db.execute("SELECT 1 FROM handles WHERE handle=?", (handle,)).fetchone():
+            raise Fail(409, "handle_unavailable")
         self.bot_quota(db, owner["id"])
         if not take(db, "enroll-bot:ip:%s" % r.client_ip, L["bot_enroll_per_hour_per_ip"], 3600, now) or \
                 not take(db, "enroll-bot:all", L["bot_enroll_per_hour"], 3600, now) or \
@@ -3552,6 +3553,11 @@ class Api(object):
         other = db.execute("SELECT id FROM bots WHERE handle=?", (handle,)).fetchone()
         if other is not None and other["id"] != bot_id:
             raise Fail(409, "handle_unavailable")
+        # A manager credential takes new handles only: a handle the owner keeps from an earlier name still answers
+        # old share links, so only the owner credential may give it to a bot again.
+        if taken is not None and owner.get("scope_bot_id") is not None and other is None:
+            raise Fail(409, "handle_unavailable", "this handle is reserved by the owner; only the owner credential "
+                                                  "can use it again")
         if taken is None:
             db.execute("INSERT INTO handles(handle, owner_id, claimed_ts) VALUES(?,?,?)", (handle, owner["id"], int(now)))
 
@@ -4156,6 +4162,8 @@ class Api(object):
             db.execute("UPDATE verifiers SET revoked_ts=? WHERE bot_id=? AND revoked_ts IS NULL", (int(now), bot["id"]))
             db.execute("UPDATE credentials SET revoked_ts=COALESCE(revoked_ts, ?) WHERE kind='verifier' AND subject IN "
                        "(SELECT id FROM verifiers WHERE bot_id=?)", (int(now), bot["id"]))
+            # The hosted wake's URL and secret came from that machine too: a later binding sets its own.
+            db.execute("DELETE FROM hosted_wakes WHERE bot_id=?", (bot["id"],))
             if bot["state"] != "unpublished":
                 db.execute("UPDATE bots SET state='unpublished', updated_ts=? WHERE id=?", (int(now), bot["id"]))
                 cancel_where(db, now, "bot_unpublished", "bot_id=?", (bot["id"],))
@@ -7555,9 +7563,19 @@ def relay_once(store, mail, send=smtp_send, now=None):
     if not rows and not notices:
         return {"sent": 0, "failed": 0}
     minutes, issuer = store.limits["email_code_ttl_seconds"] // 60, store.cfg["public_base_url"]
-    results = send(mail, [mail_message(mail, issuer, row, minutes) for row in rows] +
-                   [mail_message(mail, issuer, row, minutes, notice_parts(row, issuer)) for row in notices])
+    built, broken = [], []
+    for row in notices:
+        # A notice that cannot be built is set aside with its error: it never holds back the codes beside it.
+        try:
+            built.append((row, mail_message(mail, issuer, row, minutes, notice_parts(row, issuer))))
+        except Exception as e:  # noqa: BLE001
+            broken.append((row, type(e).__name__))
+    notices = [row for row, _ in built]
+    messages = [mail_message(mail, issuer, row, minutes) for row in rows] + [m for _, m in built]
+    results = send(mail, messages) if messages else []
     with store.tx() as db:
+        for row, err in broken:
+            db.execute("UPDATE mail_notices SET error=? WHERE id=?", (("render: " + err)[:60], row["id"]))
         for row, err in zip(rows, results):
             if err is None:
                 db.execute("UPDATE mail_outbox SET sent_ts=?, address=NULL, code=NULL, error=NULL WHERE id=?",
@@ -7571,7 +7589,7 @@ def relay_once(store, mail, send=smtp_send, now=None):
             else:
                 db.execute("UPDATE mail_notices SET error=? WHERE id=?", (err[:60], row["id"]))
     failed = sum(1 for e in results if e is not None)
-    return {"sent": len(results) - failed, "failed": failed}
+    return {"sent": len(results) - failed, "failed": failed + len(broken)}
 
 
 def cmd_mail_relay(home, a):
