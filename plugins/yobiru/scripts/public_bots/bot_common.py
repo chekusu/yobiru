@@ -914,7 +914,18 @@ def public_address(host, port):
         found = [info[4][0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
     except (OSError, UnicodeError):
         raise ValueError("the wake host does not resolve")
-    if not found or any(not ipaddress.ip_address(a.split("%")[0]).is_global for a in found):
+    def public_ip(text):
+        address = ipaddress.ip_address(text.split("%")[0])
+        if not address.is_global or address.is_multicast:
+            return False
+        # IPv4 translation can reach private destinations even when ipaddress classifies the IPv6
+        # prefix as global. Refuse both the well-known and local-use translation ranges explicitly.
+        if address.version == 6 and (address in ipaddress.ip_network("64:ff9b::/96") or
+                                     address in ipaddress.ip_network("64:ff9b:1::/48")):
+            return False
+        return True
+
+    if not found or any(not public_ip(a) for a in found):
         raise ValueError("the wake host is not a public address")
     return found[0]
 

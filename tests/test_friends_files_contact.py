@@ -49,6 +49,12 @@ class FilesContactTests(unittest.TestCase):
         extra = {"attachments": [{"name": "page.md", "content": "x" * size}]} if size else {}
         return self.gw.send(cid, token, kind="chat", text="scan", **extra)
 
+    def reply(self, wtoken, job, size):
+        return self.gw.call("POST", "/v1/worker/messages/%s/finish" % job["job_id"],
+                            {"lease_id": job["lease"]["lease_id"], "fence": job["lease"]["fence"],
+                             "outcome": "completed", "reply": {"text": "received", "attachments": [
+                                 {"name": "receipt.md", "content": "x" * size}]}}, wtoken)
+
     def test_a_stranger_keeps_the_general_waiting_limit(self):
         bot_id = self.bot()
         _, token = self.gw.actor()
@@ -87,13 +93,68 @@ class FilesContactTests(unittest.TestCase):
         for _ in range(3):
             self.assertEqual(202, self.chat(cid, token, size=400)[0])
 
+    def test_attachment_replies_use_the_files_contacts_shared_retained_ceiling(self):
+        bot_id = self.bot()
+        actor_id, token = self.gw.actor()
+        self.admit_with_files(bot_id, actor_id)
+        wtoken, _ = self.gw.native(bot_id)
+        cid = self.gw.conversation(bot_id, token)
+        status, sent = self.chat(cid, token, size=400)
+        self.assertEqual(202, status, sent)
+        status, job = self.gw.claim_job(wtoken, sent["message_id"])
+        self.assertEqual(200, status, job)
+        status, reply = self.reply(wtoken, job, 1)
+        self.assertEqual(200, status, reply)
+        self.assertEqual("completed", reply["state"])
+        self.assertEqual(200, self.reply(wtoken, job, 1)[0], "a duplicate reply is free")
+
+        # Uploads and replies share the caller's 5000 retained bytes, including a released reply.
+        status, sent = self.chat(cid, token, size=4599)
+        self.assertEqual(202, status, sent)
+        status, job = self.gw.claim_job(wtoken, sent["message_id"])
+        self.assertEqual(200, status, job)
+        status, reply = self.reply(wtoken, job, 1)
+        self.assertEqual((429, "attachment_quota", "retained"),
+                         (status, reply.get("error"), reply.get("scope")))
+
+    def test_attachment_replies_need_an_explicit_files_grant_for_the_roomier_ceiling(self):
+        bot_id = self.bot()
+        self.gw.policy(bot_id, offered=["faq", "chat", "files"], visitor=["faq", "chat", "files"])
+        actor_id, token = self.gw.actor()
+        self.assertEqual(200, self.gw.contact(bot_id, actor_id, "trust")[0])
+        wtoken, _ = self.gw.native(bot_id)
+        cid = self.gw.conversation(bot_id, token)
+        status, sent = self.chat(cid, token, size=300)
+        self.assertEqual(202, status, sent)
+        status, job = self.gw.claim_job(wtoken, sent["message_id"])
+        self.assertEqual(200, status, job)
+        status, reply = self.reply(wtoken, job, 1)
+        self.assertEqual((429, "attachment_quota", "retained"),
+                         (status, reply.get("error"), reply.get("scope")))
+
     def test_the_gateway_publishes_message_limits(self):
         limits = self.gw.ok("GET", "/.well-known/yobiru")["limits"]
         self.assertEqual(8, limits["attachment_max_files"])
         self.assertEqual(2, limits["pending_per_contact"])
         self.assertEqual(5, limits["files_contact"]["pending"])
         self.assertEqual(5000, limits["files_contact"]["attachment_bytes_per_day"])
+        self.assertEqual(5000, limits["files_contact"]["attachment_retained_bytes"])
         self.assertNotIn("sealed_field_chars", limits)
+
+    def test_published_files_byte_limits_respect_shared_bot_and_gateway_ceilings(self):
+        cases = [("defaults", None, 256 * 1024 * 1024, 512 * 1024 * 1024),
+                 ("shared", dict(LIMITS, attachment_bytes_per_day_per_bot=2000,
+                                 attachment_retained_bytes_per_bot=3500, attachment_retained_bytes_total=2500),
+                  2000, 2500)]
+        for name, configured, daily, retained in cases:
+            with self.subTest(name=name):
+                gw = FriendsGateway(Path(self._tmp.name), name="limits-" + name, limits=configured).start()
+                try:
+                    limits = gw.ok("GET", "/.well-known/yobiru")["limits"]["files_contact"]
+                    self.assertEqual(daily, limits["attachment_bytes_per_day"])
+                    self.assertEqual(retained, limits["attachment_retained_bytes"])
+                finally:
+                    gw.stop()
 
     def test_a_sealed_field_holds_a_full_eight_mebibyte_message(self):
         sender, recipient = E.generate(), E.generate()

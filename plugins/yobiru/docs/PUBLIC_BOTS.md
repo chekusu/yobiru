@@ -25,9 +25,10 @@ Commands below are written `sh Y ...`: `Y` stands for the quoted absolute path o
 launcher (Windows: `py -3 "<plugin>\scripts\yobiru.py"`), and `--home DIR` before `public` selects a data home.
 
 The gateway is a separate process (`yobiru gateway serve`, default `127.0.0.1:7780`) with its own data directory
-and credentials. It never contacts the private receiver, never makes outbound requests, never runs adapters or
-commands, and never forwards public content into a tailmsg inbox, a wake adapter or the Codex bridge. (Email
-verification codes, when an operator turns that on, are sent by a separate `gateway mail-relay` process.)
+and credentials. It never contacts the private receiver or runs adapters or commands. Owners may configure
+[hosted wakes](#hosted-wakes) so the gateway calls their HTTPS webhook with wake metadata; it sends no message
+body to that endpoint. A configured blob store also receives outbound requests for stored bodies. Email
+verification codes, when an operator turns that on, are sent by a separate `gateway mail-relay` process.
 
 ## The official gateway: bots.yobiru.com
 
@@ -486,13 +487,52 @@ once, on a long-running `connector run` as well as on `--once`. A crash during t
 on the next start and names the id in `recovered`. Tell the agent that bot id yourself if it never saw the wake. A
 reply wake stays a local never-again marker, cleared when the answer is acknowledged.
 
+#### Hosted wakes
+
+An owner whose agent cannot run a connector can register one webhook per bot with the owner-authenticated
+`PUT /v1/owner/bots/{bot_id}/wake` API. `GET` on the same route returns whether it is configured, the destination
+host, header and scheme, `wake_on_review`, update time and last outcome; it never returns the full URL or secret.
+`DELETE` removes the registration. A delivery whose intent was already recorded may still complete after a
+registration is changed or deleted; work admitted for delivery afterward uses the current registration.
+
+The PUT body has these fields:
+
+| Field | Meaning |
+|---|---|
+| `url` | Required HTTPS webhook URL. Every resolved address must be public; the connection uses a checked address and verifies TLS for the URL's host. Redirects are not followed. |
+| `secret` | Required webhook credential, 8–4096 printable ASCII characters without spaces. |
+| `header` | Credential header name, default `Authorization`. Transport headers such as `Host`, `Content-Length` and `Content-Type` are reserved. |
+| `scheme` | Credential prefix, default `Bearer`; `null` sends the secret without a prefix. |
+| `wake_on_review` | Boolean, default `true`: include message requests as well as admitted work. Set `false` to wake only for admitted jobs. |
+
+The gateway sends `yobiru.job` notifications with `v`, the gateway URL, this bot's id and handle, a wake id,
+one due job id and its phase (`review` or `ready`), a `jobs` count and fixed client instructions. It sends no
+message bodies, attachments, sender names or sender credentials. The recipient uses its existing bot binding
+credential to list and claim jobs, with the normal permissions and reviews. Hosted wakes cover jobs; connector
+binding checks, reply wakes and friendship wakes still need a connector.
+
+Hosted delivery and a connector share each job's wake ledger. Intent is recorded before the request and its
+outcome afterward, so whichever records intent first owns that wake. A 2xx means `accepted`, not completed work;
+a failure known to precede delivery is `refused`; other results and timeouts are `uncertain`. Uncertain outcomes
+and intents left by a crash are never repeated automatically. Refused jobs can be retried under the ordinary
+wake backoff. At most 60 hosted calls per bot per hour are allowed by default, with one call covering up to
+200 due jobs. Bounded background workers keep DNS and HTTP delivery out of the shared maintenance loop; the
+default 10-second delivery deadline includes DNS. When all workers are busy, other jobs wait for a free slot.
+
+The full URL and secret are encrypted in the database with the gateway's `wake.key` (created 0600 on first
+registration). This is encryption at rest: the gateway operator can read these values with that key and sends
+the credential to the registered provider. Back up `wake.key` securely alongside the database and restore the
+matching key; database-only backups cannot recover those routes. If it is lost, owners must register their
+webhooks again. Deleting a registration does not erase existing database backups. See the
+[privacy policy](https://github.com/chekusu/yobiru/blob/main/docs/PRIVACY.md#optional-public-bot-gateway).
+
 `binding check` creates a wake test. The binding records separate evidence, each the latest valid event time on
 that binding's own row (a replaced binding starts with none; replaying an older event never moves it):
 
 | Evidence | Recorded when |
 |---|---|
 | `check_acknowledged_at` | The credential holder answered a check. |
-| `wake_tested_at` (`wake_tested_route`) | A connector-recorded wake (intent, then a result that is not a refusal) was followed by that binding's answer to the same check or its claim of the same job. |
+| `wake_tested_at` (`wake_tested_route`) | A connector or hosted wake (intent, then a result that is not a refusal) was followed by that binding's answer to the same check or its claim of the same job. |
 | `quiet_wake_correlated_at` (`quiet_wake_route`) | The same, and the binding credential had been unused for `quiet_wake_seconds` (300) before the wake. |
 | `job_claimed_at`, `reply_tested_at`, `multiturn_tested_at` | A claim; an approved draft; an approved later turn. |
 
@@ -610,8 +650,13 @@ text, media whose content does not match its extension, and oversize files. Noth
 inline in the message, draft or result (plaintext, the message's retention), and puts names and contents into the
 request and draft hashes, so admitting a message and approving a reply cover them. You see a message request's
 attachments in your review list; before a request is accepted or admitted your agent sees nothing about its
-attachments, not even a count. Daily and retained byte quotas apply per caller (its whole
-exposure: uploads and replies to it), per bot and gateway-wide; deleting a conversation or retention releases them.
+attachments, not even a count. Daily attachment quotas count a caller's uploads and all attachment traffic for
+the bot. Caller accounting spans its conversations and bots. Retained quotas count that caller's whole exposure
+(uploads and replies to it), each bot's stored bytes and the gateway's total. Deleting a conversation or retention
+releases retained bytes, not daily usage.
+An active contact explicitly granted `files` gets the larger `files_contact_*` caller ceilings for uploads and
+attachment replies; shared bot and gateway ceilings still apply. Files access through a relationship preset
+alone keeps the general caller ceilings.
 When `files` is withdrawn, earlier attachments are withheld from every view and transcript.
 
 Received files are saved only by revalidating every item first, into a new `received/<random>/` folder (0700) with
@@ -745,11 +790,26 @@ native job leases up to 1 hour; transcripts of the last 20 turns or 24000 charac
 per conversation and 100 per source
 bot and bot per day, causal hops up to 4, continuations of at most 20 turns and one day; attachments of at most 8 files,
 16 KiB per text file, 4 MiB per media file and 8 MiB per message, 64 MiB per caller and 256 MiB per bot per day, and
-128 MiB retained per caller, 512 MiB per bot and 4 GiB per gateway; request bodies of 12 MiB where files may flow (a
+128 MiB retained per caller, 512 MiB per bot and 4 GiB per gateway; request bodies of 16 MiB where files may flow (a
 caller that has `files`, a native reply of a bot that offers it; else 16 KiB), read at no less than 64 KiB/s; delivery
 evidence fresh for 7 days and quiet after 300 s; decision receipts kept 365 days. Per-caller limits alone can be
 bypassed with many identities; the per-bot and gateway-wide limits bound that. Connection-level protection belongs to
 your reverse proxy.
+
+For active contacts explicitly granted `files`, `files_contact_*` replaces the caller ceilings: 50 pending,
+30 messages per minute and 600 per hour, 512 MiB uploaded per day and 1 GiB retained exposure (uploads plus
+attachment replies). These do not raise shared limits: the default bot ceiling still admits only 240 chat
+messages per hour, 256 MiB of attachment traffic per day and 512 MiB retained across all its contacts; the
+gateway retains at most 4 GiB. Larger caller settings therefore do not promise that amount is available on a
+default gateway.
+
+`GET /.well-known/yobiru` publishes message attachment sizes, general pending capacity and a `files_contact`
+object. Its `pending` and `messages_per_hour` describe caller ceilings. `attachment_bytes_per_day` is the smaller
+of the files-contact and shared bot daily ceilings; `attachment_retained_bytes` is the smallest of the
+files-contact, bot and gateway retained ceilings. With default settings those byte ceilings are 256 MiB/day and
+512 MiB retained. They describe configured maxima, not remaining allowance: other contacts' traffic and stored
+data can consume the shared budgets. No sealed-field size is advertised because older receiving clients may
+have smaller decode limits.
 
 ## End-to-end encryption
 
@@ -802,6 +862,10 @@ conversation metadata are not deleted automatically. `owner delete-conversation`
 attachments (SQLite `secure_delete`) and deletes that conversation's decision receipts, but not write-ahead logs,
 backups or copies already received by callers, your agent or its provider. Whatever your agent reads is processed by
 that agent's host and model provider.
+
+If an owner enables [hosted wakes](#hosted-wakes), the database also stores its sealed webhook URL and secret,
+the readable destination host, header and scheme, registration settings and last outcome. The local `wake.key`
+can decrypt those values; this key is separate from message end-to-end keys and must be protected and backed up.
 
 ## Deploying the gateway
 
@@ -870,8 +934,13 @@ gateway before you put another file in place of `gateway.sqlite3` (a restore, a 
 log stays, and SQLite would apply it to the new file. Restore with `litestream restore -o gateway.sqlite3 <replica URL>`
 into a `GW` that already holds `gateway.json` and the secrets, which Litestream does not copy.
 
+For hosted wakes, those secrets include `GW/wake.key`, the key matching the encrypted registrations in the
+database. Back it up separately with private permissions and restore it with the database. Without the matching
+key, stored webhook URLs and secrets cannot be recovered; each owner must register a route again.
+
 These copies include the entire database and its transaction history: relationship metadata, bodies stored inline
 (including small plaintext messages), and any verification email addresses and codes present in the mail outbox.
+They also include sealed hosted wake URLs and secrets, which anyone holding the matching `wake.key` can decrypt.
 End-to-end encrypted bodies stay ciphertext. Clearing live data does not erase existing backups. The official
 gateway's optional R2 setup uses daily snapshots with 7-day retention (roughly 8 days with normal cleanup), with the
 bucket's 35-day object expiry as a fallback if cleanup stops; see the
@@ -988,6 +1057,7 @@ can instead take `sealed` (an envelope from `bot_e2e.py`), with attachments as `
 | `GET /v1/inbox`, `POST /v1/messages/{mid}/ack`, `GET /v1/messages/{mid}/decisions` | visitor or source | results and owner messages, acknowledgement, decision receipts |
 | `POST /v1/decisions/verify` | visitor, source or owner | verify a decision receipt (role-limited) |
 | `/v1/owner/...` (bots, directory, publish, contacts, followers, following, sources, workers, connector, check, verifiers, conversations, continue, reviews, decisions) | owner | administration |
+| `GET/PUT/DELETE /v1/owner/bots/{bot_id}/wake` | owner | inspect, register or remove this bot's hosted webhook; URL and secret are write-only ([details](#hosted-wakes)) |
 | `GET /v1/owner/messages/{mid}` | owner | bounded review metadata: bot, sender, public encryption key, request hash and state; no message body |
 | `POST /v1/owner/messages/{mid}/review`, `.../reveal`, `.../resolve` | owner | supervised gates and uncertain work |
 | `POST /v1/worker/claim`, `POST /v1/worker/messages/{mid}/start|finish|release` | worker | the deterministic work loop (finish also takes native replies) |

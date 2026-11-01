@@ -31,6 +31,25 @@ COUNTER = itertools.count(1)
 
 
 class PrimitiveTests(unittest.TestCase):
+    def test_base64url_requires_canonical_ascii_and_the_requested_size(self):
+        for raw in (b"", b"\x00", b"\xff\xff", bytes(range(256))):
+            encoded = E.b64e(raw)
+            self.assertEqual(raw, E.b64d(encoded))
+            self.assertEqual(raw, E.b64d(encoded, size=len(raw)))
+        for encoded in ("A", "AB", "AAB", "AA=", "AA==", "AA\n", "A A", "+w", "/w", "\u00e9", "\u0661"):
+            with self.subTest(encoded=encoded), self.assertRaises(E.E2EError):
+                E.b64d(encoded)
+        with self.assertRaises(E.E2EError):
+            E.b64d(E.b64e(b"abc"), size=2)
+
+    def test_large_base64url_fields_remain_bounded(self):
+        raw = bytes(range(256)) * (16 * 1024 + 1)
+        encoded = E.b64e(raw)
+        self.assertGreater(len(encoded), 1 << 22)
+        self.assertEqual(raw, E.b64d(encoded))
+        with self.assertRaises(E.E2EError):
+            E.b64d("A" * (E.MAX_FIELD_CHARS + 1))
+
     def test_x25519_rfc7748(self):
         k = bytes.fromhex("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4")
         u = bytes.fromhex("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c")
