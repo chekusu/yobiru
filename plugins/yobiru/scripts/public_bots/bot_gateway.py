@@ -113,6 +113,13 @@ LIMIT_DEFAULTS = {
     "agent_messages_per_hour_per_bot": 240,     # chat messages that need the owner's agent
     "turns_per_conversation": 100,
     "pending_per_contact": 10,                  # queued/claimed/started/review/uncertain caller messages
+    # An accepted contact the owner explicitly granted files, such as the owner's own paired scanner, sends many
+    # files in a row; these replace the per-caller limits above for it. Bot-wide and gateway-wide limits still hold.
+    "files_contact_pending": 50,
+    "files_contact_messages_per_minute": 30,
+    "files_contact_messages_per_hour": 600,
+    "files_contact_attachment_bytes_per_day": 536870912,
+    "files_contact_attachment_retained_bytes": 1073741824,
     "pending_per_bot": 200,
     "pending_total": 2000,
     "max_messages": 100000,                     # stored messages on the whole gateway
@@ -1335,17 +1342,19 @@ def retained_bytes(db, where, args, columns="content_attachment_bytes + reply_at
     return db.execute("SELECT COALESCE(SUM(%s), 0) FROM messages WHERE %s" % (columns, where), args).fetchone()[0]
 
 
-def attachment_precheck(db, limits, bot_id, nbytes, now, caller=None, exposed=None):
+def attachment_precheck(db, limits, bot_id, nbytes, now, caller=None, exposed=None, roomy=False):
     """Attachment quotas, checked before anything is charged. Bytes per day: per caller for what it uploads, per
     bot for everything in its mailbox. Bytes retained right now: per caller, its whole exposure (what it uploaded
     and what replies to it carry), with per-bot and gateway-wide ceilings as the backstop. Retained bytes are summed
     from the stored messages themselves, so retention, a deleted conversation or a discarded draft release them,
-    and a stored copy counts once. `caller` uploads; `exposed` is the caller a reply goes to.
+    and a stored copy counts once. `caller` uploads; `exposed` is the caller a reply goes to. `roomy`: the caller is
+    a files contact (files_contact_* limits).
     -> the daily counters to charge after admission."""
     L, charges = limits, []
     checks = [("files:bot:%s" % bot_id, L["attachment_bytes_per_day_per_bot"])]
     if caller is not None:
-        checks.insert(0, ("files:caller:%s" % caller, L["attachment_bytes_per_day_per_caller"]))
+        checks.insert(0, ("files:caller:%s" % caller, L["files_contact_attachment_bytes_per_day"] if roomy
+                          else L["attachment_bytes_per_day_per_caller"]))
     exposed = exposed or caller
     for key, limit in checks:
         if peek(db, key, 86400, now) + nbytes > limit:
@@ -1355,7 +1364,8 @@ def attachment_precheck(db, limits, bot_id, nbytes, now, caller=None, exposed=No
     retained = [(retained_bytes(db, "bot_id=?", (bot_id,)), L["attachment_retained_bytes_per_bot"]),
                 (retained_bytes(db, "1=1", ()), L["attachment_retained_bytes_total"])]
     if exposed is not None:
-        retained.insert(0, (retained_bytes(db, "actor_id=?", (exposed,)), L["attachment_retained_bytes_per_caller"]))
+        retained.insert(0, (retained_bytes(db, "actor_id=?", (exposed,)),
+                            L["files_contact_attachment_retained_bytes"] if roomy else L["attachment_retained_bytes_per_caller"]))
     for used, limit in retained:
         if used + nbytes > limit:
             raise Fail(429, "attachment_quota", "the stored attachment ceiling is reached; older messages must expire "
@@ -1509,6 +1519,11 @@ def validate_policy(raw, base=None):
 def contact_grants(contact):
     raw = contact["grants"] if contact is not None else None
     return json.loads(raw) if raw else []
+
+
+def files_contact(contact):
+    """An accepted contact the owner explicitly granted files: it gets the files_contact_* limits."""
+    return contact is not None and contact["status"] == "active" and "files" in contact_grants(contact)
 
 
 def contact_ceiling(contact):
@@ -2462,6 +2477,16 @@ class Api(object):
                      "e2e": {"alg": E.ALG, "sealed_bodies": True},
                      "messages": {"kinds": sorted(KIND_CAPABILITY), "owner_send": True,
                                   "notices": "merged_into_chat"},
+                     # What one message may carry and how much a contact may keep waiting, so clients size their
+                     # batches instead of guessing. files_contact: an accepted contact granted files.
+                     "limits": {"attachment_total_bytes": self.limits["attachment_total_bytes"],
+                                "attachment_max_files": self.limits["attachment_max_files"],
+                                "attachment_media_max_bytes": self.limits["attachment_media_max_bytes"],
+                                "pending_per_contact": self.limits["pending_per_contact"],
+                                "files_contact": {
+                                    "pending": self.limits["files_contact_pending"],
+                                    "messages_per_hour": self.limits["files_contact_messages_per_hour"],
+                                    "attachment_bytes_per_day": self.limits["files_contact_attachment_bytes_per_day"]}},
                      "identity": {"verified_person": False}}
 
     def public_profile(self, db, r):
@@ -3011,7 +3036,9 @@ class Api(object):
             "SELECT COUNT(*) FROM messages WHERE state IN ('queued','claimed','started','review','uncertain') AND " +
             "(state!='queued' OR review_in IS NULL OR review_in!='ignored' OR admitted_ts IS NOT NULL) AND " +
             where, args).fetchone()[0]
-        if pend("bot_id=? AND actor_id=?", (bot["id"], pid)) >= L["pending_per_contact"]:
+        roomy = files_contact(contact)
+        if pend("bot_id=? AND actor_id=?", (bot["id"], pid)) >= (L["files_contact_pending"] if roomy
+                                                                    else L["pending_per_contact"]):
             raise Fail(429, "too_many_pending", "wait for earlier messages to finish")
         pool = "(state!='queued' OR admitted_ts IS NOT NULL) AND " if admitted is not None else \
             "state='queued' AND admitted_ts IS NULL AND "
@@ -3023,9 +3050,11 @@ class Api(object):
         # Prechecks of the loop budgets and attachment quotas: they refuse with a rollback, before anything moves.
         automated = pid.startswith("bot_") and not by_owner
         plan = automation_precheck(db, L, conv, contact, bot, pid, now) if automated else None
-        charges = attachment_precheck(db, L, bot["id"], nbytes, now, caller=pid) if has_files(content) else []
-        if not take(db, "msg:m:%s" % pid, L["messages_per_minute_per_actor"], 60, now) or \
-                not take(db, "msg:h:%s" % pid, L["messages_per_hour_per_actor"], 3600, now):
+        charges = attachment_precheck(db, L, bot["id"], nbytes, now, caller=pid, roomy=roomy) if has_files(content) \
+            else []
+        per_minute = L["files_contact_messages_per_minute"] if roomy else L["messages_per_minute_per_actor"]
+        per_hour = L["files_contact_messages_per_hour"] if roomy else L["messages_per_hour_per_actor"]
+        if not take(db, "msg:m:%s" % pid, per_minute, 60, now) or not take(db, "msg:h:%s" % pid, per_hour, 3600, now):
             return 429, {"ok": False, "error": "rate_limited", "detail": "too many messages; retry later"}
         if route == "agent" and not take(db, "agent:h:%s" % bot["id"], L["agent_messages_per_hour_per_bot"], 3600, now):
             return 429, {"ok": False, "error": "rate_limited", "detail": "this bot is not taking more chat right now"}

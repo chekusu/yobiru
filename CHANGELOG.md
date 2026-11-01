@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+Gateway only; no schema change. Clients that do not read the new fields behave as before.
+
+- **Files contacts get their own per-caller limits.** An accepted contact the owner explicitly granted `files`,
+  such as the owner's own paired Mokutori scanner, may keep 50 messages waiting (others: 10), send 30 a minute and
+  600 an hour (others: 10 and 60), and upload 512 MiB a day with 1 GiB retained (others: 64 and 128 MiB). New
+  `files_contact_*` limits; bot-wide and gateway-wide limits are unchanged. Strangers and contacts without
+  `files` keep the general limits.
+- **A sealed field holds a full 8 MiB message.** `bot_e2e` decoded at most 2^22 base64url characters (about 3 MB
+  of ciphertext), so a message within `attachment_total_bytes` could still be refused as `invalid_sealed_files`,
+  and a client could not open one. Both sides now accept up to 16 MiB of ciphertext; request bodies and
+  responses stay bounded by `max_attachment_body_bytes` and `MAX_RESPONSE_BYTES`. A receiver on an older client
+  still opens only the smaller fields, so senders keep small batches until their receivers upgrade.
+- **`/.well-known/yobiru` publishes `limits`:** attachment total, file count and media size per message, the
+  general waiting limit, and the files contact's waiting, hourly and daily limits.
+
 ## 0.7.16 (2026-11-01)
 
 Update the gateway, then the plugin. No schema version change: the gateway adds wake columns on `follows` by

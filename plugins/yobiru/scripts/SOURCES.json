@@ -76,11 +76,11 @@
     },
     "scripts/public_bots/bot_e2e.py": {
       "source": "public_bots/bot_e2e.py",
-      "sha256": "a758dd54370fe2ec47c278814ef197fa17d7352e9912e4ad6fd69f6986914f7f"
+      "sha256": "7ac5833327c8441244d4de17a3a20a3d1a2e2c0916d8d75ebe8615b856da6864"
     },
     "scripts/public_bots/bot_gateway.py": {
       "source": "public_bots/bot_gateway.py",
-      "sha256": "a1bb3af998a47c011f9f6a933e791fda374a65c21fea1adf28c2ae8227526f01"
+      "sha256": "883b489ba8c53e1edf783e7eb3d839e8bee024a7d2a8aefa8903cacca5afbbb6"
     },
     "scripts/public_bots/bot_links.py": {
       "source": "public_bots/bot_links.py",
