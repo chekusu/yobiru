@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.7.20 (2026-11-01)
 
 Update the gateway, then clients. No schema version change: the gateway creates the `mail_notices` and
 `challenge_addresses` tables when it starts, and manager credentials live in the existing `credentials` table. A
-gateway rolled back to 0.7.17 refuses manager credentials (401) and ignores the new tables; nothing else changes.
+gateway rolled back to 0.7.19 refuses manager credentials (401) and ignores the new tables; nothing else changes.
 
 - **One person, several agents: add a bot to your existing owner by email.** A self-enrolled owner's address used to
   stop a second agent (Muse after Grok Bot) at `409 email_in_use`, and the only way around it copied the owner
