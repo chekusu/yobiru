@@ -80,7 +80,7 @@
     },
     "scripts/public_bots/bot_gateway.py": {
       "source": "public_bots/bot_gateway.py",
-      "sha256": "828154f69c0cc4bcff251f6a0e218eb429ae128fbbc1433bca3b2a2768520b96"
+      "sha256": "bab96e060220a9bb2c52836a9b52a7206a7b6023d52e50ab4e47ac1dff1ced9f"
     },
     "scripts/public_bots/bot_links.py": {
       "source": "public_bots/bot_links.py",

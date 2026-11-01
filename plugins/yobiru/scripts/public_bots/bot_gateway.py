@@ -403,6 +403,13 @@ INBOX_TABLES = (
     "secret_sealed TEXT NOT NULL, url_host TEXT NOT NULL, header TEXT NOT NULL, scheme TEXT, "
     "on_review INTEGER NOT NULL, created_ts INTEGER NOT NULL, updated_ts INTEGER NOT NULL, last_ts INTEGER, "
     "last_outcome TEXT, last_detail TEXT)",
+    # A hosted result can arrive after the host claims and finishes, which clears its lease identity. Keep
+    # only the pending correlation, bound to that wake, claim fence and native binding; never a message body.
+    "CREATE TABLE IF NOT EXISTS hosted_wake_claims (message_id TEXT PRIMARY KEY, wake_id TEXT NOT NULL, "
+    "worker_id TEXT NOT NULL, epoch INTEGER NOT NULL, fence INTEGER NOT NULL, claimed_ts INTEGER NOT NULL)",
+    "CREATE INDEX IF NOT EXISTS hosted_wake_claims_wake ON hosted_wake_claims(wake_id)",
+    "CREATE TRIGGER IF NOT EXISTS delete_hosted_wake_claim AFTER DELETE ON messages BEGIN "
+    "DELETE FROM hosted_wake_claims WHERE message_id=OLD.id; END",
 )
 
 # The deadline and lease sweeps run inside the write lock on every poll, and maintenance runs the retention and
@@ -4781,6 +4788,11 @@ class Api(object):
             note_wake(db, worker["id"], now, now, msg["wake_intent_ts"], msg["wake_seen_before_ts"], msg["wake_route"],
                       self.limits["quiet_wake_seconds"])
         msg = db.execute("SELECT * FROM messages WHERE id=?", (msg["id"],)).fetchone()
+        if msg["wake_state"] == "intent" and msg["wake_route"] == "hosted" and msg["wake_id"] is not None and \
+                msg["wake_intent_ts"] is not None and msg["wake_intent_ts"] <= now:
+            db.execute("INSERT OR REPLACE INTO hosted_wake_claims(message_id,wake_id,worker_id,epoch,fence,claimed_ts) "
+                       "VALUES(?,?,?,?,?,?)", (msg["id"], msg["wake_id"], worker["id"], worker["epoch"],
+                                               msg["fence"], int(now)))
         db.execute("INSERT OR REPLACE INTO job_reply_policies(message_id, fence, direct_reply) VALUES(?,?,?)",
                    (msg["id"], msg["fence"], int(direct)))
         ticket = self.issue_ticket(db, msg, bot, expires)
@@ -6232,8 +6244,29 @@ def hosted_wake_delivery(home, limits, route, body, result):
 
 def hosted_wake_outcome(store, route, wake_id, outcome, detail, now):
     with store.tx() as db:
-        db.execute("UPDATE messages SET wake_state=?, wake_detail=?, wake_ts=? WHERE wake_id=? AND "
-                   "wake_state='intent'", (outcome, short_detail(detail), int(now), wake_id))
+        # Select only claims whose intent is still current, before recording the result: a duplicate or an
+        # old delivery must never refresh evidence. Finishing may clear a lease, but never transfers its claim
+        # to another binding. Use the claim time, as when the result precedes the claim, for evidence freshness.
+        claims = []
+        if outcome in ("accepted", "uncertain"):
+            claims = db.execute(
+                "SELECT c.worker_id, c.claimed_ts, m.wake_intent_ts, m.wake_seen_before_ts, m.wake_route "
+                "FROM hosted_wake_claims c JOIN messages m ON m.id=c.message_id "
+                "JOIN workers w ON w.id=c.worker_id JOIN bots b ON b.id=m.bot_id "
+                "WHERE m.bot_id=? AND m.wake_id=? AND m.wake_state='intent' AND m.wake_route='hosted' "
+                "AND c.wake_id=m.wake_id AND c.fence=m.fence AND w.bot_id=m.bot_id AND w.adapter='native' "
+                "AND w.revoked_ts IS NULL AND w.epoch=c.epoch AND w.epoch=b.agent_epoch "
+                "AND m.wake_intent_ts IS NOT NULL AND c.claimed_ts>=m.wake_intent_ts",
+                (route["bot_id"], wake_id)).fetchall()
+        db.execute("UPDATE messages SET wake_state=?, wake_detail=?, wake_ts=? WHERE bot_id=? AND wake_id=? AND "
+                   "wake_state='intent' AND wake_route='hosted'",
+                   (outcome, short_detail(detail), int(now), route["bot_id"], wake_id))
+        for claim in claims:
+            note_wake(db, claim["worker_id"], now, claim["claimed_ts"], claim["wake_intent_ts"],
+                      claim["wake_seen_before_ts"], claim["wake_route"], store.limits["quiet_wake_seconds"])
+        db.execute("DELETE FROM hosted_wake_claims WHERE wake_id=? AND EXISTS "
+                   "(SELECT 1 FROM messages m WHERE m.id=hosted_wake_claims.message_id AND m.bot_id=?)",
+                   (wake_id, route["bot_id"]))
         # A completed old delivery must not overwrite a replacement registration's status. Each PUT seals
         # with new random nonces, even when all of the owner's settings are identical.
         db.execute("UPDATE hosted_wakes SET last_ts=?, last_outcome=?, last_detail=? WHERE bot_id=? AND "
