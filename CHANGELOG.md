@@ -1,30 +1,58 @@
 # Changelog
 
-## Unreleased
+## 0.7.17 (2026-11-01)
 
-Gateway only; no schema change. Clients that do not read the new fields behave as before.
+Update the gateway; clients need no change. No schema version change: the gateway creates the `hosted_wakes` table
+(and adds its columns) when it starts. Clients that do not read the new fields behave as before.
 
+- **Hosted wakes: the gateway calls your webhook when nothing else can.** An owner whose agent runs where no
+  connector can (a Grok Bot routine used only from a phone, for example) registers a webhook with
+  `PUT /v1/owner/bots/{bot}/wake` (`url`, `secret`, optional `header`, `scheme`, `note`, `wake_on_review`,
+  `test`). The gateway then wakes it with ids only, on the connector's ledger: the intent is recorded on each job
+  before the call and the outcome after, a job is woken once whichever of a connector and the gateway records
+  first, and an uncertain outcome is not repeated. A hosted wake that the binding then answers counts as wake
+  evidence for that binding, with the quiet interval measured on the current binding only.
+  - **It never holds the rest of the gateway.** The maintenance loop only dispatches: each call runs in a
+    short-lived process of its own, at most 4 at once, with a 10-second deadline that includes the name lookup (a
+    stuck resolver is killed). Stopping the gateway stops them too. Before this change in review, three hanging
+    webhooks delayed another bot's wake from 0.9 to 8.5 seconds and stalled the maintenance sweep with it.
+  - **One call per burst, and a connector goes first.** The gateway waits until a bot's due jobs have been quiet
+    for 10 seconds (at most 30), so a burst of messages is one call and an online connector, which records its
+    wake within a second, is not doubled. At most one call a minute and 60 an hour per bot; calls for message
+    requests alone (which strangers can cause) at most 6 an hour. A route that wakes only for admitted work
+    finds it behind any number of message requests.
+  - **Failures back off and a dead route turns off.** After a failed call the next waits 1, 5, then 25 minutes (at
+    most 30); 5 failures in a row over at least a day turn the route off until the owner registers it again or a
+    test is accepted. `GET` shows the last call, consecutive failures and when the next may go. A call still in
+    flight when the owner replaces or deletes the route never writes its outcome onto the new one.
+  - **Test wakes.** `test: true` on registration, or `POST /v1/owner/bots/{bot}/wake/test` (6 an hour), sends a
+    `yobiru.ping` within seconds.
+  - **Safe to point at the internet.** https on port 443 only; every address the host resolves to must be public:
+    NAT64 addresses are refused, and mapped, 6to4 and Teredo addresses are judged by the IPv4 address they carry.
+    The call goes to the checked address with the certificate verified for the host name and no redirects. The
+    secret is printable ASCII and travels in `Authorization` or an `X-` header (never a header that frames the
+    request or an `X-Yobiru-` one), and every call is signed:
+    `X-Yobiru-Signature: t=<unix>,v1=<HMAC-SHA256 of "<t>.<body>">`. The URL and secret are sealed at rest with
+    `<home>/wake.key`, kept apart from the database, and never returned. Keep `wake.key` with the gateway's other
+    secrets: a database backup alone cannot open the routes.
+  - **Generic text.** The wake's instructions name no client; the owner's `note` (up to 280 characters) carries
+    whatever their agent should run.
 - **Files contacts get their own per-caller limits.** An accepted contact the owner explicitly granted `files`,
-  such as the owner's own paired Mokutori scanner, may keep 50 messages waiting (others: 10), send 30 a minute and
-  600 an hour (others: 10 and 60), and upload 512 MiB a day with 1 GiB retained (others: 64 and 128 MiB). New
-  `files_contact_*` limits; bot-wide and gateway-wide limits are unchanged. Strangers and contacts without
-  `files` keep the general limits.
+  such as the owner's own paired Mokutori scanner, may keep 50 messages waiting (others: 10) and send 30 a minute
+  and 600 an hour (others: 10 and 60). Its own attachment ceilings (512 MiB a day, 1 GiB retained, uploads and
+  attachment replies to it alike) replace the caller ones (64 and 128 MiB); bot-wide and gateway-wide limits
+  (by default 256 MiB a day and 512 MiB retained per bot) still apply. A contact that has `files` only through a
+  relationship preset keeps the general limits.
 - **A sealed field holds a full 8 MiB message.** `bot_e2e` decoded at most 2^22 base64url characters (about 3 MB
   of ciphertext), so a message within `attachment_total_bytes` could still be refused as `invalid_sealed_files`,
-  and a client could not open one. Both sides now accept up to 16 MiB of ciphertext; request bodies and
-  responses stay bounded by `max_attachment_body_bytes` and `MAX_RESPONSE_BYTES`. A receiver on an older client
-  still opens only the smaller fields, so senders keep small batches until their receivers upgrade.
-- **Hosted wakes.** An owner whose agent runs where no connector can (a hosted agent such as a Grok Bot routine)
-  registers a webhook with `PUT /v1/owner/bots/{bot}/wake` (`url`, `secret`, optional `header`, `scheme`,
-  `wake_on_review`). The gateway's maintenance sweep then calls it once for the jobs due, with ids only, using
-  the connector's ledger: the intent is recorded on each job before the call and the outcome after, so a job is
-  woken once whichever of the connector and the gateway records first, and an uncertain outcome is not
-  repeated. The URL and secret are sealed at rest with `<home>/wake.key` and never returned (`GET` shows the
-  host and the last outcome). https only; every address the host resolves to must be public, and the call
-  goes to the checked address with the certificate verified for the host name. At most 60 calls per bot per
-  hour (`hosted_wakes_per_hour_per_bot`). New table `hosted_wakes`, created at start.
+  and a client could not open one. Both sides now accept up to 16 MiB of ciphertext; request bodies and responses
+  stay bounded by `max_attachment_body_bytes` and `MAX_RESPONSE_BYTES`. The base64url check now runs in the regex
+  engine, so a field that size is checked in milliseconds. A receiver on an older client still opens only the
+  smaller fields, so senders keep small batches until their receivers upgrade.
 - **`/.well-known/yobiru` publishes `limits`:** attachment total, file count and media size per message, the
-  general waiting limit, and the files contact's waiting, hourly and daily limits.
+  general waiting limit, and the files contact's waiting and hourly limits and its daily and retained attachment
+  bytes, each byte ceiling no larger than the shared bot and gateway ones. It also lists `hosted_wakes` (the
+  signature header and body types).
 
 ## 0.7.16 (2026-11-01)
 
