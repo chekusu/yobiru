@@ -121,6 +121,13 @@ version bump with its `CHANGELOG.md` entry is merged, push an annotated tag `v<v
 git tag -a v0.7.3 -m "Yobiru 0.7.3" <commit> && git push origin v0.7.3
 ```
 
+Where tags cannot be pushed, run **Actions → Tag release → Run workflow** on `main` with the version instead (or
+`gh workflow run tag-release.yml --ref main -f version=0.7.3`). `.github/workflows/tag-release.yml` refuses unless
+main's `packaging/product.json` carries that version, `CHANGELOG.md` has its entry and the tag does not exist yet. It
+then creates the annotated tag on main's current commit and starts the Release workflow on that tag, with `deploy`
+on. A tag made with the workflow's own token starts nothing by itself, so this is the only Release run. It handles
+stable versions on `main` only; push a prerelease's tag on its release branch as above.
+
 The workflow then
 
 1. refuses the tag unless it equals `v` + the version in `packaging/product.json` and `CHANGELOG.md` has a

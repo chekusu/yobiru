@@ -1,0 +1,76 @@
+name: Tag release
+
+# For a maintainer who cannot push tags from where they work: run this from main with the version to release. It
+# checks that main's current commit carries that version and its CHANGELOG.md entry, creates the annotated tag
+# v<version> on that commit, and starts the Release workflow for the tag. Release then tests, publishes and, after
+# approval on the `bots.yobiru.com` environment, deploys exactly as for a pushed tag. See docs/RELEASING.md.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version on main to release, without the v, e.g. 0.7.16"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tag-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    # Only main's head is released this way. A prerelease tag on a release branch is still pushed by hand.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Check version, changelog and tag
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "::error::version must be a stable X.Y.Z without the v"
+            exit 1
+          fi
+          product="$(python3 -c 'import json; print(json.load(open("packaging/product.json"))["version"])')"
+          if [ "$product" != "$VERSION" ]; then
+            echo "::error::main's packaging/product.json is $product, not $VERSION"
+            exit 1
+          fi
+          if ! grep -q "^## $VERSION (" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no \"## $VERSION (...)\" entry"
+            exit 1
+          fi
+          if gh api "repos/$GH_REPO/git/ref/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "::error::tag v$VERSION already exists; use the Release workflow's Run workflow to republish it"
+            exit 1
+          fi
+
+      - name: Tag and start the release
+        env:
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          object="$(gh api "repos/$GH_REPO/git/tags" -f tag="$tag" -f message="Yobiru $VERSION" \
+            -f object="$GITHUB_SHA" -f type=commit --jq .sha)"
+          gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$object" --silent
+          echo "Tagged $tag at $GITHUB_SHA"
+          # A tag created with this job's token starts no workflow by itself, so start Release explicitly. Running it
+          # on the tag keeps the bots.yobiru.com environment's tag-only deployment rule satisfied.
+          gh workflow run release.yml --ref "$tag" -f tag="$tag" -f deploy=true
+          echo "Started the Release workflow for $tag"
