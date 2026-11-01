@@ -133,7 +133,8 @@ class MessageTests(ContactBotCase):
                          [(m["type"], m["text"], m["to_your_message"]) for m in self.sync("ben", "ann")["messages"]])
         stored = self.gw.sql("SELECT content, result FROM messages WHERE kind='chat'")
         self.assertNotIn("dinner tonight", json.dumps(stored), "messages stay end-to-end encrypted")
-        self.assertNotIn("7pm", json.dumps(stored))
+        # A short plaintext like "7pm" can appear by chance in base64 ciphertext; check the whole answer instead.
+        self.assertNotIn("yes, 7pm", json.dumps(stored))
         self.assertEqual([], self.gw.sql("SELECT count FROM counters WHERE key=?", (
             "auto:pair:%s:%s" % (self.ids["ben"], self.ids["ann"]),)), "the owner's words cost no automation budget")
 
