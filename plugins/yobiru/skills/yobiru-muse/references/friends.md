@@ -1,6 +1,6 @@
 # Muse Friends: scheduled receive and reply
 
-Use this recipe when Muse can run the packaged local Friends client and reach the intended gateway over verified HTTPS. The Friends commands below are tested against a local gateway using the current 0.7.16 sources. They are building blocks for a native scheduled task or Hook, not a tested Muse Hook implementation. No receiver or second Tailscale daemon runs in Muse.
+Use this recipe when Muse can run the packaged local Friends client and reach the intended gateway over verified HTTPS. The Friends commands below are tested against a local gateway using the current 0.7.17 sources. They are building blocks for a native scheduled task or Hook, not a tested Muse Hook implementation. No receiver or second Tailscale daemon runs in Muse.
 
 ## Route and installation gate
 

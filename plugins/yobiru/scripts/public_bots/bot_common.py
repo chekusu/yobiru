@@ -884,21 +884,89 @@ def wake_url(url):
     return u
 
 
-def post_wake(url, headers, body, timeout=20.0):
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """Connects to an address checked beforehand, so a second DNS answer cannot redirect the request."""
+
+    def __init__(self, host, port, address, **kwargs):
+        http.client.HTTPConnection.__init__(self, host, port, **kwargs)
+        self._address = address
+
+    def connect(self):
+        self.sock = socket.create_connection((self._address, self.port), self.timeout)
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """TLS to an address checked beforehand; the certificate is still verified for the URL's host name."""
+
+    def __init__(self, host, port, address, **kwargs):
+        http.client.HTTPSConnection.__init__(self, host, port, **kwargs)
+        self._address = address
+
+    def connect(self):
+        sock = socket.create_connection((self._address, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+# IPv4/IPv6 translation (NAT64) can reach private destinations although ipaddress counts these prefixes as
+# global: the well-known and the local-use range are refused outright.
+NAT64_NETWORKS = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("64:ff9b:1::/48"))
+
+
+def is_public_address(text):
+    """A global unicast address that does not lead into a private network. NAT64 addresses are refused; other IPv6
+    forms that embed an IPv4 address (mapped, 6to4, Teredo) are judged by that address too."""
+    try:
+        ip = ipaddress.ip_address(text.split("%")[0])
+    except ValueError:
+        return False
+    if not ip.is_global or ip.is_multicast:
+        return False
+    if ip.version == 6:
+        if any(ip in net for net in NAT64_NETWORKS):
+            return False
+        inner = [ip.ipv4_mapped, ip.sixtofour] + list(ip.teredo or ())
+        if any(v4 is not None and (not v4.is_global or v4.is_multicast) for v4 in inner):
+            return False
+    return True
+
+
+def public_address(host, port):
+    """The address to call for an endpoint a gateway reaches on someone's behalf: refused (ValueError) unless every
+    address the name resolves to is public, so a webhook cannot point the gateway at its own network. The caller
+    bounds the lookup's time (the gateway's wake process has its own deadline)."""
+    try:
+        found = [info[4][0] for info in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
+    except (OSError, UnicodeError):
+        raise ValueError("the wake host does not resolve")
+    if not found or not all(is_public_address(a) for a in found):
+        raise ValueError("the wake host is not a public address")
+    return found[0]
+
+
+def wake_payload(body):
+    """The exact bytes a wake sends (and a signature covers)."""
+    return json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def post_wake(url, headers, body, timeout=20.0, address=None, agent="yobiru-connector"):
     """POST one wake notification. -> (outcome, detail). Redirects are not followed and the answer body is not
-    interpreted: a 2xx means the host accepted the wake (not that any work happened).
+    interpreted: a 2xx means the host accepted the wake (not that any work happened). With `address`, the
+    connection goes to that checked address instead of resolving the host again. `body` is a dict, or the bytes
+    of `wake_payload` when the caller signs them.
       accepted   2xx answer
       refused    no connection could be made: the request never left, so nothing was delivered
       uncertain  anything else once the request may have left: any non-2xx answer (a 5xx or a 429 can follow
                  work the host already queued), a timeout or a reset. It is never treated as not delivered."""
     u = wake_url(url)
     if u.scheme == "https":
-        conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout,
-                                           context=ssl.create_default_context())
+        context = ssl.create_default_context()
+        conn = _PinnedHTTPSConnection(u.hostname, u.port or 443, address, timeout=timeout, context=context) if address \
+            else http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=timeout, context=context)
     else:
-        conn = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
-    data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    hdrs = {"Content-Type": "application/json", "User-Agent": "yobiru-connector/%d" % API_VERSION}
+        conn = _PinnedHTTPConnection(u.hostname, u.port or 80, address, timeout=timeout) if address \
+            else http.client.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
+    data = body if isinstance(body, bytes) else wake_payload(body)
+    hdrs = {"Content-Type": "application/json", "User-Agent": "%s/%d" % (agent, API_VERSION)}
     hdrs.update(headers)
     target = (u.path or "/") + ("?" + u.query if u.query else "")
     with _Deadline(conn, timeout) as d:

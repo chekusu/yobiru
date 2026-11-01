@@ -23,12 +23,18 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import struct
 
 ALG = "x25519-chacha20poly1305"
 VERSION = 1
 KID_HEX = 32
 MAX_RECIPIENTS = 4
+# A sealed field holds up to 8 MiB of attachments: about 11 MB as JSON with base64 data, 15 MB as base64url
+# ciphertext. Gateways bound request bodies separately (max_attachment_body_bytes, MAX_RESPONSE_BYTES).
+MAX_OPEN_BYTES = 1 << 24
+MAX_FIELD_CHARS = (MAX_OPEN_BYTES + 16) * 4 // 3 + 4
+BASE64URL = re.compile(r"[A-Za-z0-9_-]*")
 INFO_WRAP = b"yobiru-e2e-v1 wrap"
 INFO_SEED = b"yobiru-e2e-v1 seed"
 
@@ -43,7 +49,7 @@ def b64e(raw):
 
 
 def b64d(text, size=None):
-    if not isinstance(text, str) or len(text) > 1 << 22 or not all(c.isalnum() or c in "-_" for c in text):
+    if not isinstance(text, str) or len(text) > MAX_FIELD_CHARS or BASE64URL.fullmatch(text) is None:
         raise E2EError("not base64url")
     try:
         raw = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
@@ -331,7 +337,7 @@ def recipients_of(env):
 def open_sealed(env, my_secret, sender_public, context):
     """Decrypt an envelope addressed to `my_secret`, written by the holder of `sender_public`, for `context`.
     Raises E2EError when it is not addressed to this key, was not written by that sender, or was changed."""
-    err = envelope_error(env, 1 << 22)
+    err = envelope_error(env, MAX_OPEN_BYTES)
     if err:
         raise E2EError(err)
     sk = b64d(my_secret, 32)
