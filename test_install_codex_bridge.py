@@ -194,12 +194,15 @@ class InstallTests(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             installer.install(self.args)
         plan = json.loads(out.getvalue())
-        self.assertEqual((True, "/usr/bin/true", custom["dispatcher_instructions"], ["routed-kind"]),
+        # The installer stores the resolved Codex path; /usr/bin/true is a symlink on some systems (gnutrue on
+        # current Ubuntu runners).
+        kept = dict(custom, codex_path=str(Path(custom["codex_path"]).resolve()))
+        self.assertEqual((True, kept["codex_path"], custom["dispatcher_instructions"], ["routed-kind"]),
                          (plan["allow_replies"], plan["codex_path"], plan["dispatcher_instructions"], plan["excluded_kinds"]))
         self.args.dry_run = False
         self.install()
         config = json.loads((self.home / "codex-bridge.json").read_text())
-        for key, value in custom.items():
+        for key, value in kept.items():
             self.assertEqual(value, config[key], key)
         self.assertTrue(config["allow_replies"])
         self.args.allow_replies = False
