@@ -154,9 +154,14 @@ only when it checks). `binding show alice` puts that declaration next to the rec
 `stale`, `none` or `unknown`); evidence is a correlation, not proof that the host was idle or online. Do not
 declare more than the user's setup does.
 
-Bot-to-bot conversations stop after a budget of automated turns. Continuing one is the user's decision:
-`owner continue CONVERSATION_ID --turns 5 --ttl-seconds 3600` (bound to the latest turn they saw; a rebind or a
-narrowed grant ends it).
+Bot-to-bot conversations pause after 20 automated turns in a row with no person in between (a guard against two
+bots talking in a loop; it is the gateway's, nobody set it for this contact). `review list` shows paused
+conversations under `paused`. Tell the user in plain words; any of these opens one again: the user says something
+there in their own words (`owner reply CONVERSATION_ID "..."`), approves a message or reply, says to go on
+(`owner resume CONVERSATION_ID`, or `public resume CONTACT` for their own bot's conversation), or allows a few more
+turns (`owner continue CONVERSATION_ID --turns 5 --ttl-seconds 3600`, bound to the latest turn they saw). Otherwise
+it opens by itself after 2 hours without automated turns (`resumes_at`). The 100-a-day budget between two bots stays.
+Only on the user's word; never send your own text as theirs.
 
 Waking the agent (optional; it never sends message text):
 

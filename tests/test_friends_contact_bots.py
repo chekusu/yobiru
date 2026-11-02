@@ -39,7 +39,7 @@ class ContactBotCase(unittest.TestCase):
     def setUpClass(cls):
         cls._tmp = tempfile.TemporaryDirectory(prefix="yobiru contact bots ")
         cls.root = Path(cls._tmp.name)
-        cls.gw = FriendsGateway(cls.root, limits=LIMITS)
+        cls.gw = FriendsGateway(cls.root, limits=getattr(cls, "limits", LIMITS))
         cfg = json.loads((cls.gw.home / "gateway.json").read_text())
         cfg.setdefault("enrollment", {})["self_enrolled_publish"] = True     # as on bots.yobiru.com
         (cls.gw.home / "gateway.json").write_text(json.dumps(cfg))
@@ -90,6 +90,41 @@ class ContactBotCase(unittest.TestCase):
         folder.mkdir()
         self.y(who, "attachments", "allow", str(folder))
         return folder
+
+
+class PausedConversationTests(ContactBotCase):
+    """0.7.21: a bot paused after automated turns in a row is told why in plain words, and the owner's own words
+    (`friend send`) or `resume` open it again."""
+    limits = dict(LIMITS, turns_per_conversation=100, automation_turns_per_conversation=2)
+
+    def test_a_pause_is_explained_and_the_owner_opens_it(self):
+        self.y("ann", "chat", "ben", "one")
+        self.y("ann", "chat", "ben", "two")
+        refused, _ = self.y("ann", "chat", "ben", "three", expect=2)
+        self.assertEqual(("automation_budget_exhausted", "conversation", 2),
+                         (refused["error"], refused["scope"], refused["limit"]))
+        self.assertTrue(refused["resumes_at"])
+        self.assertIn("own words", refused["note"])
+        self.assertIn("did not set it", refused["note"])
+        self.link("ann", "ben")
+        mine = self.y("ann", "friend", "send", "ben", "--text", "it is me, really")
+        self.assertEqual(("message", "owner credential"), (mine["sent_as"], mine["sent_with"]))
+        self.assertNotIn("counted_as_automated", mine)
+        self.y("ann", "resend", refused["op_key"])
+        self.y("ann", "chat", "ben", "four")
+        self.assertEqual("conversation", self.y("ann", "chat", "ben", "five", expect=2)[0]["scope"])
+        resumed = self.y("ann", "resume", "ben")
+        self.assertEqual((0, False), (resumed["automation"]["consecutive_turns_used"],
+                                      resumed["automation"]["paused"]))
+        self.y("ann", "chat", "ben", "five again")
+        asked = self.y("ben", "chat", "ann", "dinner?")
+        self.sync("ann", "ben")
+        self.y("ann", "chat", "ben", "six")
+        answered = self.y("ann", "friend", "send", "ben", "--text", "yes, at seven")
+        self.assertEqual(("answer", asked["message_id"], True),
+                         (answered["sent_as"], answered["answered"], answered.get("bots_count_restarted")))
+        self.y("ann", "chat", "ben", "seven")
+        self.y("ann", "chat", "ben", "eight")
 
 
 class FriendListTests(ContactBotCase):

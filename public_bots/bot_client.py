@@ -1942,8 +1942,12 @@ def deliver(st, log, op, wait):
                     "the owner, then `yobiru public e2e trust %s` and `resend %s`" % (record["alias"], op))
         elif obj.get("error") == "e2e_required":
             note = "not stored: this bot accepts only end-to-end encrypted messages; %s" % (e2e or "")
-        out({"ok": False, "error": obj.get("error"), "detail": obj.get("detail"), "http_status": status, "op_key": op,
-             "outcome": outcome, "note": note})
+        refused = {"ok": False, "error": obj.get("error"), "detail": obj.get("detail"), "http_status": status,
+                   "op_key": op, "outcome": outcome, "note": note}
+        if obj.get("error") == "automation_budget_exhausted":
+            refused.update({k: obj.get(k) for k in ("scope", "limit", "resumes_at")})
+            refused["note"] = automation_note(obj, record["alias"], op)
+        out(refused)
         sys.exit(2)
     result = dict(obj, alias=record["alias"], op_key=op)
     if e2e:
@@ -1953,6 +1957,41 @@ def deliver(st, log, op, wait):
         if result["status"].get("result"):
             result["status"]["result_trust"] = REPLY_NOTICE
     out(result)
+
+
+def automation_note(obj, alias, op):
+    """What to tell the owner, in plain words, when a loop budget paused a send. Nothing was stored."""
+    if obj.get("scope") == "pair":
+        return ("not stored: your bot sent this contact its automated messages for today. Tell your owner plainly; "
+                "the count restarts at %s (resumes_at), and words your owner writes themselves (`friend send`) are "
+                "never counted. `yobiru public resend %s` sends this exact message later." % (obj.get("resumes_at"), op))
+    return ("not stored: the last %s messages in this conversation went out automatically, with no person speaking in "
+            "between, so the gateway paused your bot here (a guard against two bots talking in a loop; the other "
+            "side did not set it). Tell your owner plainly. It opens again as soon as your owner says something to "
+            "%s in their own words (`friend send`, which goes out as them), or says to go on (`yobiru public resume "
+            "%s`), or the other owner replies, or by itself at %s (resumes_at). Then `yobiru public resend %s` sends "
+            "this exact message. Never send your own text as your owner's words, and never open a new conversation "
+            "to get around it." % (obj.get("limit"), alias, alias, obj.get("resumes_at"), op))
+
+
+def cmd_resume(st, a):
+    """The owner says to go on: a conversation of your bot that its automated turns paused counts from zero again
+    (the gateway's daily budget between the two bots still applies). Only on the owner's word."""
+    alias, ct = contact(st, a.contact)
+    base, principal, _ = acting(st, ct, getattr(a, "as_ref", None))
+    if not principal.startswith("bot_"):
+        die("only a bot's conversations have loop budgets; pass --as @your-bot")
+    cid = conv_slot(ct, principal)[0]
+    if not cid:
+        die("your bot has no conversation with %s yet; nothing to resume" % alias)
+    owner = ((st.creds()["gateways"].get(base) or {}).get("owner") or {}).get("token")
+    if not owner:
+        die("resuming is your owner's decision: it needs the owner credential for %s, which this data home does not "
+            "hold" % base)
+    if not (gateway_info(base).get("loop_budgets") or {}).get("resume"):
+        die("this gateway predates resuming; ask %s's owner to reply or continue the conversation, or wait" % alias)
+    out(dict(call(base, "POST", "/v1/owner/bots/%s/conversations/%s/resume" % (principal, cid), {}, owner),
+             alias=alias))
 
 
 def cmd_pending(st, a):
@@ -2265,6 +2304,12 @@ def cmd_owner(st, a):
                  anchor_message_id=anchor, op_key=body["op_key"],
                  note="a bounded number of further automated turns in this conversation only; permissions, your "
                       "reviews and rate limits still apply"))
+    elif a.owner_cmd == "resume":
+        if a.bot:
+            bot_id = owner_bot(base, token, a.bot)
+        else:                                        # a conversation with your bot; for one of your bot's own, --bot
+            bot_id = owner_conversation_context(base, token, a.conversation_id).get("bot_id")
+        out(call(base, "POST", "/v1/owner/bots/%s/conversations/%s/resume" % (bot_id, a.conversation_id), {}, token))
     elif a.owner_cmd == "contacts":
         obj = call(base, "GET", "/v1/owner/bots/%s/contacts" % owner_bot(base, token, a.bot), None, token)
         if a.pending:
@@ -3498,15 +3543,22 @@ def friend_send(st, a):
         if code and res.get("http_status") in (401, 404, 409):
             continue                                 # that message is no longer ours (expired, cancelled): next
         read = [mid for _, mid in held if mid != jid and mark_read(agent, base, wtoken, mid)] if not code else []
-        out(dict(res, alias=alias, sent_as="answer", answered=jid, marked_read=read))
+        answered = dict(res, alias=alias, sent_as="answer", answered=jid, marked_read=read)
+        if not code and owner_spoke(st, base, alias, me):
+            answered["bots_count_restarted"] = True
+        out(answered)
         if code:
             sys.exit(code)
         return
     known = gateway_info(base)
     owner = ((st.creds()["gateways"].get(base) or {}).get("owner") or {}).get("token")
-    sender, kind = None, "chat"
+    sender, kind, counted = None, "chat", None
     if (known.get("messages") or {}).get("owner_send"):
         sender = "owner" if owner else None          # the owner's own words: no automation budget counts them
+        if not owner:
+            counted = ("this data home holds no owner credential for %s, so these words went out with the bot "
+                       "credential and count as automated turns; run `friend send` where the owner credential is, "
+                       "so the owner's words go out as theirs" % base)
     elif not files or (known.get("notices") or {}).get("attachments") is True:
         kind = "notice"                              # a gateway older than 0.7.14 keeps them out of the budget
     body = {"kind": kind, "text": text}
@@ -3518,10 +3570,28 @@ def friend_send(st, a):
         code, res = captured(send, st, ns, dict(body))
         if res.get("error") != "conversation_turn_limit" or res.get("outcome") != "refused":
             break                                    # a full conversation refused it: nothing was stored, start anew
-    out(dict(res, alias=alias, sent_as="message", sent_with="owner credential" if sender else "bot credential",
-             note="a message needs no answer; your friend's contact bot shows it"))
+    result = dict(res, alias=alias, sent_as="message", sent_with="owner credential" if sender else "bot credential",
+                  note="a message needs no answer; your friend's contact bot shows it")
+    if counted:
+        result["counted_as_automated"] = counted
+    out(result)
     if code:
         sys.exit(code)
+
+
+def owner_spoke(st, base, alias, me):
+    """The owner's words went out as an answer (with the agent's credential): a person spoke between the two bots, so
+    their automated turns in a row restart, as they do for the owner's own messages. Best effort -> True when done."""
+    owner = ((st.creds()["gateways"].get(base) or {}).get("owner") or {}).get("token")
+    entry = st.load("contacts.json")["contacts"].get(alias)
+    cid = conv_slot(entry, me)[0] if entry else None
+    if not owner or not cid or not (gateway_info(base).get("loop_budgets") or {}).get("resume"):
+        return False
+    try:
+        status, _ = C.api_call(base, "POST", "/v1/owner/bots/%s/conversations/%s/resume" % (me, cid), {}, owner)
+    except (C.ApiError, ValueError):
+        return False
+    return status == 200
 
 
 _GATEWAY_INFO = {}
@@ -4349,6 +4419,10 @@ def main(argv=None):
     who.add_argument("--host", metavar="BOT", help="serve the native binding tools of this bot instead")
     p.add_argument("--allow-owner-credential-here", action="store_true")
     sp.add_parser("pending", help="sends with an unknown or refused outcome (inspect before any retry)")
+    p = sp.add_parser("resume", help="your owner says to go on: your bot's conversation with CONTACT, paused after "
+                                     "automated turns in a row, opens again (needs the owner credential)")
+    p.add_argument("contact")
+    p.add_argument("--as", dest="as_ref")
     p = sp.add_parser("resend", help="repeat a recorded send: same op key, conversation and content")
     p.add_argument("op_key")
     p.add_argument("--wait", type=float, default=0)
@@ -4379,6 +4453,11 @@ def main(argv=None):
     p.add_argument("--ttl-seconds", type=int)
     p.add_argument("--anchor", help="the latest caller message you saw (default: the latest one now)")
     p.add_argument("--op-key")
+    p.add_argument("--gateway")
+    p = os_.add_parser("resume", help="open a conversation between two bots that automated turns paused (your bot "
+                                      "at either end); the daily budget between them still applies")
+    p.add_argument("conversation_id")
+    p.add_argument("--bot", help="your bot, when it is the one that wrote (default: the bot it was written to)")
     p.add_argument("--gateway")
     p = os_.add_parser("contacts")
     p.add_argument("bot")
@@ -4743,7 +4822,7 @@ def main(argv=None):
                 "connect": cmd_connect, "lookup": cmd_lookup, "add": cmd_add, "follow": cmd_follow, "follow-permit": cmd_follow_permit,
                 "unfollow": cmd_unfollow, "following": cmd_following, "contacts": cmd_contacts,
                 "request-friend": cmd_request_friend, "relationship": cmd_relationship, "chat": cmd_chat,
-                "slots": cmd_slots, "status": cmd_status, "pending": cmd_pending, "resend": cmd_resend,
+                "slots": cmd_slots, "status": cmd_status, "pending": cmd_pending, "resend": cmd_resend, "resume": cmd_resume,
                 "history": cmd_history, "owner": cmd_owner, "bot": cmd_bot, "worker": cmd_worker, "job": cmd_job,
                 "connector": cmd_connector, "binding": cmd_binding, "review": cmd_review, "verifier": cmd_verifier,
                 "e2e": cmd_e2e,

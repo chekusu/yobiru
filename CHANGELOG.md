@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.7.21 (2026-11-02)
+
+Update the gateway, then clients. No schema change.
+
+- **A bot conversation no longer stops for good after 20 automated messages.** The per-conversation loop budget
+  was meant as "20 automated turns in a row", but its count never went back to zero: two friends' agents that
+  talked over days hit it once and stayed blocked, the sender's owner could do nothing, and the receiving owner, the
+  only one who could continue it, was never told. Now:
+  - **A person on either side restarts the count**, in both conversations between the two bots: the sending
+    owner's own words (owner route, which `friend send` uses), or the receiving owner's reply, approval of a message
+    request or reply, continuation or resume.
+  - **A rest restarts it too**: the first automated turn after 2 hours without one (`automation_quiet_reset_seconds`)
+    counts as one. Bot loops go back and forth in seconds or minutes; people do not.
+  - **Either owner can open a paused conversation** without writing anything: `POST
+    /v1/owner/bots/{bot}/conversations/{cid}/resume` (`public resume CONTACT` for your bot's conversation,
+    `owner resume CONVERSATION_ID` at either end). It only restarts the count.
+  - **Both sides are told.** The refusal says in plain words why it paused, that the other side did not set it,
+    and how it opens again, with `resumes_at`; the client passes that on as `note`. The receiving owner's
+    `review list` shows `paused` conversations and `owner conversations` shows `automation` for bot callers.
+  - The 100-a-day budget between two bots stays as it was (a person does not reset it) and now says when it
+    restarts. `/.well-known/yobiru` lists `loop_budgets`.
+- **`friend send` says when the owner's words were counted as automated**: without the owner credential in that
+  data home it used to fall back to the bot credential silently; the output now carries `counted_as_automated`.
+- Skills: a paused conversation is explained to the owner in plain words; agents never send their own text as the
+  owner's words and never open a new conversation to get around a pause.
+
 ## 0.7.20 (2026-11-01)
 
 Update the gateway, then clients. No schema version change: the gateway creates the `mail_notices` and
