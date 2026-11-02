@@ -41,7 +41,7 @@ UNIT_PROPS = ("Id", "LoadState", "ActiveState", "SubState", "NRestarts", "Active
               "MemoryPeak", "MemoryHigh", "MemoryMax", "CPUUsageNSec", "TasksCurrent", "TasksMax", "Result")
 TIMER_PROPS = ("Id", "ActiveState", "LastTriggerUSec", "NextElapseUSecRealtime", "Result")
 PENDING = ("queued", "claimed", "started", "review", "uncertain")
-REQUEST_RE = re.compile(r"^(?:\d{4}-\d\d-\d\d \d\d:\d\d:\d\d )?\S+ (GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) (\S+) "
+REQUEST_RE = re.compile(r"^(?:\d{4}-\d\d-\d\d \d\d:\d\d:\d\d )?\S+ (GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) (.+) "
                         r"(\d{3}|-)$")
 # First match wins. "start" lines are counted but never quoted.
 ERROR_PATTERNS = (
@@ -56,6 +56,7 @@ ERROR_PATTERNS = (
     ("traceback", re.compile(r"Traceback|Error:|Exception")),
     ("start", re.compile(r"serving on|mail relay: \S+:\d+ \(|litestream v?\d|initialized db")),
 )
+ROUTE_RE = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
 NGINX_RE = re.compile(r'^\S+ \S+ \S+ \[[^\]]+\] "(?:[^"\\]|\\.)*" (\d{3}) ')
 NGINX_TIME_RE = re.compile(r"(?:\brt=|request_time=)(\d+(?:\.\d+)?)")
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
@@ -323,6 +324,9 @@ def count_journal(lines):
         m = REQUEST_RE.match(msg)
         if m:
             _, route, code = m.groups()
+            route = route.split(" ")[0]           # "mcp tools/call <tool>" counts as mcp
+            if not ROUTE_RE.match(route):
+                route = "other"                   # route names only; never a caller-chosen string
             req["total"] += 1
             routes[route] = routes.get(route, 0) + 1
             if code.isdigit():

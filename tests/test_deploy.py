@@ -64,6 +64,9 @@ class GatewayReportTests(unittest.TestCase):
             ("2026-11-02 10:00:00 127.0.0.1 GET connector_jobs 200", "yobiru-gateway.service"),
             ("2026-11-02 10:00:01 127.0.0.1 POST enroll_email 429", "yobiru-gateway.service"),
             ("2026-11-02 10:00:02 127.0.0.1 GET share_card 500", "yobiru-gateway.service"),
+            ("2026-11-02 10:00:02 127.0.0.1 POST mcp tools/call yobiru_send 200", "yobiru-gateway.service"),
+            ("2026-11-02 10:00:02 127.0.0.1 POST mcp X-Secret/Thing 200", "yobiru-gateway.service"),
+            ("2026-11-02 10:00:02 127.0.0.1 GET Some-Odd-Path 404", "yobiru-gateway.service"),
             ("2026-11-02 10:00:03 internal error: KeyError for someone@example.com token "
              "abcdefghijklmnopqrstuvwxyz0123456789", "yobiru-gateway.service"),
             ("2026-11-02 10:00:04 mail relay: sent 2, failed 0", "yobiru-gateway-mail.service"),
@@ -72,8 +75,10 @@ class GatewayReportTests(unittest.TestCase):
              "yobiru-gateway.service"),
         )] + ["not json"]
         out = self.report.count_journal(lines)
-        self.assertEqual(out["requests"]["total"], 3)
-        self.assertEqual((out["requests"]["2xx"], out["requests"]["4xx"], out["requests"]["5xx"]), (1, 1, 1))
+        self.assertEqual(out["requests"]["total"], 6)
+        self.assertEqual((out["requests"]["2xx"], out["requests"]["4xx"], out["requests"]["5xx"]), (3, 2, 1))
+        self.assertEqual(out["routes"], {"connector_jobs": 1, "enroll_email": 1, "share_card": 1, "mcp": 2,
+                                         "other": 1})
         self.assertEqual(out["errors_5xx"], {"share_card 500": 1})
         self.assertEqual(out["events"], {"yobiru-gateway:internal_error": 1, "yobiru-gateway-mail:mail": 1,
                                          "yobiru-gateway:start": 1})
