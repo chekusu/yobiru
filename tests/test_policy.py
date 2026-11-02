@@ -154,6 +154,36 @@ class HttpPolicyTests(unittest.TestCase):
         self.assertEqual(403, self.request("/info")[0])
         self.assertEqual(before, self.ctx.cfg)
 
+    def test_exec_arrival_requires_peer_now_allowance_and_duplicate_does_not_rewake(self):
+        # Reproduce the CLI-only adapter pitfall from #53 through the receiver's real /msg path.
+        raw = {"access_policy": "tailnet", "default_agent": "codex",
+               "agents": {"codex": {"wake_adapter": {"type": "exec", "argv": ["fake-codex-wake"]}}}}
+        self.write_config(raw)
+        self.ctx.cfg, self.ctx.agents = core.parse_config(raw)
+        first = dict(self.message("cli_batch_0001"), agent="codex", wake="now")
+        with patch.object(core, "call_exec", return_value="exit 0") as adapter, \
+                patch.object(core, "run_hook", side_effect=core.deliver_wake):
+            self.assertEqual(202, self.request("/msg", first)[0])
+            record = json.loads((self.ctx.inbox / (first["id"] + ".json")).read_text())
+            self.assertEqual("batch", record["received"]["wake"]["effective"])
+            self.assertNotIn("wake_delivery", record)
+            adapter.assert_not_called()
+
+            raw["wake_policy"] = {"default_max": "batch", "peers": {PEER["node"]: "now"}}
+            self.write_config(raw)
+            # Wake settings load at receiver startup, unlike the live access policy.
+            self.ctx.cfg, self.ctx.agents = core.parse_config(raw)
+            second = dict(self.message("cli_now_0002"), agent="codex", wake="now")
+            self.assertEqual(202, self.request("/msg", second)[0])
+            record = json.loads((self.ctx.inbox / (second["id"] + ".json")).read_text())
+            self.assertEqual("now", record["received"]["wake"]["effective"])
+            self.assertTrue(record["wake_delivery"]["ok"])
+            self.assertNotIn("acked_at", record, "adapter acceptance is not task completion")
+            adapter.assert_called_once()
+            self.assertEqual("codex", adapter.call_args.args[3])
+            self.assertEqual(200, self.request("/msg", second)[0])
+            adapter.assert_called_once()
+
     def test_file_recipient_exception_remains_bound_to_identity_and_deny_wins(self):
         path = self.staged_file()
         self.assertEqual((200, b"example bytes"), self.request(path))  # historical token grant, empty allowlist
