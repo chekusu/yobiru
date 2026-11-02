@@ -510,9 +510,10 @@ def snapshot(a, now):
     # --print keeps no positions: it reads the last few minutes of the journal and the end of the nginx log.
     logs_state = Path("/nonexistent") if a.print_only else state_dir
     sample["journal"] = journal_counts(logs_state, ("yobiru-gateway.service", "yobiru-gateway-mail.service",
-                                                    "yobiru-litestream.service"))
+                                                    "yobiru-litestream.service"), first_since=a.since)
     if a.nginx_log:
-        sample["nginx"] = nginx_counts(logs_state, a.nginx_log, first_tail=256 * 1024 if a.print_only else 0)
+        # --print reads the whole current file (nginx rotates it daily); a timer run starts at its end.
+        sample["nginx"] = nginx_counts(logs_state, a.nginx_log, first_tail=1 << 40 if a.print_only else 0)
     snap["probes"] = {"health": health, "card": card}
     snap["sample"] = sample
     return snap
@@ -543,6 +544,8 @@ def main(argv=None):
     ap.add_argument("--probe-handle", default="guoyu", help="a published bot whose public card is timed")
     ap.add_argument("--prefix", default="ops/gateway-report/", help="key prefix in the blob store's bucket")
     ap.add_argument("--print", dest="print_only", action="store_true", help="print the snapshot; change nothing")
+    ap.add_argument("--since", default="-3min", help="journal start when no position is kept yet, e.g. -24h "
+                                                     "(with --print: the span counted)")
     a = ap.parse_args(argv)
     os.umask(0o077)
     now = int(time.time())
