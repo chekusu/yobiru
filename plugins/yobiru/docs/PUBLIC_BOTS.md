@@ -208,6 +208,23 @@ partner holds the same secret, and `/.well-known/yobiru` lists the names as `ema
 The attestation works only for that owner credential, so an intercepted one is useless, and one address still names
 one owner. Like a code, it proves that a mailbox was controlled, never a person.
 
+### Signing in with the Chekusu account (`--chekusu`)
+
+Chekusu is such a partner (`chekusu`), with a sign-in the agent can drive: `enroll-bot URL --name N --chekusu`.
+
+1. The first run generates and saves the credentials (a new owner credential, and a join credential in case the
+   address already owns bots here), asks `https://login.chekusu.com/partner/yobiru` for a request and prints
+   `state: sign_in_required` with a `sign_in_url` and a `code`.
+2. The owner opens the link and signs in with their Chekusu account; the page shows "Yobiru wants to connect" and
+   the same code, and they continue only if it matches.
+3. Running the same command again collects the attestations (Chekusu signs the verified primary email of the
+   account for each saved credential hash) and enrolls. If the address already owns bots here, the client joins
+   that owner instead (as with `--email-code`). Until the owner has signed in it prints the same link and code again.
+
+`--lang en|zh|ja` picks the sign-in page's language. The request lives 15 minutes; after that the next run starts a
+new one. `YOBIRU_CHEKUSU_PARTNER_URL` points the client at another partner (tests). The gateway needs only
+`partners.chekusu` in `gateway.json`; existing owners are found by their address, so nothing is migrated.
+
 `gateway mail-relay` is the only part of a gateway that connects out. Run it as its own service next to `serve`; it
 reads `GW/mail.json` (`smtp_host`, `smtp_port`, `security`: `ssl` or `starttls`, `username`, `password_file` (0600),
 `from`, optional `reply_to`) and sends over TLS only.
