@@ -69,6 +69,7 @@ class GatewayReportTests(unittest.TestCase):
             ("2026-11-02 10:00:02 127.0.0.1 GET Some-Odd-Path 404", "yobiru-gateway.service"),
             ("2026-11-02 10:00:03 internal error: KeyError for someone@example.com @guoyu token "
              "abcdefghijklmnopqrstuvwxyz0123456789 from 203.0.113.9", "yobiru-gateway.service"),
+            ("2026-11-02 10:00:03 request aborted: BrokenPipeError", "yobiru-gateway.service"),
             ("2026-11-02 10:00:04 mail relay: sent 2, failed 0", "yobiru-gateway-mail.service"),
             ("2026-11-02 10:00:05 mail relay: sent 0, failed 1", "yobiru-gateway-mail.service"),
             ("2026-11-02 10:00:06 yobiru-bot-gateway serving on 127.0.0.1:7780 home=/x processes=8",
@@ -81,7 +82,8 @@ class GatewayReportTests(unittest.TestCase):
                                          "other": 1})
         self.assertEqual(out["errors_5xx"], {"share_card 500": 1})
         self.assertEqual(out["events"], {"yobiru-gateway:internal_error": 1, "yobiru-gateway-mail:mail": 1,
-                                         "yobiru-gateway:start": 1})
+                                         "yobiru-gateway:aborted": 1, "yobiru-gateway:start": 1})
+        self.assertEqual(len(out["samples"]), 2)                 # the internal error and the mail failure
         text = " ".join(out["samples"])
         self.assertNotIn("someone@example.com", text)
         self.assertNotIn("abcdefghijklmnopqrstuvwxyz", text)

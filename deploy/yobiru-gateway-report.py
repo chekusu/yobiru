@@ -344,7 +344,7 @@ def count_journal(lines):
             if pattern.search(msg):
                 key = "%s:%s" % (unit, name)
                 events[key] = events.get(key, 0) + 1
-                if name != "start":
+                if name not in ("start", "aborted"):  # aborted = a client hung up (long-polls): counted only
                     samples.append(scrub(msg))
                 break
     return {"requests": req, "routes": routes, "errors_5xx": errors5, "events": events, "samples": samples[-5:]}
@@ -557,12 +557,13 @@ def main(argv=None):
     now = int(time.time())
     snap = snapshot(a, now)
     state_dir = Path(a.state_dir)
-    samples = load_samples(state_dir / "samples.jsonl", now) + [snap["sample"]]
     if a.print_only:
-        snap["windows"] = windows(samples, now)
+        # Only this run: its --since span differs from the two-minute spans of the timer's samples.
+        snap["windows"] = windows([snap["sample"]], now)
         print(json.dumps(snap, indent=1, sort_keys=True))
         return 0
     state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    samples = load_samples(state_dir / "samples.jsonl", now) + [snap["sample"]]
     tmp = state_dir / "samples.jsonl.tmp"
     with open(tmp, "w") as f:
         for s in samples:
