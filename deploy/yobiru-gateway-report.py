@@ -61,11 +61,13 @@ NGINX_RE = re.compile(r'^\S+ \S+ \S+ \[[^\]]+\] "(?:[^"\\]|\\.)*" (\d{3}) ')
 NGINX_TIME_RE = re.compile(r"(?:\brt=|request_time=)(\d+(?:\.\d+)?)")
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 TOKEN_RE = re.compile(r"[A-Za-z0-9_\-]{24,}")
+HANDLE_RE = re.compile(r"@[A-Za-z0-9_.-]{1,64}")
 IP_RE = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b|\b[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){3,7}\b", re.I)
 
 
 def scrub(text, limit=160):
     text = EMAIL_RE.sub("<email>", text)
+    text = HANDLE_RE.sub("@<handle>", text)
     text = TOKEN_RE.sub("<redacted>", text)
     text = IP_RE.sub("x.x.x.x", text)
     return text[:limit]

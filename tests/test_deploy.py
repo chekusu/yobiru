@@ -67,8 +67,8 @@ class GatewayReportTests(unittest.TestCase):
             ("2026-11-02 10:00:02 127.0.0.1 POST mcp tools/call yobiru_send 200", "yobiru-gateway.service"),
             ("2026-11-02 10:00:02 127.0.0.1 POST mcp X-Secret/Thing 200", "yobiru-gateway.service"),
             ("2026-11-02 10:00:02 127.0.0.1 GET Some-Odd-Path 404", "yobiru-gateway.service"),
-            ("2026-11-02 10:00:03 internal error: KeyError for someone@example.com token "
-             "abcdefghijklmnopqrstuvwxyz0123456789", "yobiru-gateway.service"),
+            ("2026-11-02 10:00:03 internal error: KeyError for someone@example.com @guoyu token "
+             "abcdefghijklmnopqrstuvwxyz0123456789 from 203.0.113.9", "yobiru-gateway.service"),
             ("2026-11-02 10:00:04 mail relay: sent 2, failed 0", "yobiru-gateway-mail.service"),
             ("2026-11-02 10:00:05 mail relay: sent 0, failed 1", "yobiru-gateway-mail.service"),
             ("2026-11-02 10:00:06 yobiru-bot-gateway serving on 127.0.0.1:7780 home=/x processes=8",
@@ -85,6 +85,8 @@ class GatewayReportTests(unittest.TestCase):
         text = " ".join(out["samples"])
         self.assertNotIn("someone@example.com", text)
         self.assertNotIn("abcdefghijklmnopqrstuvwxyz", text)
+        self.assertNotIn("guoyu", text)
+        self.assertNotIn("203.0.113.9", text)
         self.assertNotIn("serving on", text)
 
     def test_nginx_counts_only_new_lines_and_follows_rotation(self):
