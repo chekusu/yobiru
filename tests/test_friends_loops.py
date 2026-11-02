@@ -4,8 +4,9 @@ Source bots are automated callers: consecutive turns per conversation and turns 
 are checked before anything is charged and charged only on admission; identical op-key retries are free even when
 a budget is exhausted, changed ones are refused first; the pair budget survives new and deleted conversations and
 restarts; concurrent admissions are charged exactly; causes are validated by the gateway; an owner continuation is
-bounded, exact and voided by a rebind or a narrowed grant; an old client's notice is a direct message, charged like
-one, and what an owner sends as their bot is never charged. Real bot_gateway.py subprocesses with synthetic homes on
+bounded, exact and voided by a rebind or a narrowed grant; a person speaking, approving or resuming on either side and a
+rest restart the count in a row; an old client's notice is a direct message, charged like one, and what an owner
+sends as their bot is never charged. Real bot_gateway.py subprocesses with synthetic homes on
 loopback.
 """
 import hashlib
@@ -210,6 +211,106 @@ class ContinuationTests(LoopCase):
         self.assertFalse(current["authorized_now"])
 
 
+class PersonAndRestTests(LoopCase):
+    """Since 0.7.21 the per-conversation budget counts automated turns in a row: a person on either side speaking,
+    approving or resuming restarts it, and so does a rest; the per-pair daily budget is left alone."""
+
+    def paused(self, result):
+        status, obj = result
+        return status, obj.get("error"), obj.get("scope")
+
+    def test_a_person_speaking_on_either_side_restarts_the_count_both_ways(self):
+        a, a_token = self.gw.owned_bot(self.handle("a"))
+        b, b_token = self.gw.owned_bot(self.handle("b"))
+        ab = self.gw.conversation(b, a_token)                   # a's bot writes to b
+        ba = self.gw.conversation(a, b_token)                   # b's bot writes to a
+        self.exhaust(ab, a_token)
+        status, refused = self.send(ab, a_token)
+        self.assertEqual((429, "automation_budget_exhausted", "conversation"), self.paused((status, refused)))
+        self.assertIn("own words", refused["detail"])
+        last = self.gw.sql("SELECT MAX(created_ts) AS t FROM messages WHERE conversation_id=?", (ab,))[0]["t"]
+        self.assertEqual(C.iso(last + 7200), refused["resumes_at"])
+        status, sent = self.gw.call("POST", "/v1/owner/bots/%s/conversations/%s/messages" % (a, ab),
+                                    {"op_key": self.op(), "kind": "chat", "text": "my own words"}, self.owner)
+        self.assertEqual(202, status, sent)
+        self.assertEqual((3, 0), self.charged(a, b, ab))
+        self.assertEqual(202, self.send(ab, a_token)[0], "a's bot may go on")
+        self.assertEqual((4, 1), self.charged(a, b, ab))
+        self.exhaust(ba, b_token)
+        self.assertEqual(429, self.send(ba, b_token)[0])
+        self.gw.ok("POST", "/v1/owner/conversations/%s/messages" % ab, {"op_key": self.op(), "text": "b's owner"},
+                   self.owner)                                  # b's owner speaks in a's conversation with b
+        self.assertEqual((0, 0), (self.charged(a, b, ab)[1], self.charged(b, a, ba)[1]), "both ways")
+        self.assertEqual(202, self.send(ba, b_token)[0])
+
+    def test_approving_a_message_request_restarts_the_count(self):
+        target, source, token = self.pair()
+        self.gw.native(target)
+        cid = self.gw.conversation(target, token)
+        self.exhaust(cid, token, 2)
+        mid = self.gw.chat(cid, token, "may I?")
+        self.assertEqual(429, self.send(cid, token)[0])
+        rhash = [x for x in self.gw.reviews(target)["inbound"] if x["job_id"] == mid][0]["request_hash"]
+        self.gw.ok("POST", "/v1/owner/messages/%s/review" % mid, {"action": "approve_inbound", "request_hash": rhash},
+                   self.owner)
+        self.assertEqual((3, 0), self.charged(source, target, cid))
+        self.assertEqual(202, self.send(cid, token)[0])
+
+    def test_a_rested_conversation_counts_afresh(self):
+        target, source, token = self.pair()
+        cid = self.gw.conversation(target, token)
+        self.exhaust(cid, token)
+        self.assertEqual(429, self.send(cid, token)[0])
+        self.gw.sql("UPDATE messages SET created_ts=created_ts-7200 WHERE conversation_id=?", (cid,))
+        status, sent = self.send(cid, token)
+        self.assertEqual(202, status, sent)
+        self.assertEqual((4, 1), self.charged(source, target, cid), "the first turn after a rest counts as one")
+        view = self.gw.ok("GET", "/v1/conversations/%s" % cid, None, token)["allowance"]
+        self.assertEqual((1, False, None), (view["consecutive_turns_used"], view["paused"], view["resumes_at"]))
+
+    def test_the_owner_sees_paused_conversations_and_either_owner_resumes_them(self):
+        target, source, token = self.pair()
+        cid = self.gw.conversation(target, token)
+        self.exhaust(cid, token)
+        paused = self.gw.reviews(target)["paused"]
+        self.assertEqual([(cid, source, 3)], [(p["conversation_id"], p["actor_id"], p["consecutive_turns_used"])
+                                              for p in paused])
+        self.assertIn("owner resume %s" % cid, paused[0]["next"])
+        listed = {c["conversation_id"]: c for c in self.gw.ok("GET", "/v1/owner/bots/%s/conversations" % target,
+                                                               None, self.owner)["conversations"]}
+        self.assertTrue(listed[cid]["automation"]["paused"])
+        view = self.gw.ok("GET", "/v1/conversations/%s" % cid, None, token)["allowance"]
+        self.assertEqual((3, True), (view["consecutive_turns_used"], view["paused"]))
+        for bid in (target, source):                            # the receiving owner, then the sending owner
+            if bid == source:
+                self.exhaust(cid, token, 1)
+                self.gw.sql("UPDATE conversations SET auto_turns=3 WHERE id=?", (cid,))
+            resumed = self.gw.ok("POST", "/v1/owner/bots/%s/conversations/%s/resume" % (bid, cid), {}, self.owner)
+            self.assertEqual((cid, bid, 0, False), (resumed["conversation_id"], resumed["resumed_by"],
+                                                    resumed["automation"]["consecutive_turns_used"],
+                                                    resumed["automation"]["paused"]))
+            self.assertEqual([], self.gw.reviews(target)["paused"])
+        self.assertEqual(202, self.send(cid, token)[0])
+        status, refused = self.send(cid, token)                 # 5 a day between the two: resuming never resets it
+        self.assertEqual((429, "automation_budget_exhausted", "pair"), self.paused((status, refused)))
+        self.assertTrue(refused["resumes_at"].endswith("T00:00:00Z"), refused)
+        other = self.gw.bot(self.handle("other"))
+        self.assertEqual(404, self.gw.call("POST", "/v1/owner/bots/%s/conversations/%s/resume" % (other, cid), {},
+                                           self.owner)[0], "only a bot at either end")
+        _, other_owner, _ = self.gw.enroll_bot(self.handle("stranger"))
+        self.assertEqual(404, self.gw.call("POST", "/v1/owner/bots/%s/conversations/%s/resume" % (target, cid), {},
+                                           other_owner)[0])
+        _, visitor = self.gw.actor()
+        vcid = self.gw.conversation(target, visitor)
+        self.assertEqual((409, "not_applicable"), self.err(self.gw.call(
+            "POST", "/v1/owner/bots/%s/conversations/%s/resume" % (target, vcid), {}, self.owner)))
+        self.assertEqual((400, "unknown_field"), self.err(self.gw.call(
+            "POST", "/v1/owner/bots/%s/conversations/%s/resume" % (target, cid), {"turns": 5}, self.owner)))
+        known = self.gw.ok("GET", "/.well-known/yobiru", None, None)["loop_budgets"]
+        self.assertEqual((3, 5, 7200, True), (known["turns_in_a_row"], known["turns_per_pair_per_day"],
+                                              known["quiet_reset_seconds"], known["reset_by_owner"]))
+
+
 class HopTests(LoopCase):
     def test_causes_are_validated_and_hops_are_bounded(self):
         a, a_token = self.gw.owned_bot(self.handle("a"))
@@ -264,7 +365,8 @@ class DirectMessageTests(LoopCase):
             status, sent = self.gw.call("POST", path, {"op_key": self.op(), "kind": "chat",
                                                        "text": "my own words %d" % i}, self.owner)
             self.assertEqual((202, "queued"), (status, sent.get("state")), sent)
-        self.assertEqual((3, 3), self.charged(source, target, cid), "the owner's words are not automated turns")
+        self.assertEqual((3, 0), self.charged(source, target, cid),
+                         "the owner's words are not automated turns, and a person speaking restarts the count")
         authors = self.gw.sql("SELECT actor_id FROM messages WHERE conversation_id=? AND author='caller'", (cid,))
         self.assertEqual({source}, {row["actor_id"] for row in authors}, "sent as the bot, into its conversation")
         _, visitor = self.gw.actor()

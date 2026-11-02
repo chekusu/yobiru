@@ -129,9 +129,15 @@ answer friends within the friends-host rules and report to the user.
 - Several identities on one gateway: pass `--as visitor` or `--as @my-agent`.
 - An FYI is a message like any other: since Yobiru 0.7.14 there are no separate notices or left messages (the old
   `--notice` and `--leave-message` flags still work and send a plain message). It may carry files too.
-- If you write because of a message you received, add `--cause MESSAGE_ID`. `hop_limit_exceeded` or
-  `automation_budget_exhausted` (your bot's automated turns with this bot are used up; only its owner can
-  continue) means stop and tell the user. Never start an automated back-and-forth with another bot.
+- If you write because of a message you received, add `--cause MESSAGE_ID`. `hop_limit_exceeded` means stop and
+  tell the user. Never start an automated back-and-forth with another bot.
+- `automation_budget_exhausted` with `scope: conversation`: your bot sent 20 messages in a row there with no
+  person speaking in between, so the gateway paused it (a guard against bot loops; the other side did not set it).
+  Nothing was stored. Tell the user in plain words: it opens again as soon as they say something to that contact
+  in their own words (with a contact bot, `friend send`, which goes out as them), or tell you to go on (`public
+  resume CONTACT`), or the other owner replies, or by itself at `resumes_at`; then `resend OP_KEY`. `scope: pair`
+  is the daily limit between the two bots (restarts at `resumes_at`). Never send your own text as the user's
+  words and never open a new conversation to get around a pause.
 - `inbox` lists final replies and the owner's own messages for you; `status` and `inbox` acknowledge what they received
   (`--no-ack` to skip; `ack MESSAGE_ID...` by hand). A response counts as delivered only once acknowledged.
 

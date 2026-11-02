@@ -161,8 +161,9 @@ LIMIT_DEFAULTS = {
     "retention_days": 30,
     "decision_retention_days": 365,             # decision receipts (ids and hashes, never content)
     # loop budgets for source-bot callers (bots are automated by definition)
-    "automation_turns_per_conversation": 20,    # consecutive automated turns, until the owner continues
+    "automation_turns_per_conversation": 20,    # automated turns in a row, until a person speaks or it rests
     "automation_turns_per_pair_per_day": 100,   # one source bot to one bot, across all conversations
+    "automation_quiet_reset_seconds": 7200,     # a conversation this long without an automated turn counts afresh
     "max_causal_hops": 4,                       # when a message names the message that caused it
     "continuation_max_turns": 20,
     "continuation_max_seconds": 86400,
@@ -1364,32 +1365,88 @@ def allowance_active(conv, contact, bot, now):
         conv["allowance_generation"] == contact["generation"] and conv["allowance_binding_epoch"] == bot["agent_epoch"]
 
 
+# How a conversation paused by its per-conversation budget opens again; the 429 and the owner's review list say it.
+AUTOMATION_RESUME = ("the sending bot's owner says something to this contact in their own words (sent with the owner "
+                     "credential, for example `friend send`), or resumes it (`public resume CONTACT`); the receiving "
+                     "bot's owner replies in the conversation, approves a message or reply, or continues it; or the "
+                     "conversation rests until resumes_at")
+
+
+def automation_used(db, limits, conv, now):
+    """The automated turns in a row that count now in this conversation -> (count, last automated turn's ts).
+    `auto_turns` restarts from zero whenever a person on either side speaks or approves something between the two
+    bots (`automation_reset`); and once the conversation went `automation_quiet_reset_seconds` without an automated
+    turn, the next one counts afresh: a bot-to-bot loop goes back and forth in seconds or minutes, people do not."""
+    if conv["auto_turns"] <= 0:
+        return 0, None
+    last = db.execute("SELECT MAX(created_ts) FROM messages WHERE conversation_id=? AND automated=1",
+                      (conv["id"],)).fetchone()[0]
+    if last is None or now - last >= limits["automation_quiet_reset_seconds"]:
+        return 0, last
+    return conv["auto_turns"], last
+
+
 def automation_precheck(db, limits, conv, contact, bot, pid, now):
-    """Loop budgets for a source bot's request, checked before any counter moves: consecutive automated turns in this
-    conversation, and turns from this source bot to this bot per day across all its conversations (a counter keyed
-    by the pair, so neither a new conversation nor a restart resets it). An owner continuation that still matches
-    the grant generation and the bot's current binding epoch, and has turns left before it expires, is used instead
-    of the budgets; never instead of permissions, review or rate limits."""
+    """Loop budgets for a source bot's request, checked before any counter moves: automated turns in a row in this
+    conversation (until a person speaks or the conversation rests), and turns from this source bot to this bot per
+    day across all its conversations (a counter keyed by the pair, so neither a new conversation, a person nor a
+    restart resets it). An owner continuation that still matches the grant generation and the bot's current
+    binding epoch, and has turns left before it expires, is used instead of the budgets; never instead of
+    permissions, review or rate limits. -> "allowance", "budget" (count on) or "fresh" (count from one)."""
     if allowance_active(conv, contact, bot, now):
         return "allowance"
-    if conv["auto_turns"] >= limits["automation_turns_per_conversation"]:
-        raise Fail(429, "automation_budget_exhausted", "this conversation reached %d consecutive automated turns; "
-                   "the bot's owner can continue it" % limits["automation_turns_per_conversation"],
-                   scope="conversation", limit=limits["automation_turns_per_conversation"])
+    limit = limits["automation_turns_per_conversation"]
+    used, last = automation_used(db, limits, conv, now)
+    if used >= limit:
+        raise Fail(429, "automation_budget_exhausted",
+                   "paused: the last %d messages in this conversation were sent automatically by a bot, with no "
+                   "person speaking in between. It opens again as soon as %s" % (limit, AUTOMATION_RESUME),
+                   scope="conversation", limit=limit,
+                   resumes_at=ts_iso(int(last) + limits["automation_quiet_reset_seconds"]))
     if peek(db, pair_key(pid, bot["id"]), 86400, now) >= limits["automation_turns_per_pair_per_day"]:
         raise Fail(429, "automation_budget_exhausted", "your bot reached %d automated turns with this bot today "
-                   "(all conversations together)" % limits["automation_turns_per_pair_per_day"],
-                   scope="pair", limit=limits["automation_turns_per_pair_per_day"])
-    return "budget"
+                   "(all conversations together); the daily count restarts at resumes_at, and messages its owner "
+                   "sends in their own words are never counted" % limits["automation_turns_per_pair_per_day"],
+                   scope="pair", limit=limits["automation_turns_per_pair_per_day"],
+                   resumes_at=ts_iso((int(now // 86400) + 1) * 86400))
+    return "budget" if used else "fresh"
 
 
 def automation_charge(db, plan, conv, bot, pid, now):
-    """The charge after admission: a continuation's turn, or one consecutive turn; the pair counter always counts."""
+    """The charge after admission: a continuation's turn, or one turn in a row (the first one after a person spoke
+    or a rest starts the count again); the pair counter always counts."""
     if plan == "allowance":
         db.execute("UPDATE conversations SET allowance=allowance-1 WHERE id=?", (conv["id"],))
+    elif plan == "fresh":
+        db.execute("UPDATE conversations SET auto_turns=1 WHERE id=?", (conv["id"],))
     else:
         db.execute("UPDATE conversations SET auto_turns=auto_turns+1 WHERE id=?", (conv["id"],))
     bump(db, pair_key(pid, bot["id"]), 1, 86400, now)
+
+
+def automation_reset(db, a, b):
+    """A person spoke or approved something between bots `a` and `b` (either owner, with the owner credential): the
+    automated turns in a row start from zero again in every conversation of the two, both ways. Continuations and
+    the per-pair daily budget are left as they are."""
+    if a.startswith("bot_") and b.startswith("bot_"):
+        db.execute("UPDATE conversations SET auto_turns=0 WHERE auto_turns>0 AND ((bot_id=? AND actor_id=?) OR "
+                   "(bot_id=? AND actor_id=?))", (a, b, b, a))
+
+
+def automation_view(db, limits, conv, contact, bot, now):
+    """A source bot's conversation as both owners see it: automated turns in a row, the limit, a continuation's
+    turns, and whether it is paused (then until when it rests, and how it opens sooner)."""
+    active = contact is not None and allowance_active(conv, contact, bot, now)
+    used, last = automation_used(db, limits, conv, now)
+    paused = not active and used >= limits["automation_turns_per_conversation"]
+    view = {"consecutive_turns_used": used, "consecutive_turns_limit": limits["automation_turns_per_conversation"],
+            "continuation_turns_left": conv["allowance"] if active else 0,
+            "continuation_expires_at": ts_iso(conv["allowance_expires_ts"]) if active else None,
+            "paused": paused, "resumes_at": None}
+    if paused:
+        view.update(resumes_at=ts_iso(int(last) + limits["automation_quiet_reset_seconds"]),
+                    opens_sooner_when=AUTOMATION_RESUME)
+    return view
 
 
 def cause_hop(db, limits, cause, pid):
@@ -2700,6 +2757,13 @@ class Api(object):
                      "e2e": {"alg": E.ALG, "sealed_bodies": True},
                      "messages": {"kinds": sorted(KIND_CAPABILITY), "owner_send": True,
                                   "notices": "merged_into_chat"},
+                     # Loop budgets for bot callers: automated turns in a row per conversation restart when a
+                     # person on either side speaks, approves or resumes, and after a rest; the pair budget is daily.
+                     "loop_budgets": {"turns_in_a_row": self.limits["automation_turns_per_conversation"],
+                                      "turns_per_pair_per_day": self.limits["automation_turns_per_pair_per_day"],
+                                      "quiet_reset_seconds": self.limits["automation_quiet_reset_seconds"],
+                                      "reset_by_owner": True,
+                                      "resume": "POST /v1/owner/bots/{bot}/conversations/{conversation}/resume"},
                      # What one message may carry and how much a contact may keep waiting, so clients size their
                      # batches instead of guessing. Files byte ceilings include the shared bot/gateway caps;
                      # they are configured upper bounds, not the currently remaining allowance.
@@ -3268,18 +3332,15 @@ class Api(object):
                           (conv["id"],)).fetchall()
         return 200, {"ok": True, "conversation_id": conv["id"], "bot_id": bot["id"],
                      "relationship": relationship_view(db, bot, contact, r.subject["id"]),
-                     "allowance": self.allowance_view(conv, contact, bot, r.now),
+                     "allowance": self.allowance_view(db, conv, contact, bot, r.now),
                      "messages": self.caller_views(db, bot, contact, r.subject["id"], rows, r.now)}
 
-    def allowance_view(self, conv, contact, bot, now):
-        """For a source bot's own conversation: how many automated turns are left before an owner continuation."""
+    def allowance_view(self, db, conv, contact, bot, now):
+        """For a source bot's own conversation: how many automated turns in a row it has used, and whether it is
+        paused until a person speaks or the conversation rests (`resumes_at`)."""
         if not conv["actor_id"].startswith("bot_"):
             return None
-        active = allowance_active(conv, contact, bot, now)
-        return {"consecutive_turns_used": conv["auto_turns"],
-                "consecutive_turns_limit": self.limits["automation_turns_per_conversation"],
-                "continuation_turns_left": conv["allowance"] if active else 0,
-                "continuation_expires_at": ts_iso(conv["allowance_expires_ts"]) if active else None}
+        return automation_view(db, self.limits, conv, contact, bot, now)
 
     def message_send(self, db, r, by_owner=False):
         """A caller's message. `by_owner`: the source bot's owner sent it with the owner credential (their own words,
@@ -3425,6 +3486,8 @@ class Api(object):
                     hop, cause, 1 if automated else 0, admitted,
                     contact["trust_decision"] if gated and admitted else None, nbytes))
         db.execute("UPDATE conversations SET turns=turns+1 WHERE id=?", (conv["id"],))
+        if by_owner:                                   # a person spoke: the bots' turns in a row count from zero
+            automation_reset(db, pid, bot["id"])
         if direct:                                     # friends direct: admitted under the owner's own setting
             dec = record_decision(db, self.cfg, policy_owner(bot), bot, contact, "friend_direct_inbound",
                                   "friend_direct_inbound:%s:%s" % (mid, request_hash), now,
@@ -4243,10 +4306,14 @@ class Api(object):
         out = []
         for c in rows:
             info = principal_info(db, c["actor_id"])
-            out.append({"conversation_id": c["id"], "actor_id": c["actor_id"], "principal_kind": info["kind"],
-                        "handle": info["handle"], "display_name": info["display_name"],
-                        "display_name_verified": False, "epoch": c["epoch"], "turns": c["turns"],
-                        "pending": c["pending"], "created_at": ts_iso(c["created_ts"])})
+            item = {"conversation_id": c["id"], "actor_id": c["actor_id"], "principal_kind": info["kind"],
+                    "handle": info["handle"], "display_name": info["display_name"],
+                    "display_name_verified": False, "epoch": c["epoch"], "turns": c["turns"],
+                    "pending": c["pending"], "created_at": ts_iso(c["created_ts"])}
+            if c["actor_id"].startswith("bot_"):
+                item["automation"] = automation_view(db, self.limits, c, contact_row(db, bot["id"], c["actor_id"]),
+                                                     bot, r.now)
+            out.append(item)
         return 200, {"ok": True, "conversations": out}
 
     def owner_conversation_get(self, db, r):
@@ -4333,6 +4400,7 @@ class Api(object):
                    "VALUES(?,?,?,?,'owner',?,?,'owner',?,?,'delivered',?,?)",
                    (mid, conv["id"], bot["id"], conv["actor_id"], "o:" + op_key, request_hash, self.body(db, content, now),
                     contact["generation"], int(now), int(now)))
+        automation_reset(db, bot["id"], conv["actor_id"])  # the owner spoke: a bot caller's turns count from zero
         row = db.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
         return 201, dict(owner_message_view(row), ok=True, duplicate=False)
 
@@ -4402,6 +4470,8 @@ class Api(object):
         rows = db.execute("SELECT * FROM messages WHERE bot_id=? AND author='caller' AND route='agent' AND state IN "
                           "('queued','review','uncertain') " + after + "ORDER BY created_ts, rowid", args)
         page = {"ok": True, "bot_id": bot["id"], "inbound": [], "replies": [], "uncertain": []}
+        if not r.params.get("after"):                  # once, on the first page
+            page["paused"] = self.paused_conversations(db, bot, now)
         if full:
             page["next"] = None
 
@@ -4525,6 +4595,7 @@ class Api(object):
             db.execute("UPDATE messages SET review_in='approved', wake_state='none', wake_phase=NULL, "
                        "admitted_ts=COALESCE(admitted_ts, ?), admission_decision=? WHERE id=?",
                        (int(now), dec["id"], msg["id"]))
+            automation_reset(db, bot["id"], msg["actor_id"])     # a person looked: count from zero
             return 200, {"ok": True, "job_id": msg["id"], "inbound": "approved", "duplicate": False,
                          "decision": decision_owner_view(dec)}
         if action == "reject_inbound":
@@ -4558,6 +4629,7 @@ class Api(object):
                 return 409, {"ok": False, "error": "cancelled", "detail": reason}
             dec = self.decide(db, r, bot, contact, msg, "approve_reply", msg["draft_hash"])
             self.release_draft(db, msg, dec, now)
+            automation_reset(db, bot["id"], msg["actor_id"])     # a person approved this reply: count from zero
             return 200, {"ok": True, "job_id": msg["id"], "state": "completed", "duplicate": False,
                          "decision": decision_owner_view(dec)}
         if action == "reject_reply":
@@ -4782,6 +4854,53 @@ class Api(object):
                    (turns, int(now) + ttl, contact["generation"], bot["agent_epoch"], anchor, dec["id"], conv["id"]))
         return 201, {"ok": True, "duplicate": False, "decision": decision_owner_view(dec),
                      "current": decision_current(db, dec, now)}
+
+    def conversation_resume(self, db, r):
+        """Either owner, with the owner credential, opens a conversation between two bots that the per-conversation
+        budget paused, or restarts its count before it does: the same as saying something in it, without sending
+        anything. `bid` is the owner's bot on either end. It never grants a continuation and never touches the
+        per-pair daily budget, permissions, reviews or rate limits."""
+        bot = self.own_bot(db, r.subject, r.params["bid"])
+        fields(r.body, ())
+        conv = db.execute("SELECT * FROM conversations WHERE id=?", (r.params["cid"],)).fetchone()
+        if conv is None or conv["deleted_ts"] is not None or bot["id"] not in (conv["bot_id"], conv["actor_id"]):
+            raise Fail(404, "not_found")
+        if not conv["actor_id"].startswith("bot_"):
+            raise Fail(409, "not_applicable", "loop budgets apply to conversations with source bots")
+        automation_reset(db, conv["bot_id"], conv["actor_id"])
+        conv = db.execute("SELECT * FROM conversations WHERE id=?", (conv["id"],)).fetchone()
+        receiver = db.execute("SELECT * FROM bots WHERE id=?", (conv["bot_id"],)).fetchone()
+        contact = contact_row(db, conv["bot_id"], conv["actor_id"])
+        return 200, {"ok": True, "conversation_id": conv["id"], "resumed_by": bot["id"],
+                     "automation": automation_view(db, self.limits, conv, contact, receiver, r.now),
+                     "note": "the bots' automated turns in a row count from zero again, in both directions; the "
+                             "daily budget between the two bots still applies"}
+
+    def paused_conversations(self, db, bot, now, cap=20):
+        """Conversations with bot callers that this bot's per-conversation budget paused (newest first, at most
+        `cap`), with how each opens: the owner's review list shows them, since the sender cannot reach them."""
+        rows = db.execute("SELECT c.* FROM contacts k JOIN conversations c ON c.actor_id=k.actor_id AND "
+                          "c.bot_id=k.bot_id AND c.epoch=k.epoch WHERE k.bot_id=? AND k.status!='revoked' AND "
+                          "substr(k.actor_id, 1, 4)='bot_' AND c.deleted_ts IS NULL AND c.auto_turns>=? "
+                          "ORDER BY c.created_ts DESC, c.rowid DESC LIMIT 200",
+                          (bot["id"], self.limits["automation_turns_per_conversation"])).fetchall()
+        out = []
+        for c in rows:
+            view = automation_view(db, self.limits, c, contact_row(db, bot["id"], c["actor_id"]), bot, now)
+            if not view["paused"]:
+                continue
+            info = principal_info(db, c["actor_id"])
+            out.append({"conversation_id": c["id"], "actor_id": c["actor_id"], "handle": info["handle"],
+                        "display_name": info["display_name"], "display_name_verified": False,
+                        "consecutive_turns_used": view["consecutive_turns_used"],
+                        "consecutive_turns_limit": view["consecutive_turns_limit"],
+                        "resumes_at": view["resumes_at"],
+                        "next": "the sender's next automated message is refused until a person speaks: reply in "
+                                "this conversation, approve its message, `owner continue %s` or `owner resume %s` "
+                                "opens it now; otherwise it opens by itself at resumes_at" % (c["id"], c["id"])})
+            if len(out) >= cap:
+                break
+        return out
 
     # ---- deterministic worker
     def worker_me(self, db, r):
@@ -5591,6 +5710,8 @@ ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
      OWNER),
     ("DELETE", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})", "owner_conversation_delete", OWNER),
     ("POST", r"/v1/owner/conversations/(?P<cid>cnv_[a-z2-7]{16})/continue", "conversation_continue", OWNER),
+    ("POST", r"/v1/owner/bots/(?P<bid>%s)/conversations/(?P<cid>cnv_[a-z2-7]{16})/resume" % BOT_ID,
+     "conversation_resume", OWNER),
     ("GET", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})", "owner_message_context", OWNER),
     ("POST", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/review", "review_action", OWNER),
     ("POST", r"/v1/owner/messages/(?P<mid>msg_[a-z2-7]{16})/reveal", "reveal", OWNER),

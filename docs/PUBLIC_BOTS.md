@@ -641,11 +641,20 @@ Source bots are automated callers. Each of their requests counts against:
 
 | Budget | Default | Scope |
 |---|---|---|
-| `automation_turns_per_conversation` | 20 | Consecutive automated turns in one conversation, until you continue it. |
-| `automation_turns_per_pair_per_day` | 100 | One source bot to one bot, across all their conversations; a new or deleted conversation or a restart never resets it. |
+| `automation_turns_per_conversation` | 20 | Automated turns in a row in one conversation. A person on either side speaking, approving or resuming starts the count again, and so do two hours without automated turns. |
+| `automation_turns_per_pair_per_day` | 100 | One source bot to one bot, across all their conversations; a new or deleted conversation, a person or a restart never resets it. |
+
+What counts as a person: the sending bot's owner writing through the owner route (`friend send` does this for a
+contact bot, so the owner's words are never automated turns), and the receiving bot's owner replying in the
+conversation, approving a message request or a reply, continuing or resuming it. A reset covers both
+conversations between the two bots, both ways. A paused conversation shows up under `paused` in your `review list`
+and as `automation.paused` in `owner conversations`; either owner opens it with `owner resume CONVERSATION_ID`
+(or, for your own bot's conversation with a contact, `public resume CONTACT`), which grants nothing beyond
+restarting the count.
 
 Budgets are checked before anything is charged and charged only when the message is stored; an exhausted budget
-answers `429 automation_budget_exhausted` with `scope`. An identical retry under the same op key returns the stored
+answers `429 automation_budget_exhausted` with `scope`, `limit` and `resumes_at`, and a detail that says in plain
+words how the conversation opens again. An identical retry under the same op key returns the stored
 receipt and is never charged again; the same op key with anything changed (text, attachments, kind or cause) is `409
 op_key_conflict` first. A caller cannot reset a budget (fields such as `human`, `reset` or `hop` are refused).
 
@@ -849,8 +858,8 @@ per contact (a full one no longer counts); 10 pending per contact,
 200 per bot, 2000 in total (ignored requests that have not been admitted do not consume pending capacity, but
 still count toward retained storage and sending limits); deadlines 60 s to 7 days; worker leases up to 300 s and
 native job leases up to 1 hour; transcripts of the last 20 turns or 24000 characters; refused wakes retried at most
-5 times with a doubling backoff; retention 30 days. Schema 3 adds: loop budgets of 20 consecutive automated turns
-per conversation and 100 per source
+5 times with a doubling backoff; retention 30 days. Schema 3 adds: loop budgets of 20 automated turns in a row
+per conversation (since 0.7.21 restarted by a person or a 2-hour rest) and 100 per source
 bot and bot per day, causal hops up to 4, continuations of at most 20 turns and one day; attachments of at most 8 files,
 16 KiB per text file, 4 MiB per media file and 8 MiB per message, 64 MiB per caller and 256 MiB per bot per day, and
 128 MiB retained per caller, 512 MiB per bot and 4 GiB per gateway; request bodies of 16 MiB where files may flow (a
