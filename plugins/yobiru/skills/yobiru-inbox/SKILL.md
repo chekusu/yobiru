@@ -152,6 +152,10 @@ persisting the handoff; never create two lifecycle owners or automatically resta
 
 `reply ID TEXT` on a tracked request defaults to a final `completed` response. Use `request respond
 --state running` for progress, and explicit `failed`, `rejected` or `blocked` for those outcomes.
+The final result, `ack`, or chat archival closes this attempt only; it does not resolve an associated task.
+Use `sh Y --home DIR request list --open --json` to find unresolved tasks and `request resolve TASK_ID`
+only after the trusted owner has made the disposition. A later authorization starts a new attempt and never
+changes an old blocked request back to running.
 Use `request respond ID TEXT --state completed --file PATH` or `reply ID TEXT --file PATH` when an
 authorized final result includes an attachment; do not override its original recipient or agent route.
 
@@ -189,6 +193,10 @@ that request with the actual versions, outcome or blocker.
 - `completed`, `failed`, `rejected`, `blocked`: the responder's final outcome; check its evidence.
 - `timed_out`: no final response by the deadline; actual execution outcome is unknown, not cancelled.
 - `ack`: local housekeeping after a durable final outcome; it is not a receipt to the sender.
+
+Task-level visibility is separate from this attempt lifecycle. `request list --open` includes blocked, failed,
+rejected and timed-out work after ack or thread archival; only an explicit `request resolve TASK_ID` removes it
+from that open list.
 
 The sender can use `sh Y --home DIR request status ID --refresh --json` to reconcile with the
 original receiver.

@@ -767,6 +767,13 @@ REQUEST_CAPABILITY = "request-lifecycle-v1"
 REQUEST_PULL_CAPABILITY = "request-pull-v1"
 REQUEST_STATES = ("received", "running", "completed", "failed", "rejected", "blocked", "timed_out")
 REQUEST_FINAL = ("completed", "failed", "rejected", "blocked")
+TASK_RESOLUTIONS = ("open", "resolved")
+TASK_ATTENTION = ("none", "needs_attention")
+AUTHORIZATION_ISSUER_KINDS = ("trusted_local_human", "trusted_coordinator", "trusted_local_entry")
+AUTHORIZATION_STATUSES = ("active", "revoked", "expired", "consumed")
+ATTEMPT_KINDS = ("external", "internal")
+ATTEMPT_STATES = ("pending", "received", "running", "completed", "failed", "rejected", "blocked", "timed_out",
+                  "cancel_requested", "cancelled")
 # Local lifecycle evidence for incoming requests (NULL = not known). received_at: durable receiver acceptance;
 # started_at / progress_at: first / latest `running` the owner reported (the only start evidence; a queued or
 # seen notification is not); final_at / final_response_id: the durable final result and its exact response.
@@ -798,8 +805,15 @@ def enable_wal(db, timeout=15.0):
 def request_db(ctx):
     directory = ctx.home / "requests"
     directory.mkdir(mode=0o700, exist_ok=True)
-    db = sqlite3.connect(str(directory / "ledger.sqlite3"), timeout=15, factory=RequestConnection)
+    ledger_path = directory / "ledger.sqlite3"
+    if ledger_path.is_symlink():
+        raise ValueError("request ledger must not be a symlink")
+    db = sqlite3.connect(str(ledger_path), timeout=15, factory=RequestConnection)
     try:
+        try:
+            os.chmod(str(ledger_path), 0o600)
+        except OSError:
+            pass
         db.row_factory = sqlite3.Row
         enable_wal(db)
         db.execute("PRAGMA synchronous=FULL")
@@ -817,6 +831,46 @@ def request_db(ctx):
                 id TEXT PRIMARY KEY, request_id TEXT NOT NULL, envelope TEXT NOT NULL, received_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS pull_staging (
                 id TEXT PRIMARY KEY, peer TEXT NOT NULL, envelope TEXT NOT NULL, expires TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS tasks (
+                task_id TEXT PRIMARY KEY, client_ref TEXT, resolution TEXT NOT NULL DEFAULT 'open',
+                attention TEXT NOT NULL DEFAULT 'none', new_result INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL, resolved_at TEXT, resolved_by TEXT,
+                generation INTEGER NOT NULL DEFAULT 0, current_authorization_id TEXT,
+                current_attempt_id TEXT, owner_kind TEXT, owner_id TEXT);
+            CREATE UNIQUE INDEX IF NOT EXISTS tasks_client_ref_idx ON tasks(client_ref)
+                WHERE client_ref IS NOT NULL;
+            CREATE TABLE IF NOT EXISTS task_requests (
+                task_id TEXT NOT NULL, direction TEXT NOT NULL, request_id TEXT NOT NULL,
+                client_ref TEXT, attempt_no INTEGER NOT NULL DEFAULT 1, fingerprint TEXT,
+                attempt_id TEXT,
+                PRIMARY KEY (direction, request_id));
+            CREATE INDEX IF NOT EXISTS task_requests_task_idx ON task_requests(task_id);
+            CREATE TABLE IF NOT EXISTS task_authorizations (
+                authorization_id TEXT PRIMARY KEY, task_id TEXT NOT NULL,
+                issuer_kind TEXT NOT NULL, issuer_ref TEXT NOT NULL,
+                scope_json TEXT NOT NULL, scope_digest TEXT NOT NULL,
+                target_agent TEXT, target_host TEXT, generation INTEGER NOT NULL,
+                status TEXT NOT NULL, issued_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL, revoked_at TEXT, revoked_by TEXT,
+                task_revision_digest TEXT, proposed_revision_digest TEXT,
+                source_ref TEXT, source_digest TEXT);
+            CREATE INDEX IF NOT EXISTS task_authorizations_task_idx ON task_authorizations(task_id);
+            CREATE TABLE IF NOT EXISTS task_attempts (
+                attempt_id TEXT PRIMARY KEY, task_id TEXT NOT NULL,
+                authorization_id TEXT, generation INTEGER NOT NULL,
+                request_id TEXT, direction TEXT, kind TEXT NOT NULL,
+                operation_key TEXT, operation_digest TEXT,
+                attempt_no INTEGER NOT NULL, state TEXT NOT NULL,
+                state_version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+                started_at TEXT, final_at TEXT, result_text TEXT,
+                target_agent TEXT, target_host TEXT,
+                UNIQUE(task_id, attempt_no));
+            CREATE INDEX IF NOT EXISTS task_attempts_task_idx ON task_attempts(task_id, attempt_no);
+            CREATE INDEX IF NOT EXISTS task_attempts_operation_idx ON task_attempts(task_id, operation_key);
+            CREATE TABLE IF NOT EXISTS task_authorization_events (
+                event_id TEXT PRIMARY KEY, authorization_id TEXT NOT NULL,
+                task_id TEXT NOT NULL, event TEXT NOT NULL, generation INTEGER NOT NULL,
+                at TEXT NOT NULL, actor TEXT NOT NULL, detail_json TEXT);
         """)
         migrate_request_ledger(db)
     except BaseException:
@@ -829,21 +883,129 @@ def table_columns(db, table):
     return {row[1] for row in db.execute("PRAGMA table_info(%s)" % table)}
 
 
+def _ensure_task_authorization_schema(db):
+    """Install the additive authorization/attempt ledger and migrate old task links.
+
+    This is intentionally local-only.  Existing request rows are historical evidence and are assigned
+    generation zero; migration never manufactures an authorization or makes an old request executable.
+    """
+    started = False
+    if not db.in_transaction:
+        db.execute("BEGIN IMMEDIATE")
+        started = True
+    try:
+        task_cols = table_columns(db, "tasks")
+        for column, definition in (
+                ("current_authorization_id", "TEXT"), ("current_attempt_id", "TEXT"),
+                ("owner_kind", "TEXT"), ("owner_id", "TEXT")):
+            if column not in task_cols:
+                db.execute("ALTER TABLE tasks ADD COLUMN %s %s" % (column, definition))
+        request_cols = table_columns(db, "task_requests")
+        if "attempt_id" not in request_cols:
+            db.execute("ALTER TABLE task_requests ADD COLUMN attempt_id TEXT")
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS task_authorizations (
+                authorization_id TEXT PRIMARY KEY, task_id TEXT NOT NULL,
+                issuer_kind TEXT NOT NULL, issuer_ref TEXT NOT NULL,
+                scope_json TEXT NOT NULL, scope_digest TEXT NOT NULL,
+                target_agent TEXT, target_host TEXT, generation INTEGER NOT NULL,
+                status TEXT NOT NULL, issued_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL, revoked_at TEXT, revoked_by TEXT,
+                task_revision_digest TEXT, proposed_revision_digest TEXT,
+                source_ref TEXT, source_digest TEXT);
+            CREATE INDEX IF NOT EXISTS task_authorizations_task_idx ON task_authorizations(task_id);
+            CREATE TABLE IF NOT EXISTS task_attempts (
+                attempt_id TEXT PRIMARY KEY, task_id TEXT NOT NULL,
+                authorization_id TEXT, generation INTEGER NOT NULL,
+                request_id TEXT, direction TEXT, kind TEXT NOT NULL,
+                operation_key TEXT, operation_digest TEXT,
+                attempt_no INTEGER NOT NULL, state TEXT NOT NULL,
+                state_version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+                started_at TEXT, final_at TEXT, result_text TEXT,
+                target_agent TEXT, target_host TEXT,
+                UNIQUE(task_id, attempt_no));
+            CREATE INDEX IF NOT EXISTS task_attempts_task_idx ON task_attempts(task_id, attempt_no);
+            CREATE INDEX IF NOT EXISTS task_attempts_operation_idx ON task_attempts(task_id, operation_key);
+            CREATE TABLE IF NOT EXISTS task_authorization_events (
+                event_id TEXT PRIMARY KEY, authorization_id TEXT NOT NULL,
+                task_id TEXT NOT NULL, event TEXT NOT NULL, generation INTEGER NOT NULL,
+                at TEXT NOT NULL, actor TEXT NOT NULL, detail_json TEXT);
+            CREATE UNIQUE INDEX IF NOT EXISTS task_requests_attempt_no_idx ON task_requests(task_id, attempt_no);
+        """)
+        # Every protocol request is an external attempt.  Keep the old request row immutable and only add a
+        # mapping to the new append-only attempt table.  Legacy tasks deliberately stay at generation zero.
+        links = db.execute("SELECT tr.*, r.state, r.deadline, r.envelope, t.generation FROM task_requests tr "
+                           "JOIN tasks t ON t.task_id=tr.task_id "
+                           "LEFT JOIN requests r ON r.direction=tr.direction AND r.id=tr.request_id "
+                           "WHERE tr.attempt_id IS NULL ORDER BY tr.rowid").fetchall()
+        for link in links:
+            seed = "%s:%s:%s" % (link["direction"], link["request_id"], link["task_id"])
+            attempt_id = "attempt-legacy-" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
+            stamp = (_stamp(link["deadline"]) if link["deadline"] else None) or iso(now_utc())
+            state = link["state"] if link["state"] in ATTEMPT_STATES else "pending"
+            db.execute("INSERT OR IGNORE INTO task_attempts(attempt_id,task_id,authorization_id,generation,"
+                       "request_id,direction,kind,attempt_no,state,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                       (attempt_id, link["task_id"], None, link["generation"], link["request_id"],
+                        link["direction"], "external", link["attempt_no"], state, stamp))
+            db.execute("UPDATE task_requests SET attempt_id=? WHERE task_id=? AND direction=? AND request_id=?",
+                       (attempt_id, link["task_id"], link["direction"], link["request_id"]))
+        # A current attempt is only a projection pointer.  Choose the most recent linked attempt for migrated rows.
+        for task in db.execute("SELECT task_id FROM tasks WHERE current_attempt_id IS NULL").fetchall():
+            latest = db.execute("SELECT attempt_id FROM task_attempts WHERE task_id=? ORDER BY attempt_no DESC LIMIT 1",
+                                (task["task_id"],)).fetchone()
+            if latest:
+                db.execute("UPDATE tasks SET current_attempt_id=? WHERE task_id=?",
+                           (latest["attempt_id"], task["task_id"]))
+        if started:
+            db.commit()
+    except BaseException:
+        if started:
+            db.rollback()
+        raise
+
+
 def migrate_request_ledger(db):
     """Add the lifecycle columns once (additive; older runtimes keep working on the same ledger).
 
     Serialized like every writer, so a receiver and a CLI opening an old ledger together add each column once.
     Backfill uses only evidence this receiver wrote itself: the stored receipt time, its own response envelopes
     (timestamps of `running` and final responses) and the exact final response. Anything else stays NULL."""
-    if set(LIFECYCLE_COLUMNS) <= table_columns(db, "requests"):
-        return
-    db.execute("BEGIN IMMEDIATE")
-    try:
+    # Task tables are deliberately separate from `requests`: old callers and recovery tools use positional
+    # inserts against old request schemas. Additive task tables preserve those ledgers while giving each attempt a
+    # durable task projection.
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            task_id TEXT PRIMARY KEY, client_ref TEXT, resolution TEXT NOT NULL DEFAULT 'open',
+            attention TEXT NOT NULL DEFAULT 'none', new_result INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL, resolved_at TEXT, resolved_by TEXT,
+            generation INTEGER NOT NULL DEFAULT 0);
+        CREATE UNIQUE INDEX IF NOT EXISTS tasks_client_ref_idx ON tasks(client_ref)
+            WHERE client_ref IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS task_requests (
+            task_id TEXT NOT NULL, direction TEXT NOT NULL, request_id TEXT NOT NULL,
+            client_ref TEXT, attempt_no INTEGER NOT NULL DEFAULT 1, fingerprint TEXT,
+            PRIMARY KEY (direction, request_id));
+        CREATE INDEX IF NOT EXISTS task_requests_task_idx ON task_requests(task_id);
+    """)
+    missing_lifecycle = [c for c in LIFECYCLE_COLUMNS if c not in table_columns(db, "requests")]
+    if missing_lifecycle:
+        db.execute("BEGIN IMMEDIATE")
+        # Re-read after acquiring the writer lock: another opener may have completed this additive migration while
+        # this connection was waiting, so never issue a duplicate ALTER TABLE.
         missing = [c for c in LIFECYCLE_COLUMNS if c not in table_columns(db, "requests")]
+    else:
+        missing = []
+    if not missing and not db.in_transaction:
+        backfill_tasks(db)
+        _ensure_task_authorization_schema(db)
+        return
+    try:
         for column in missing:
             db.execute("ALTER TABLE requests ADD COLUMN %s TEXT" % column)
         if missing:
             backfill_lifecycle(db)
+        backfill_tasks(db)
+        _ensure_task_authorization_schema(db)
         db.commit()
     except BaseException:
         db.rollback()
@@ -891,6 +1053,175 @@ def backfill_lifecycle(db):
                     final_at, final_id, row["id"]))
 
 
+def task_fingerprint(env):
+    """Stable local content identity for an optional client_ref (wire IDs and timestamps are attempt-specific)."""
+    value = json.loads(json.dumps(env))
+    value.pop("id", None)
+    value.pop("ts", None)
+    return hashlib.sha256(json_canonical(value).encode("utf-8")).hexdigest()
+
+
+def task_id_for_request(direction, request_id):
+    return "task-%s-%s" % ("i" if direction == "incoming" else "o", request_id)
+
+
+def task_state_for_request(state):
+    if state == "completed":
+        return "resolved", "none", 1
+    if state in ("failed", "rejected", "blocked", "timed_out"):
+        return "open", "needs_attention", 1
+    return "open", "none", 0
+
+
+def _attempt_id(prefix="attempt"):
+    return "%s-%s" % (prefix, secrets.token_hex(12))
+
+
+def _attempt_state(state):
+    return state if state in ATTEMPT_STATES else "pending"
+
+
+def _set_task_current_attempt(db, task_id, attempt_id, generation, authorization_id=None, state="pending"):
+    """Move the task projection to a newly created attempt while holding the writer transaction."""
+    resolution, attention, _ = task_state_for_request(state)
+    stamp = iso(now_utc())
+    db.execute("UPDATE tasks SET resolution=?, attention=?, new_result=0, updated_at=?, resolved_at=NULL, "
+               "resolved_by=NULL, current_attempt_id=?, current_authorization_id=?, generation=? WHERE task_id=?",
+               (resolution, attention, stamp, attempt_id, authorization_id, generation, task_id))
+
+
+def _generation_error(db, task_id, message):
+    """Record stale control input as attention without changing the task generation."""
+    stamp = iso(now_utc())
+    db.execute("UPDATE tasks SET resolution='open', attention='needs_attention', updated_at=? WHERE task_id=?",
+               (stamp, task_id))
+    # The public operation raises after recording the attention state.  Commit this small, isolated control event
+    # before the surrounding context manager observes the exception and rolls back its transaction.
+    db.commit()
+    raise ValueError(message)
+
+
+def task_create_or_link(db, direction, request_id, env, state, client_ref=None):
+    """Create/link one attempt to a task while the caller's request transaction is held."""
+    fingerprint = task_fingerprint(env)
+    task = None
+    if client_ref:
+        task = db.execute("SELECT * FROM tasks WHERE client_ref=?", (client_ref,)).fetchone()
+        if task:
+            prior = db.execute("SELECT fingerprint FROM task_requests WHERE task_id=? LIMIT 1", (task["task_id"],)).fetchone()
+            if prior and prior["fingerprint"] and prior["fingerprint"] != fingerprint:
+                raise ValueError("client_ref already belongs to a different task")
+    if task is None:
+        task_id = task_id_for_request(direction, request_id) if not client_ref else "task-" + secrets.token_hex(12)
+        stamp = iso(now_utc())
+        resolution, attention, result = task_state_for_request(state)
+        db.execute("INSERT INTO tasks(task_id,client_ref,resolution,attention,new_result,created_at,updated_at) "
+                   "VALUES(?,?,?,?,?,?,?)", (task_id, client_ref, resolution, attention, result, stamp, stamp))
+        task = db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+    attempt = db.execute("SELECT COALESCE(MAX(attempt_no),0)+1 FROM task_attempts WHERE task_id=?",
+                         (task["task_id"],)).fetchone()[0]
+    attempt_id = _attempt_id("attempt")
+    generation = int(task["generation"])
+    db.execute("INSERT INTO task_attempts(attempt_id,task_id,generation,request_id,direction,kind,attempt_no,state,created_at) "
+               "VALUES(?,?,?,?,?,?,?,?,?)", (attempt_id, task["task_id"], generation, request_id, direction,
+                                                "external", attempt, _attempt_state(state), iso(now_utc())))
+    db.execute("INSERT INTO task_requests(task_id,direction,request_id,client_ref,attempt_no,fingerprint,attempt_id) "
+               "VALUES(?,?,?,?,?,?,?)", (task["task_id"], direction, request_id, client_ref, attempt, fingerprint,
+                                           attempt_id))
+    _set_task_current_attempt(db, task["task_id"], attempt_id, generation, None, state)
+    return task["task_id"]
+
+
+def task_sync(db, direction, request_id, state, stamp=None):
+    """Project an immutable request transition onto its long-lived task without reviving the request."""
+    link = db.execute("SELECT task_id,attempt_id,attempt_no FROM task_requests WHERE direction=? AND request_id=?",
+                      (direction, request_id)).fetchone()
+    if not link:
+        return
+    attempt_id = link["attempt_id"]
+    if not attempt_id:
+        # Old ledgers can be read during a rolling upgrade; do not create an attempt from a read-only event.
+        return
+    resolution, attention, result = task_state_for_request(state)
+    stamp = stamp or iso(now_utc())
+    attempt = db.execute("SELECT * FROM task_attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
+    if not attempt:
+        return
+    # The request row remains immutable, while its attempt receives the durable lifecycle event.
+    final = state in REQUEST_FINAL or state == "timed_out"
+    if attempt["state"] not in REQUEST_FINAL and attempt["state"] != "timed_out":
+        db.execute("UPDATE task_attempts SET state=?, state_version=state_version+1, "
+                   "started_at=CASE WHEN ?='running' THEN COALESCE(started_at,?) ELSE started_at END, "
+                   "final_at=CASE WHEN ? THEN COALESCE(final_at,?) ELSE final_at END WHERE attempt_id=?",
+                   (_attempt_state(state), state, stamp, final, stamp, attempt_id))
+    current = db.execute("SELECT current_attempt_id,generation FROM tasks WHERE task_id=?", (link["task_id"],)).fetchone()
+    # A late response/expiry from an older attempt is historical only. It may update that attempt row but can
+    # never overwrite the current task projection or reopen a newer generation.
+    if not current or current["current_attempt_id"] != attempt_id or int(attempt["generation"]) != int(current["generation"]):
+        return
+    db.execute("UPDATE tasks SET resolution=?, attention=?, new_result=MAX(new_result,?), updated_at=?, "
+               "resolved_at=CASE WHEN ?='resolved' THEN COALESCE(resolved_at,?) ELSE NULL END, "
+               "resolved_by=CASE WHEN ?='resolved' THEN resolved_by ELSE NULL END WHERE task_id=?",
+               (resolution, attention, result, stamp, resolution, stamp, resolution, link["task_id"]))
+
+
+def backfill_tasks(db):
+    """Populate one stable task projection per pre-task request row; never changes request state."""
+    rows = db.execute("SELECT * FROM requests ORDER BY rowid").fetchall()
+    for row in rows:
+        if db.execute("SELECT 1 FROM task_requests WHERE direction=? AND request_id=?", (row["direction"], row["id"])).fetchone():
+            continue
+        try:
+            env = json.loads(row["envelope"])
+            client_ref = None
+            created = _stamp(json.loads(row["record"])["received"].get("at")) if row["record"] else None
+            created = created or _stamp(env.get("ts")) or iso(now_utc())
+        except (ValueError, KeyError, TypeError):
+            env, client_ref, created = {"id": row["id"], "ts": row["deadline"]}, None, iso(now_utc())
+        task_id = task_id_for_request(row["direction"], row["id"])
+        resolution, attention, result = task_state_for_request(row["state"])
+        db.execute("INSERT OR IGNORE INTO tasks(task_id,client_ref,resolution,attention,new_result,created_at,updated_at) "
+                   "VALUES(?,?,?,?,?,?,?)", (task_id, client_ref, resolution, attention, result, created, created))
+        db.execute("INSERT OR IGNORE INTO task_requests(task_id,direction,request_id,client_ref,attempt_no,fingerprint) "
+                   "VALUES(?,?,?,?,1,?)", (task_id, row["direction"], row["id"], client_ref, task_fingerprint(env)))
+
+
+def task_projection(db, direction, request_id, row=None):
+    """Read-only task fields for a request, with deterministic derived values for an old ledger."""
+    row = row or request_row(db, direction, request_id)
+    if not row:
+        return None
+    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tasks','task_requests','task_attempts')")}
+    if not {"tasks", "task_requests", "task_attempts"} <= tables:
+        resolution, attention, result = task_state_for_request(row["state"])
+        return {"task_id": task_id_for_request(direction, request_id), "client_ref": None,
+                "resolution": resolution, "attention": attention, "new_result": bool(result),
+                "generation": 0, "created_at": _stamp(row["deadline"]), "updated_at": _stamp(row["deadline"]),
+                "resolved_at": _stamp(row["deadline"]) if resolution == "resolved" else None, "resolved_by": None,
+                "attempt_no": 1}
+    joined = db.execute("SELECT t.*, tr.client_ref AS request_client_ref, tr.attempt_no, tr.attempt_id, "
+                        "ta.authorization_id, ta.generation AS attempt_generation, ta.state AS attempt_state "
+                        "FROM task_requests tr JOIN tasks t ON t.task_id=tr.task_id "
+                        "LEFT JOIN task_attempts ta ON ta.attempt_id=tr.attempt_id "
+                        "WHERE tr.direction=? AND tr.request_id=?",
+                        (direction, request_id)).fetchone()
+    if not joined:
+        resolution, attention, result = task_state_for_request(row["state"])
+        return {"task_id": task_id_for_request(direction, request_id), "client_ref": None,
+                "resolution": resolution, "attention": attention, "new_result": bool(result),
+                "generation": 0, "created_at": None, "updated_at": None, "resolved_at": None,
+                "resolved_by": None, "attempt_no": 1}
+    return {"task_id": joined["task_id"], "client_ref": joined["client_ref"] or joined["request_client_ref"],
+            "resolution": joined["resolution"], "attention": joined["attention"],
+            "new_result": bool(joined["new_result"]), "generation": joined["generation"],
+            "created_at": joined["created_at"], "updated_at": joined["updated_at"],
+            "resolved_at": joined["resolved_at"], "resolved_by": joined["resolved_by"],
+            "attempt_no": joined["attempt_no"], "attempt_id": joined["attempt_id"],
+            "authorization_id": joined["authorization_id"],
+            "attempt_generation": joined["attempt_generation"] if joined["attempt_generation"] is not None
+            else joined["generation"], "attempt_state": joined["attempt_state"]}
+
+
 def json_canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
 
@@ -904,7 +1235,7 @@ def request_snapshot(home, mid, direction="incoming"):
     db.row_factory = sqlite3.Row
     try:
         row = request_row(db, direction, mid)
-        return request_view(row) if row else None
+        return request_view(row, task_projection(db, direction, mid, row)) if row else None
     finally:
         db.close()
 
@@ -916,9 +1247,521 @@ def request_snapshots(home):
     db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
     db.row_factory = sqlite3.Row
     try:
-        return [request_view(row) for row in db.execute("SELECT * FROM requests ORDER BY rowid DESC").fetchall()]
+        rows = db.execute("SELECT * FROM requests ORDER BY rowid DESC").fetchall()
+        return [request_view(row, task_projection(db, row["direction"], row["id"], row)) for row in rows]
     finally:
         db.close()
+
+
+def task_view(db, task_id, rows, task=None):
+    """One long-lived task projection assembled from its linked immutable attempts."""
+    rows = list(rows)
+    if not rows and task is None:
+        return None
+    rows.sort(key=lambda item: item["rowid"] if "rowid" in item.keys() else 0, reverse=True)
+    latest = rows[0] if rows else None
+    if task is None:
+        has_tasks = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'").fetchone()
+        task = db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone() if has_tasks else None
+    if task:
+        client_ref = task["client_ref"]
+        resolution, attention, new_result = task["resolution"], task["attention"], bool(task["new_result"])
+        created_at, updated_at = task["created_at"], task["updated_at"]
+        resolved_at, resolved_by, generation = task["resolved_at"], task["resolved_by"], task["generation"]
+    else:
+        resolution, attention, new_result = task_state_for_request(latest["state"])
+        client_ref = None
+        created_at = updated_at = _stamp(latest["deadline"])
+        resolved_at = created_at if resolution == "resolved" else None
+        resolved_by, generation = None, 0
+    # `task_state_for_request` returns a tuple; normalize the derived result to the public boolean form.
+    if not task:
+        new_result = bool(new_result)
+    current_attempt = None
+    has_attempts = bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_attempts'").fetchone())
+    current_attempt_id = task["current_attempt_id"] if task and "current_attempt_id" in task.keys() else None
+    if has_attempts and current_attempt_id:
+        current_attempt = db.execute("SELECT * FROM task_attempts WHERE attempt_id=?", (current_attempt_id,)).fetchone()
+    if current_attempt and current_attempt["request_id"]:
+        linked = db.execute("SELECT * FROM requests WHERE direction=? AND id=?",
+                            (current_attempt["direction"], current_attempt["request_id"])).fetchone()
+        if linked:
+            latest = linked
+    elif current_attempt and current_attempt["kind"] == "internal":
+        # An internal retry has no protocol request. Keep the old request queryable, but do not present its
+        # blocked/final response as the current attempt's result.
+        latest = None
+    latest_view = request_view(latest, task_projection(db, latest["direction"], latest["id"], latest)) if latest else None
+    current_state = current_attempt["state"] if current_attempt else (latest_view["state"] if latest_view else "pending")
+    current_auth = current_attempt["authorization_id"] if current_attempt else (
+        task["current_authorization_id"] if task and "current_authorization_id" in task.keys() else None)
+    has_auth = bool(db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_authorizations'").fetchone())
+    auth_row = (db.execute("SELECT status,expires_at FROM task_authorizations WHERE authorization_id=?",
+                           (current_auth,)).fetchone() if has_auth and current_auth else None)
+    latest_request_id = current_attempt["request_id"] if current_attempt and current_attempt["request_id"] else (latest["id"] if latest else None)
+    latest_direction = current_attempt["direction"] if current_attempt and current_attempt["direction"] else (latest["direction"] if latest else None)
+    latest_peer = latest_view["peer"] if latest_view else (current_attempt["target_host"] if current_attempt else None)
+    latest_agent = latest_view["agent"] if latest_view else current_attempt["target_agent"] if current_attempt else None
+    latest_from_agent = latest_view["from_agent"] if latest_view else None
+    latest_deadline = latest_view["deadline"] if latest_view else None
+    return {"task_id": task_id, "client_ref": client_ref, "resolution": resolution, "attention": attention,
+            "new_result": new_result, "generation": generation, "created_at": created_at,
+            "updated_at": updated_at, "resolved_at": resolved_at, "resolved_by": resolved_by,
+            "attempt_count": (db.execute("SELECT COUNT(*) FROM task_attempts WHERE task_id=?", (task_id,)).fetchone()[0]
+                              if has_attempts else len(rows)),
+            "latest_request_id": latest_request_id, "latest_direction": latest_direction,
+            "direction": latest_direction, "latest_attempt_id": current_attempt["attempt_id"] if current_attempt else None,
+            "authorization_id": current_auth, "latest_state": current_state, "peer": latest_peer,
+            "agent": latest_agent, "from_agent": latest_from_agent, "deadline": latest_deadline,
+            "authorization_status": auth_row["status"] if auth_row else None,
+            "authorization_expires_at": auth_row["expires_at"] if auth_row else None,
+            "response": latest_view.get("response") if latest_view else None}
+
+
+def task_snapshots(home, open_only=False):
+    """Read-only task list. Existing pre-task ledgers are projected without migrating or writing them."""
+    path = Path(home) / "requests" / "ledger.sqlite3"
+    if not path.is_file():
+        return []
+    db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    db.row_factory = sqlite3.Row
+    try:
+        rows = db.execute("SELECT rowid,* FROM requests ORDER BY rowid DESC").fetchall()
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tasks','task_requests')")}
+        groups = {}
+        task_rows = {}
+        has_task_tables = {"tasks", "task_requests"} <= tables
+        if has_task_tables:
+            for task in db.execute("SELECT * FROM tasks ORDER BY updated_at DESC, rowid DESC").fetchall():
+                task_rows[task["task_id"]] = task
+            links = db.execute("SELECT task_id,direction,request_id FROM task_requests ORDER BY rowid DESC").fetchall()
+            by_key = {(row["direction"], row["id"]): row for row in rows}
+            for link in links:
+                row = by_key.get((link["direction"], link["request_id"]))
+                if row:
+                    groups.setdefault(link["task_id"], []).append(row)
+            for task_id in task_rows:
+                groups.setdefault(task_id, [])
+        else:
+            for row in rows:
+                groups.setdefault(task_id_for_request(row["direction"], row["id"]), []).append(row)
+        output = []
+        for task_id, attempts in groups.items():
+            item = task_view(db, task_id, attempts, task_rows.get(task_id))
+            if item and (not open_only or item["resolution"] == "open"):
+                output.append(item)
+        output.sort(key=lambda item: (item.get("updated_at") or "", item["task_id"]), reverse=True)
+        return output
+    finally:
+        db.close()
+
+
+def _check_task_id(task_id):
+    if not isinstance(task_id, str) or not re.fullmatch(r"task-[A-Za-z0-9_-]{8,80}", task_id):
+        raise ValueError("bad task id")
+
+
+def _trusted_issuer(issuer_kind, issuer_ref):
+    if issuer_kind not in AUTHORIZATION_ISSUER_KINDS:
+        raise ValueError("untrusted authorization issuer")
+    if issuer_ref is None:
+        issuer_ref = {"trusted_local_human": "local-user", "trusted_coordinator": "local-coordinator",
+                      "trusted_local_entry": "local-entry"}[issuer_kind]
+    if not isinstance(issuer_ref, str) or not issuer_ref or len(issuer_ref) > 160:
+        raise ValueError("bad authorization issuer")
+    # A caller may name a stable human record, but cannot turn an arbitrary agent/from_agent into an issuer.
+    allowed = (issuer_ref in ("local-user", "local-coordinator", "local-entry") or
+               issuer_ref.startswith("human:") or issuer_ref.startswith("coordinator:"))
+    if not allowed:
+        raise ValueError("untrusted authorization issuer")
+    return issuer_ref
+
+
+def _scope_value(scope):
+    if isinstance(scope, str):
+        try:
+            scope = json.loads(scope)
+        except (TypeError, ValueError):
+            raise ValueError("scope must be valid JSON")
+    if not isinstance(scope, dict) or not scope:
+        raise ValueError("scope must be a non-empty JSON object")
+    if "actions" in scope and (not isinstance(scope["actions"], list) or
+                               not scope["actions"] or any(not isinstance(x, str) or not x for x in scope["actions"])):
+        raise ValueError("scope actions must be a non-empty string list")
+    # Keep the record explicit: a scope with no action is still valid for a task-specific operation, but
+    # arbitrary opaque strings and non-JSON objects are never treated as authorization.
+    canonical = json_canonical(scope)
+    return scope, canonical, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _authorization_expiry(expires_seconds=None, expires_at=None, now=None):
+    now = now or now_utc()
+    issued = iso(now)
+    if expires_at is not None:
+        try:
+            expiry = parse_iso(expires_at)
+        except (TypeError, ValueError):
+            raise ValueError("bad authorization expiry")
+    else:
+        if expires_seconds is None:
+            expires_seconds = 3600
+        if type(expires_seconds) not in (int, float) or expires_seconds <= 0 or expires_seconds > 7 * 24 * 3600:
+            raise ValueError("authorization expiry must be 1..604800 seconds")
+        expiry = now + dt.timedelta(seconds=expires_seconds)
+    if expiry <= now:
+        raise ValueError("authorization expiry must be in the future")
+    if expiry - now > dt.timedelta(days=7):
+        raise ValueError("authorization expiry exceeds the local limit")
+    return issued, iso(expiry)
+
+
+def _authorization_view(row):
+    if not row:
+        return None
+    return {"authorization_id": row["authorization_id"], "task_id": row["task_id"],
+            "issuer_kind": row["issuer_kind"], "issuer_ref": row["issuer_ref"],
+            "scope": json.loads(row["scope_json"]), "scope_digest": row["scope_digest"],
+            "target_agent": row["target_agent"], "target_host": row["target_host"],
+            "generation": row["generation"], "status": row["status"],
+            "issued_at": row["issued_at"], "expires_at": row["expires_at"],
+            "revoked_at": row["revoked_at"], "revoked_by": row["revoked_by"],
+            "task_revision_digest": row["task_revision_digest"],
+            "proposed_revision_digest": row["proposed_revision_digest"]}
+
+
+def authorization_snapshot(home, authorization_id):
+    path = Path(home) / "requests" / "ledger.sqlite3"
+    if not path.is_file():
+        return None
+    db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    db.row_factory = sqlite3.Row
+    try:
+        row = db.execute("SELECT * FROM task_authorizations WHERE authorization_id=?", (authorization_id,)).fetchone()
+        view = _authorization_view(row)
+        if view and view["status"] == "active" and parse_iso(view["expires_at"]) <= now_utc():
+            view["status"] = "expired"
+        return view
+    finally:
+        db.close()
+
+
+def attempt_snapshot(home, attempt_id):
+    path = Path(home) / "requests" / "ledger.sqlite3"
+    if not path.is_file():
+        return None
+    db = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    db.row_factory = sqlite3.Row
+    try:
+        row = db.execute("SELECT * FROM task_attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        db.close()
+
+
+def authorize_task(ctx, task_id, scope, target_agent=None, target_host=None, expires_seconds=3600,
+                   expected_generation=None, issuer_kind="trusted_local_human", issuer_ref=None,
+                   expires_at=None, task_revision_digest=None, proposed_revision_digest=None,
+                   source_ref=None, source_digest=None, generation=None, issuer=None):
+    """Record a trusted local authorization and advance the task control generation atomically.
+
+    This function is deliberately separate from message receipt: no envelope field, from_agent or client_ref can
+    call it.  The caller must be the trusted local human/coordinator entry point.
+    """
+    _check_task_id(task_id)
+    if expected_generation is None and generation is not None:
+        expected_generation = generation
+    if issuer is not None and issuer_ref is None:
+        issuer_ref = issuer
+    issuer_ref = _trusted_issuer(issuer_kind, issuer_ref)
+    scope_obj, scope_json, scope_digest = _scope_value(scope)
+    issued_at, expiry = _authorization_expiry(expires_seconds, expires_at)
+    with request_db(ctx) as db:
+        db.execute("BEGIN IMMEDIATE")
+        task = db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+        if not task:
+            raise ValueError("no task with this ID")
+        current = int(task["generation"])
+        expected = current if expected_generation is None else expected_generation
+        if type(expected) is not int or expected != current:
+            _generation_error(db, task_id, "authorization generation mismatch")
+        generation = current + 1
+        authorization_id = _attempt_id("auth")
+        db.execute("INSERT INTO task_authorizations(authorization_id,task_id,issuer_kind,issuer_ref,scope_json,"
+                   "scope_digest,target_agent,target_host,generation,status,issued_at,expires_at,created_at,"
+                   "task_revision_digest,proposed_revision_digest,source_ref,source_digest) "
+                   "VALUES(?,?,?,?,?,?,?,?,?,'active',?,?,?,?,?,?,?)",
+                   (authorization_id, task_id, issuer_kind, issuer_ref, scope_json, scope_digest, target_agent,
+                    target_host, generation, issued_at, expiry, issued_at, task_revision_digest,
+                    proposed_revision_digest, source_ref, source_digest))
+        db.execute("UPDATE tasks SET generation=?, current_authorization_id=?, resolution='open', attention='none', "
+                   "updated_at=?, resolved_at=NULL, resolved_by=NULL WHERE task_id=? AND generation=?",
+                   (generation, authorization_id, issued_at, task_id, current))
+        if db.execute("SELECT changes()").fetchone()[0] != 1:
+            raise ValueError("authorization generation changed concurrently")
+        db.execute("INSERT INTO task_authorization_events(event_id,authorization_id,task_id,event,generation,at,actor,detail_json) "
+                   "VALUES(?,?,?,?,?,?,?,?)", (_attempt_id("event"), authorization_id, task_id, "issued", generation,
+                                                 issued_at, issuer_ref, json_canonical({"scope_digest": scope_digest})))
+        return _authorization_view(db.execute("SELECT * FROM task_authorizations WHERE authorization_id=?",
+                                              (authorization_id,)).fetchone())
+
+
+def revoke_task_authorization(ctx, authorization_id, expected_generation=None, revoked_by="local-user", generation=None):
+    if not isinstance(authorization_id, str) or not authorization_id.startswith("auth-"):
+        raise ValueError("bad authorization id")
+    if expected_generation is None and generation is not None:
+        expected_generation = generation
+    revoked_by = _trusted_issuer("trusted_local_human", revoked_by)
+    with request_db(ctx) as db:
+        db.execute("BEGIN IMMEDIATE")
+        auth = db.execute("SELECT * FROM task_authorizations WHERE authorization_id=?", (authorization_id,)).fetchone()
+        if not auth:
+            raise ValueError("no authorization with this ID")
+        task = db.execute("SELECT * FROM tasks WHERE task_id=?", (auth["task_id"],)).fetchone()
+        expected = task["generation"] if expected_generation is None else expected_generation
+        if type(expected) is not int or expected != int(task["generation"]):
+            _generation_error(db, auth["task_id"], "authorization generation mismatch")
+        if auth["status"] in ("revoked", "expired"):
+            return _authorization_view(auth)
+        stamp = iso(now_utc())
+        db.execute("UPDATE task_authorizations SET status='revoked', revoked_at=?, revoked_by=? "
+                   "WHERE authorization_id=? AND status IN ('active','consumed')", (stamp, revoked_by, authorization_id))
+        db.execute("UPDATE tasks SET generation=?, current_authorization_id=NULL, attention='needs_attention', updated_at=? WHERE task_id=? AND generation=?",
+                   (int(task["generation"]) + 1, stamp, task["task_id"], int(task["generation"])))
+        if db.execute("SELECT changes()").fetchone()[0] != 1:
+            raise ValueError("authorization generation changed concurrently")
+        db.execute("INSERT INTO task_authorization_events(event_id,authorization_id,task_id,event,generation,at,actor) "
+                   "VALUES(?,?,?,?,?,?,?)", (_attempt_id("event"), authorization_id, auth["task_id"], "revoked",
+                                               int(task["generation"]) + 1, stamp, revoked_by))
+        return _authorization_view(db.execute("SELECT * FROM task_authorizations WHERE authorization_id=?",
+                                              (authorization_id,)).fetchone())
+
+
+def create_task_attempt(ctx, task_id, authorization_id, expected_generation=None, operation_key=None,
+                        operation_digest=None, action=None, target_agent=None, target_host=None, generation=None):
+    """Create an internal attempt for an already authorized task, with generation and operation CAS checks."""
+    _check_task_id(task_id)
+    if expected_generation is None and generation is not None:
+        expected_generation = generation
+    if not isinstance(authorization_id, str) or not authorization_id.startswith("auth-"):
+        raise ValueError("bad authorization id")
+    if operation_key is not None and (not isinstance(operation_key, str) or not operation_key or len(operation_key) > 200):
+        raise ValueError("bad operation key")
+    with request_db(ctx) as db:
+        db.execute("BEGIN IMMEDIATE")
+        task = db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+        if not task:
+            raise ValueError("no task with this ID")
+        generation = int(task["generation"])
+        expected = generation if expected_generation is None else expected_generation
+        if type(expected) is not int or expected != generation:
+            _generation_error(db, task_id, "attempt generation mismatch")
+        auth = db.execute("SELECT * FROM task_authorizations WHERE authorization_id=? AND task_id=?",
+                          (authorization_id, task_id)).fetchone()
+        if not auth:
+            raise ValueError("authorization does not belong to this task")
+        if int(auth["generation"]) != generation:
+            _generation_error(db, task_id, "authorization generation mismatch")
+        if operation_key:
+            prior = db.execute("SELECT * FROM task_attempts WHERE task_id=? AND operation_key=? ORDER BY attempt_no DESC LIMIT 1",
+                               (task_id, operation_key)).fetchone()
+            if prior:
+                if prior["operation_digest"] != operation_digest:
+                    raise ValueError("operation key belongs to a different attempt")
+                return {"task_id": task_id, "attempt_id": prior["attempt_id"], "authorization_id": prior["authorization_id"],
+                        "generation": prior["generation"], "attempt_no": prior["attempt_no"], "state": prior["state"],
+                        "idempotent": True}
+        if auth["status"] != "active":
+            raise ValueError("authorization is not active")
+        if parse_iso(auth["expires_at"]) <= now_utc():
+            stamp = iso(now_utc())
+            db.execute("UPDATE task_authorizations SET status='expired' WHERE authorization_id=? AND status='active'",
+                       (authorization_id,))
+            db.execute("UPDATE tasks SET attention='needs_attention', updated_at=? WHERE task_id=?", (stamp, task_id))
+            db.commit()
+            raise ValueError("authorization expired")
+        if action is not None:
+            actions = auth and json.loads(auth["scope_json"]).get("actions")
+            if isinstance(actions, list) and action not in actions and "*" not in actions:
+                raise ValueError("authorization scope does not cover action")
+        if auth["target_agent"] and target_agent and auth["target_agent"] != target_agent:
+            raise ValueError("attempt target agent does not match authorization")
+        if auth["target_host"] and target_host and auth["target_host"] != target_host:
+            raise ValueError("attempt target host does not match authorization")
+        attempt_no = db.execute("SELECT COALESCE(MAX(attempt_no),0)+1 FROM task_attempts WHERE task_id=?",
+                                (task_id,)).fetchone()[0]
+        attempt_id = _attempt_id("attempt")
+        stamp = iso(now_utc())
+        db.execute("INSERT INTO task_attempts(attempt_id,task_id,authorization_id,generation,kind,operation_key,"
+                   "operation_digest,attempt_no,state,created_at,target_agent,target_host) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (attempt_id, task_id, authorization_id, generation, "internal", operation_key, operation_digest,
+                    attempt_no, "pending", stamp, target_agent or auth["target_agent"], target_host or auth["target_host"]))
+        db.execute("UPDATE task_authorizations SET status='consumed' WHERE authorization_id=? AND status='active'",
+                   (authorization_id,))
+        db.execute("INSERT INTO task_authorization_events(event_id,authorization_id,task_id,event,generation,at,actor,detail_json) "
+                   "VALUES(?,?,?,?,?,?,?,?)", (_attempt_id("event"), authorization_id, task_id, "consumed", generation,
+                                                 stamp, "local-owner", json_canonical({"attempt_id": attempt_id})))
+        _set_task_current_attempt(db, task_id, attempt_id, generation, authorization_id, "pending")
+        return {"task_id": task_id, "attempt_id": attempt_id, "authorization_id": authorization_id,
+                "generation": generation, "attempt_no": attempt_no, "state": "pending", "idempotent": False}
+
+
+def authorize_and_create_task_attempt(ctx, task_id, scope, target_agent=None, target_host=None,
+                                      expires_seconds=3600, expected_generation=None, operation_key=None,
+                                      operation_digest=None, action=None, generation=None):
+    """Atomically issue a trusted authorization and create its first internal attempt."""
+    _check_task_id(task_id)
+    if expected_generation is None and generation is not None:
+        expected_generation = generation
+    issuer_kind, issuer_ref = "trusted_local_human", _trusted_issuer("trusted_local_human", None)
+    _, scope_json, scope_digest = _scope_value(scope)
+    issued_at, expiry = _authorization_expiry(expires_seconds)
+    if operation_key is not None and (not isinstance(operation_key, str) or not operation_key):
+        raise ValueError("bad operation key")
+    if action is not None:
+        actions = json.loads(scope_json).get("actions")
+        if isinstance(actions, list) and action not in actions and "*" not in actions:
+            raise ValueError("authorization scope does not cover action")
+    with request_db(ctx) as db:
+        db.execute("BEGIN IMMEDIATE")
+        task = db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+        if not task:
+            raise ValueError("no task with this ID")
+        current = int(task["generation"])
+        expected = current if expected_generation is None else expected_generation
+        if type(expected) is not int or expected != current:
+            _generation_error(db, task_id, "authorization generation mismatch")
+        if operation_key:
+            prior = db.execute("SELECT * FROM task_attempts WHERE task_id=? AND operation_key=? ORDER BY attempt_no DESC LIMIT 1",
+                               (task_id, operation_key)).fetchone()
+            if prior:
+                if prior["operation_digest"] != operation_digest:
+                    raise ValueError("operation key belongs to a different attempt")
+                return {"task_id": task_id, "attempt_id": prior["attempt_id"],
+                        "authorization_id": prior["authorization_id"], "generation": prior["generation"],
+                        "attempt_no": prior["attempt_no"], "state": prior["state"], "idempotent": True}
+        generation = current + 1
+        authorization_id = _attempt_id("auth")
+        db.execute("INSERT INTO task_authorizations(authorization_id,task_id,issuer_kind,issuer_ref,scope_json,"
+                   "scope_digest,target_agent,target_host,generation,status,issued_at,expires_at,created_at) "
+                   "VALUES(?,?,?,?,?,?,?,?,?,'active',?,?,?)",
+                   (authorization_id, task_id, issuer_kind, issuer_ref, scope_json, scope_digest, target_agent,
+                    target_host, generation, issued_at, expiry, issued_at))
+        attempt_no = db.execute("SELECT COALESCE(MAX(attempt_no),0)+1 FROM task_attempts WHERE task_id=?",
+                                (task_id,)).fetchone()[0]
+        attempt_id = _attempt_id("attempt")
+        db.execute("INSERT INTO task_attempts(attempt_id,task_id,authorization_id,generation,kind,operation_key,"
+                   "operation_digest,attempt_no,state,created_at,target_agent,target_host) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (attempt_id, task_id, authorization_id, generation, "internal", operation_key, operation_digest,
+                    attempt_no, "pending", issued_at, target_agent, target_host))
+        db.execute("UPDATE task_authorizations SET status='consumed' WHERE authorization_id=?", (authorization_id,))
+        db.execute("INSERT INTO task_authorization_events(event_id,authorization_id,task_id,event,generation,at,actor,detail_json) "
+                   "VALUES(?,?,?,?,?,?,?,?)", (_attempt_id("event"), authorization_id, task_id, "consumed", generation,
+                                                 issued_at, "local-owner", json_canonical({"attempt_id": attempt_id})))
+        db.execute("UPDATE tasks SET generation=?, current_authorization_id=?, current_attempt_id=?, resolution='open', "
+                   "attention='none', new_result=0, updated_at=?, resolved_at=NULL, resolved_by=NULL "
+                   "WHERE task_id=? AND generation=?", (generation, authorization_id, attempt_id, issued_at, task_id, current))
+        if db.execute("SELECT changes()").fetchone()[0] != 1:
+            raise ValueError("authorization generation changed concurrently")
+        db.execute("INSERT INTO task_authorization_events(event_id,authorization_id,task_id,event,generation,at,actor,detail_json) "
+                   "VALUES(?,?,?,?,?,?,?,?)", (_attempt_id("event"), authorization_id, task_id, "issued_and_attempted",
+                                                 generation, issued_at, issuer_ref, json_canonical({"attempt_id": attempt_id})))
+        return {"task_id": task_id, "attempt_id": attempt_id, "authorization_id": authorization_id,
+                "generation": generation, "attempt_no": attempt_no, "state": "pending", "idempotent": False}
+
+
+def transition_task_attempt(ctx, attempt_id, state, text=None, expected_generation=None, generation=None):
+    if not isinstance(attempt_id, str) or not attempt_id.startswith("attempt-"):
+        raise ValueError("bad attempt id")
+    if expected_generation is None and generation is not None:
+        expected_generation = generation
+    if state not in ATTEMPT_STATES or state == "received":
+        raise ValueError("invalid attempt state")
+    with request_db(ctx) as db:
+        db.execute("BEGIN IMMEDIATE")
+        attempt = db.execute("SELECT * FROM task_attempts WHERE attempt_id=?", (attempt_id,)).fetchone()
+        if not attempt:
+            raise ValueError("no attempt with this ID")
+        task = db.execute("SELECT * FROM tasks WHERE task_id=?", (attempt["task_id"],)).fetchone()
+        generation = int(task["generation"])
+        expected = generation if expected_generation is None else expected_generation
+        if type(expected) is not int or expected != generation or int(attempt["generation"]) != generation:
+            _generation_error(db, attempt["task_id"], "attempt generation mismatch")
+        if attempt["state"] in REQUEST_FINAL or attempt["state"] == "timed_out":
+            if attempt["state"] == state and (text is None or text == attempt["result_text"]):
+                return dict(attempt)
+            raise ValueError("attempt already has a durable final result")
+        stamp = iso(now_utc())
+        db.execute("UPDATE task_attempts SET state=?, state_version=state_version+1, result_text=?, "
+                   "started_at=CASE WHEN ?='running' THEN COALESCE(started_at,?) ELSE started_at END, "
+                   "final_at=CASE WHEN ? THEN COALESCE(final_at,?) ELSE final_at END WHERE attempt_id=?",
+                   (state, text, state, stamp, state in REQUEST_FINAL or state == "timed_out", stamp, attempt_id))
+        resolution, attention, result = task_state_for_request(state)
+        db.execute("UPDATE tasks SET resolution=?, attention=?, new_result=MAX(new_result,?), updated_at=?, "
+                   "resolved_at=CASE WHEN ?='resolved' THEN COALESCE(resolved_at,?) ELSE NULL END, "
+                   "resolved_by=CASE WHEN ?='resolved' THEN resolved_by ELSE NULL END "
+                   "WHERE task_id=? AND current_attempt_id=? AND generation=?",
+                   (resolution, attention, result, stamp, resolution, stamp, resolution, task["task_id"],
+                    attempt_id, generation))
+        return {"task_id": attempt["task_id"], "attempt_id": attempt_id, "generation": generation,
+                "state": state, "result_text": text, "resolution": resolution, "attention": attention}
+
+
+# Names used by integrations that describe the same local-only operations.
+task_authorize = authorize_task
+task_create_attempt = create_task_attempt
+task_attempt_transition = transition_task_attempt
+task_authorize_and_attempt = authorize_and_create_task_attempt
+task_authorization_create = authorize_task
+task_authorization_revoke = revoke_task_authorization
+task_attempt_create = create_task_attempt
+
+
+def resolve_task(ctx, task_id, by=None, note=None, expected_generation=None):
+    _check_task_id(task_id)
+    with request_db(ctx) as db:
+        db.execute("BEGIN IMMEDIATE")
+        task = db.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+        if not task:
+            raise ValueError("no task with this ID")
+        if expected_generation is not None and (type(expected_generation) is not int or
+                                                 expected_generation != int(task["generation"])):
+            _generation_error(db, task_id, "task generation mismatch")
+        current_id = task["current_attempt_id"] if "current_attempt_id" in task.keys() else None
+        if current_id:
+            current = db.execute("SELECT state FROM task_attempts WHERE attempt_id=?", (current_id,)).fetchone()
+            if current and current["state"] in ("pending", "received", "running", "cancel_requested"):
+                raise ValueError("cannot resolve an active attempt")
+        stamp = iso(now_utc())
+        db.execute("UPDATE tasks SET resolution='resolved', attention='none', updated_at=?, resolved_at=?, resolved_by=? "
+                   "WHERE task_id=?", (stamp, stamp, by or "local-user", task_id))
+        item = {"task_id": task_id, "resolution": "resolved", "attention": "none", "resolved_at": stamp,
+                "resolved_by": by or "local-user"}
+        if note:
+            item["note"] = note[:500]
+        return item
+
+
+def task_backlog(db, now=None):
+    """Read-only task summary for health and bridge diagnostics; absence is explicit, never zero."""
+    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('tasks','task_requests')")}
+    if {"tasks", "task_requests"} <= tables:
+        row = db.execute("SELECT COUNT(*) AS total, SUM(resolution='open') AS open, "
+                         "SUM(resolution='open' AND attention='needs_attention') AS attention, "
+                         "SUM(resolution='resolved') AS resolved, SUM(new_result<>0) AS results FROM tasks").fetchone()
+        oldest = db.execute("SELECT MIN(updated_at) FROM tasks WHERE resolution='open' AND attention='needs_attention'").fetchone()[0]
+        return {"available": True, "total": row["total"], "open": row["open"] or 0,
+                "needs_attention": row["attention"] or 0, "resolved": row["resolved"] or 0,
+                "new_results": row["results"] or 0, "oldest_attention_at": oldest}
+    rows = db.execute("SELECT state FROM requests").fetchall()
+    open_count = attention = resolved = 0
+    for row in rows:
+        resolution, need, _ = task_state_for_request(row["state"])
+        open_count += resolution == "open"
+        attention += need == "needs_attention"
+        resolved += resolution == "resolved"
+    return {"available": True, "derived": True, "total": len(rows), "open": open_count,
+            "needs_attention": attention, "resolved": resolved, "new_results": resolved,
+            "oldest_attention_at": None}
 
 
 def request_record_response(home, mid, state, text):
@@ -962,18 +1805,21 @@ def queue_response(db, row, state, text, fetch=None, max_bytes=256 * 1024):
                (state, seq, packed, env["ts"] if state == "timed_out" else None,
                 env["ts"] if running else None, env["ts"] if running else None,
                 env["ts"] if final else None, env["id"] if final else None, row["id"]))
+    task_sync(db, "incoming", row["id"], state, env["ts"])
     if not is_pull_request(original):
         db.execute("INSERT INTO response_outbox(id,request_id,peer,port,envelope) VALUES(?,?,?,?,?)",
                    (env["id"], row["id"], row["peer"], row["port"], packed))
     return env
 
 
-def save_outgoing_request(ctx, env, peer, port):
+def save_outgoing_request(ctx, env, peer, port, client_ref=None):
     deadline = iso(parse_iso(env["ts"]) + dt.timedelta(seconds=env["request"]["timeout_seconds"]))
     with request_db(ctx) as db:
+        db.execute("BEGIN IMMEDIATE")
         db.execute("INSERT INTO requests(direction,id,peer,port,envelope,deadline,state,submission) "
                    "VALUES('outgoing',?,?,?,?,?,'pending','prepared')",
                    (env["id"], peer, port, json_canonical(env), deadline))
+        task_create_or_link(db, "outgoing", env["id"], env, "pending", client_ref)
         if is_pull_request(env):
             resolved, ip = ctx.resolve(peer)
             ident = fresh_whois(ctx, ip)
@@ -1000,6 +1846,7 @@ def accept_request(ctx, rec):
                    "VALUES('incoming',?,?,?,?,?,?,'pending',?)",
                    (env["id"], peer, env["request"]["reply_port"], packed, json_canonical(rec), deadline,
                     _stamp(rec["received"].get("at"))))
+        task_create_or_link(db, "incoming", env["id"], env, "pending")
         queue_response(db, request_row(db, "incoming", env["id"]), "received", "Request durably received; execution has not been confirmed.")
         if rec["received"].get("agent_status") == "unknown":
             queue_response(db, request_row(db, "incoming", env["id"]), "rejected", "The addressed agent does not exist on this receiver.")
@@ -1037,6 +1884,7 @@ def accept_response(ctx, env, peer):
             db.execute("UPDATE requests SET state=?,seq=?,latest=?,submission='accepted',"
                        "timed_out_at=COALESCE(timed_out_at,?) WHERE direction='outgoing' AND id=?",
                        (state, seq, packed, iso(now_utc()) if state == "timed_out" else None, row["id"]))
+            task_sync(db, "outgoing", row["id"], state, env["ts"])
     return True
 
 
@@ -1076,13 +1924,18 @@ def expire_requests(ctx):
                           (iso(now_utc()),)).fetchall()
         for row in rows:
             queue_response(db, row, "timed_out", "Response deadline exceeded. Execution outcome is unknown; do not automatically repeat the task.")
+        overdue_outgoing = db.execute("SELECT id FROM requests WHERE direction='outgoing' "
+                                      "AND state NOT IN ('completed','failed','rejected','blocked') AND deadline<=?",
+                                      (iso(now_utc()),)).fetchall()
         db.execute("UPDATE requests SET timed_out_at=COALESCE(timed_out_at,?) WHERE direction='outgoing' "
                    "AND state NOT IN ('completed','failed','rejected','blocked') AND deadline<=?",
                    (iso(now_utc()), iso(now_utc())))
+        for outgoing in overdue_outgoing:
+            task_sync(db, "outgoing", outgoing["id"], "timed_out")
     return {"expired": len(rows)}
 
 
-def request_view(row):
+def request_view(row, task=None):
     env = json.loads(row["envelope"])
     latest = json.loads(row["latest"]) if row["latest"] else None
     known = row["state"] in REQUEST_FINAL
@@ -1096,6 +1949,20 @@ def request_view(row):
             "late": bool(known and (row["timed_out_at"] or (latest and latest["ts"] > row["deadline"]))),
             "seq": row["seq"], "submission": row["submission"], "response": latest}
     view.update(lifecycle_fields(row))
+    if task:
+        view.update({"task_id": task["task_id"], "client_ref": task.get("client_ref"),
+                     "resolution": task["resolution"], "attention": task["attention"],
+                     "new_result": bool(task.get("new_result")), "task_generation": task.get("generation", 0),
+                     "attempt_no": task.get("attempt_no", 1), "attempt_id": task.get("attempt_id"),
+                     "authorization_id": task.get("authorization_id"),
+                     "attempt_generation": task.get("attempt_generation", task.get("generation", 0)),
+                     "attempt_state": task.get("attempt_state")})
+    else:
+        resolution, attention, result = task_state_for_request(row["state"])
+        view.update({"task_id": task_id_for_request(row["direction"], row["id"]), "client_ref": None,
+                     "resolution": resolution, "attention": attention, "new_result": bool(result),
+                     "task_generation": 0, "attempt_no": 1, "attempt_id": None,
+                     "authorization_id": None, "attempt_generation": 0, "attempt_state": row["state"]})
     return view
 
 
@@ -1220,6 +2087,10 @@ def request_metadata(home, ids, now=None):
                                   % (",".join(select), ",".join("?" * len(chunk))), chunk).fetchall():
                 try:
                     out[row["id"]] = lifecycle_metadata(row, now)
+                    task = task_projection(db, "incoming", row["id"])
+                    out[row["id"]].update({"task_id": task["task_id"], "resolution": task["resolution"],
+                                            "attention": task["attention"], "new_result": task["new_result"],
+                                            "client_ref": task.get("client_ref")})
                 except (TypeError, ValueError):
                     continue                     # malformed row: reported as unavailable by the caller
         finals = {}
@@ -1327,13 +2198,14 @@ def request_backlog(home, now=None):
                                       "AND submission='unknown' AND state NOT IN %s" % final),
             "overdue": one("SELECT COUNT(*) FROM requests WHERE direction='outgoing' AND state NOT IN %s "
                            "AND deadline<=?" % final, stamp)}
+        tasks = task_backlog(db, now)
         db.rollback()
     except sqlite3.Error as exc:
         return {"available": False, "reason": ledger_error(exc)}
     finally:
         db.close()
     return {"available": True, "checked_at": stamp, "incoming": incoming, "responses": responses,
-            "outgoing": outgoing}
+            "outgoing": outgoing, "tasks": tasks}
 
 
 def prepare_pull_request(ctx, env, ident):
@@ -3094,6 +3966,8 @@ def cmd_send(ctx, a, reply_to=None, peer=None, agent=None):
     host, port = split_peer(addr, int(ctx.cfg["port"]))
     to_fqdn, to_ip = ctx.resolve(host)
     tracked = a.kind == "request" and not getattr(a, "legacy_request", False)
+    if getattr(a, "client_ref", None) and not tracked:
+        die("--client-ref requires a tracked request")
     pull = getattr(a, "transport", "push") == "pull"
     if pull and not tracked:
         die("--transport pull requires a tracked request; it cannot be combined with --legacy-request")
@@ -3155,7 +4029,10 @@ def cmd_send(ctx, a, reply_to=None, peer=None, agent=None):
             if staged is not None:
                 request_db(ctx).close()      # exists before the save, so a failed save can be told from a commit
             saving = True
-            save_outgoing_request(ctx, env, to_fqdn, port)
+            client_ref = getattr(a, "client_ref", None) or "client-" + msg_id
+            if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", client_ref):
+                die("--client-ref must contain 8..128 letters, digits, '_' or '-'")
+            save_outgoing_request(ctx, env, to_fqdn, port, client_ref)
     except BaseException:
         discard_unsaved_pull_snapshots(ctx, msg_id, staged, saving)
         raise
@@ -3493,6 +4370,60 @@ def cmd_request(ctx, a):
         detail = {"stored": True, "transport": "pull"} if is_pull_request(rec["envelope"]) else {"queued": True}
         print(json.dumps(dict(detail, id=mid, response_id=result["id"], state=a.state)))
         return
+    if a.request_cmd == "resolve":
+        result = resolve_task(ctx, a.task_id, a.by, a.note, getattr(a, "generation", None))
+        print(json.dumps(result, ensure_ascii=True) if a.json else
+              "%s resolution=%s attention=%s" % (result["task_id"], result["resolution"], result["attention"]))
+        return
+    if a.request_cmd == "authorize":
+        try:
+            scope = json.loads(a.scope_json)
+        except (TypeError, ValueError):
+            die("--scope-json must be valid JSON")
+        result = authorize_task(ctx, a.task_id, scope, target_agent=a.target_agent, target_host=a.target_host,
+                                expires_seconds=a.expires_seconds, expected_generation=a.generation)
+        print(json.dumps(result, ensure_ascii=True) if a.json else
+              "%s task=%s generation=%s expires=%s" % (result["authorization_id"], result["task_id"],
+                                                        result["generation"], result["expires_at"]))
+        return
+    if a.request_cmd == "authorize-attempt":
+        try:
+            scope = json.loads(a.scope_json)
+        except (TypeError, ValueError):
+            die("--scope-json must be valid JSON")
+        result = authorize_and_create_task_attempt(
+            ctx, a.task_id, scope, target_agent=a.target_agent, target_host=a.target_host,
+            expires_seconds=a.expires_seconds, expected_generation=a.generation,
+            operation_key=a.operation_key or getattr(a, "client_ref", None),
+            operation_digest=a.operation_digest, action=a.action)
+        print(json.dumps(result, ensure_ascii=True) if a.json else
+              "%s task=%s generation=%s state=%s" % (result["attempt_id"], result["task_id"],
+                                                       result["generation"], result["state"]))
+        return
+    if a.request_cmd == "attempt":
+        result = create_task_attempt(ctx, a.task_id, a.authorization_id, expected_generation=a.generation,
+                                     operation_key=a.operation_key or getattr(a, "client_ref", None), operation_digest=a.operation_digest,
+                                     action=a.action, target_agent=a.target_agent, target_host=a.target_host)
+        print(json.dumps(result, ensure_ascii=True) if a.json else
+              "%s task=%s generation=%s state=%s%s" % (result["attempt_id"], result["task_id"],
+                                                       result["generation"], result["state"],
+                                                       " (idempotent)" if result.get("idempotent") else ""))
+        return
+    if a.request_cmd == "revoke":
+        result = revoke_task_authorization(ctx, a.authorization_id, getattr(a, "generation", None), a.by)
+        print(json.dumps(result, ensure_ascii=True) if a.json else
+              "%s task=%s status=%s generation=%s" % (result["authorization_id"], result["task_id"],
+                                                       result["status"], result["generation"]))
+        return
+    if a.request_cmd in ("task", "task-status"):
+        output = next((item for item in task_snapshots(ctx.home) if item["task_id"] == a.task_id), None)
+        if not output:
+            die("no task with this ID")
+        print(json.dumps(output, ensure_ascii=True, indent=2) if a.json else
+              "%s latest=%s state=%s resolution=%s attention=%s generation=%s attempts=%s" %
+              (output["task_id"], output["latest_request_id"], output["latest_state"], output["resolution"],
+               output["attention"], output["generation"], output["attempt_count"]))
+        return
     if a.request_cmd == "maintain":
         phases = request_maintenance(ctx)
         failed = sorted(name for name, outcome in phases.items() if outcome.startswith("failed"))
@@ -3502,7 +4433,7 @@ def cmd_request(ctx, a):
             sys.exit(1)
         return
     if a.request_cmd == "list":
-        output = request_snapshots(ctx.home)
+        output = task_snapshots(ctx.home, a.open) if a.open else request_snapshots(ctx.home)
     else:
         output = request_snapshot(ctx.home, a.id, a.direction)
         if not output:
@@ -3532,7 +4463,8 @@ def cmd_request(ctx, a):
                 raise RuntimeError("receiver returned no matching request response")
             accept_response(ctx, result, peer)
             with request_db(ctx) as db:
-                output = request_view(request_row(db, "outgoing", a.id))
+                row = request_row(db, "outgoing", a.id)
+                output = request_view(row, task_projection(db, "outgoing", a.id, row))
             output["refresh"] = "ok"
         except (RuntimeError, OSError, ValueError) as exc:
             output["refresh"] = "unavailable"
@@ -3541,9 +4473,15 @@ def cmd_request(ctx, a):
         print(json.dumps(output, ensure_ascii=True, indent=2))
     else:
         for item in output if isinstance(output, list) else [output]:
-            print("%s %s %s state=%s deadline=%s outcome=%s%s" %
+            if a.request_cmd == "list" and a.open:
+                print("%s latest=%s state=%s resolution=%s attention=%s peer=%s attempts=%s" %
+                      (item["task_id"], item["latest_request_id"], item["latest_state"], item["resolution"],
+                       item["attention"], item["peer"], item["attempt_count"]))
+                continue
+            print("%s %s %s state=%s deadline=%s outcome=%s task=%s resolution=%s attention=%s%s" %
                   (item["id"], item["direction"], item["peer"], item["state"], item["deadline"],
-                   "known" if item["outcome_known"] else "unknown", " (late result)" if item["late"] else ""))
+                   "known" if item["outcome_known"] else "unknown", item.get("task_id"),
+                   item.get("resolution"), item.get("attention"), " (late result)" if item["late"] else ""))
             if item.get("response"):
                 print(item["response"]["text"])
             if item.get("refresh_error"):
@@ -3602,6 +4540,7 @@ def main():
         if name == "send":
             p.add_argument("--reply-to")
             p.add_argument("--timeout-seconds", type=int, default=900)
+            p.add_argument("--client-ref", help="local stable reference for the long-lived task")
             p.add_argument("--legacy-request", action="store_true", help="opt out of request lifecycle for an old peer")
             p.add_argument("--transport", choices=("push", "pull"), default="push")
     pr = sp.add_parser("request", help="tracked requests, receipts, results and timeout status")
@@ -3610,6 +4549,7 @@ def main():
     rq.add_argument("peer")
     rq.add_argument("text")
     rq.add_argument("--timeout-seconds", type=int, default=900)
+    rq.add_argument("--client-ref", help="local stable reference for the long-lived task")
     rq.add_argument("--legacy-request", action="store_true")
     rq.add_argument("--transport", choices=("push", "pull"), default="push",
                     help="pull sends files and polls results without any reverse connections")
@@ -3624,7 +4564,57 @@ def main():
     rq.add_argument("--direction", choices=("incoming", "outgoing"), default="outgoing")
     rq.add_argument("--refresh", action="store_true")
     rq.add_argument("--json", action="store_true")
-    rs.add_parser("list").add_argument("--json", action="store_true")
+    rq = rs.add_parser("list")
+    rq.add_argument("--open", action="store_true", help="only unresolved long-lived tasks")
+    rq.add_argument("--json", action="store_true")
+    rq = rs.add_parser("resolve", help="explicitly close a long-lived task without changing its request attempt")
+    rq.add_argument("task_id")
+    rq.add_argument("--by", default="local-user", help="trusted local disposition owner")
+    rq.add_argument("--note")
+    rq.add_argument("--generation", type=int, help="expected task control generation")
+    rq.add_argument("--json", action="store_true")
+    rq = rs.add_parser("authorize", help="record a trusted local authorization for a task")
+    rq.add_argument("task_id")
+    rq.add_argument("--scope-json", required=True)
+    rq.add_argument("--target-agent")
+    rq.add_argument("--target-host")
+    rq.add_argument("--expires-seconds", type=int, default=3600)
+    rq.add_argument("--generation", type=int)
+    rq.add_argument("--json", action="store_true")
+    rq = rs.add_parser("attempt", help="create a new internal attempt under an authorized task")
+    rq.add_argument("task_id")
+    rq.add_argument("--authorization", dest="authorization_id", required=True)
+    rq.add_argument("--generation", type=int)
+    rq.add_argument("--operation-key")
+    rq.add_argument("--client-ref", help="stable idempotency key for this internal operation")
+    rq.add_argument("--operation-digest")
+    rq.add_argument("--action")
+    rq.add_argument("--target-agent")
+    rq.add_argument("--target-host")
+    rq.add_argument("--json", action="store_true")
+    rq = rs.add_parser("authorize-attempt", help="atomically authorize a task and create its first attempt")
+    rq.add_argument("task_id")
+    rq.add_argument("--scope-json", required=True)
+    rq.add_argument("--target-agent")
+    rq.add_argument("--target-host")
+    rq.add_argument("--expires-seconds", type=int, default=3600)
+    rq.add_argument("--generation", type=int)
+    rq.add_argument("--operation-key")
+    rq.add_argument("--client-ref")
+    rq.add_argument("--operation-digest")
+    rq.add_argument("--action")
+    rq.add_argument("--json", action="store_true")
+    rq = rs.add_parser("revoke", help="revoke a trusted local task authorization")
+    rq.add_argument("authorization_id")
+    rq.add_argument("--generation", type=int)
+    rq.add_argument("--by", default="local-user")
+    rq.add_argument("--json", action="store_true")
+    rq = rs.add_parser("task", help="show a long-lived task projection")
+    rq.add_argument("task_id")
+    rq.add_argument("--json", action="store_true")
+    rq = rs.add_parser("task-status", help="alias for task")
+    rq.add_argument("task_id")
+    rq.add_argument("--json", action="store_true")
     rq = rs.add_parser("respond")
     rq.add_argument("id")
     rq.add_argument("text")
@@ -3647,7 +4637,7 @@ def main():
     if a.cmd == "reply":
         a.reply_to = None
     try:
-        if a.cmd == "request" and a.request_cmd in ("status", "list") and not getattr(a, "refresh", False):
+        if a.cmd == "request" and a.request_cmd in ("status", "list", "task", "task-status") and not getattr(a, "refresh", False):
             ctx = object.__new__(Ctx)
             ctx.home = Path(a.home).expanduser()
         else:

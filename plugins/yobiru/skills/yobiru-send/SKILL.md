@@ -60,9 +60,11 @@ do not silently redirect them through a similar name.
 
     sh Y send dev-server/codex "Nightly build failed on main; log attached" --kind notice --file ./build.log --wake now
     sh Y request send dev-server/codex "Investigate the build and report the result." --timeout-seconds 900 --wake now
+    sh Y request send dev-server/codex "Investigate the build and report the result." --client-ref build-20261029
     sh Y request send shared-server/codex "Read input.txt and return a result file." --transport pull --file ./input.txt
     sh Y request status REQUEST_ID --refresh --json
     sh Y request list
+    sh Y request list --open --json
     sh Y send bot-box "{\"type\":\"status\",\"job\":\"backup\",\"ok\":true}" --kind status
     sh Y reply MESSAGE_ID "Done. Summary attached." --file ./summary.md
 
@@ -125,7 +127,9 @@ business-reply permission. Receipt/response delivery uses a durable retry outbox
 there is no guarantee that an offline agent executes or that a task executes exactly once.
 
 Use `request status ID --json` for locally saved state and `--refresh` to reconcile with the original
-receiver. `request list` lists saved requests. After the deadline, an unanswered request is
+receiver. `request list` lists saved request attempts. `request list --open` lists unresolved long-lived
+tasks, including blocked or failed work after the inbox message is acknowledged; use `request resolve TASK_ID`
+only after the trusted owner has made the disposition. After the deadline, an unanswered request is
 `timed_out`: the execution outcome is unknown, not cancelled or necessarily failed. A late final
 response may update it and is marked late. Before retrying work, reconcile the same request and its
 actual effects; another `request send` creates a different ID and can duplicate work.

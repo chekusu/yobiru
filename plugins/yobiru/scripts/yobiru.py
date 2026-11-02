@@ -110,8 +110,14 @@ see docs/PUBLIC_BOTS.md):
                              private owner-approved text exports, released per caller through the gateway
 
 Messaging (passed unchanged to the bundled tailmsg.py):
-  request send PEER[/AGENT] TEXT [--transport push|pull] [--file F] [--timeout-seconds 900]
-  request status ID [--refresh] [--json]     request list [--json]
+  request send PEER[/AGENT] TEXT [--transport push|pull] [--file F] [--timeout-seconds 900] [--client-ref REF]
+  request status ID [--refresh] [--json]     request list [--open] [--json]
+  request resolve TASK_ID [--by OWNER] [--json]
+  request authorize TASK_ID --scope-json JSON [--generation N] [--expires-seconds N] [--json]
+  request attempt TASK_ID --authorization AUTH_ID --generation N [--operation-key KEY] [--json]
+  request authorize-attempt TASK_ID --scope-json JSON --generation N [--operation-key KEY] [--json]
+  request revoke AUTH_ID [--generation N] [--json]
+  request task TASK_ID [--json]
   request resume ID                     retry the same pull request upload and submission
   request respond ID TEXT --state running|completed|failed|rejected|blocked
   send PEER[/AGENT] TEXT [--file F]... [--wake now|batch|none] [--agent A] [--kind K]
@@ -743,6 +749,7 @@ def backlog_check(f, add):
                 "no application data was changed; check permissions of %s" % (Path(f["home"]) / "requests"))
         return
     inc, resp, out = b["incoming"], b["responses"], b["outgoing"]
+    tasks = b.get("tasks") or {}
     parts, status, fixes = [], "ok", []
     if inc["unstarted"] or inc["running"] or inc["timed_out"]:
         parts.append("incoming: %d without a start report, %d running, %d timed out (outcome unknown)"
@@ -773,6 +780,10 @@ def backlog_check(f, add):
         parts.append("outgoing: %d awaiting a result (%d with an unknown submission, %d past the deadline)"
                      % (out["awaiting_result"], out["submission_unknown"], out["overdue"]))
         status = "info" if status == "ok" else status
+    if tasks.get("needs_attention"):
+        parts.append("tasks: %d unresolved item(s) need attention" % tasks["needs_attention"])
+        status = "warn"
+        fixes.append("run `request list --open --json`, then resolve only after the trusted owner has made a disposition")
     add(status, "requests", "; ".join(parts) or "no pending request work", "; ".join(fixes) or None)
 
 

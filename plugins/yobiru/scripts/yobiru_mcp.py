@@ -52,6 +52,8 @@ ADDRESS = {"type": "string", "minLength": 1, "maxLength": 300, "pattern": r"^[A-
                           "yobiru_agents lists the machines and agents."}
 MSG_ID = {"type": "string", "pattern": r"^[A-Za-z0-9_][A-Za-z0-9_-]{0,63}$",
           "description": "A message id from yobiru_inbox (a unique prefix works too)."}
+CLIENT_REF = {"type": "string", "pattern": r"^[A-Za-z0-9_-]{8,128}$",
+              "description": "An optional local reference that groups retries or related attempts into one task."}
 AGENT = {"type": "string", "pattern": AGENT_PATTERN, "description": "An agent name, such as claude."}
 TEXT = {"type": "string", "minLength": 1, "maxLength": 200000}
 FILES = {"type": "array", "minItems": 1, "maxItems": 20,
@@ -113,6 +115,7 @@ TOOLS = [
                          "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 604800,
                                              "description": "Tracked requests only: deadline for the final result "
                                                             "(default 900)."},
+                         "client_ref": CLIENT_REF,
                          "transport": {"type": "string", "enum": ["push", "pull"],
                                        "description": "Tracked requests only: pull uploads files and polls for the "
                                                       "result with no connection back to this machine."},
@@ -142,9 +145,11 @@ TOOLS = [
     {"name": "yobiru_request_status", "title": "Status of a tracked request",
      "description": "A tracked request's receipt, state, deadline and final result. direction outgoing (default) is "
                     "one you sent; refresh=true asks the receiver again. Without id: the most recent tracked "
-                    "requests sent by or addressed to this server's agent (all_agents=true for every agent).",
+                    "requests sent by or addressed to this server's agent (all_agents=true for every agent). "
+                    "open=true lists unresolved long-lived tasks, including requests whose transport was acked or archived.",
      "inputSchema": obj({"id": MSG_ID, "direction": {"type": "string", "enum": ["outgoing", "incoming"]},
-                         "refresh": {"type": "boolean"}, "all_agents": {"type": "boolean"},
+                         "refresh": {"type": "boolean"}, "open": {"type": "boolean"},
+                         "all_agents": {"type": "boolean"},
                          "limit": {"type": "integer", "minimum": 1, "maximum": 200,
                                    "description": "Without id: at most this many, newest first (default 20)."}}),
      "annotations": ann(read_only=True, idempotent=True, open_world=True)},
@@ -224,9 +229,13 @@ def command(name, args, agent):
         track = args.get("track", False)
         if not track and ("timeout_seconds" in args or "transport" in args):
             raise ValueError("timeout_seconds and transport are for tracked requests (track=true)")
+        if not track and "client_ref" in args:
+            raise ValueError("client_ref is for tracked requests (track=true)")
         if track and "kind" in args:
             raise ValueError("kind is for untracked messages; a tracked request always has kind request")
         opts = files + wake + (["--agent", args["agent"]] if "agent" in args else [])
+        if "client_ref" in args:
+            opts += ["--client-ref", args["client_ref"]]
         sender = args.get("as_agent", agent)
         opts += ["--as", sender] if sender else []
         if track:
@@ -246,9 +255,11 @@ def command(name, args, agent):
         if "id" not in args:
             if "direction" in args or "refresh" in args:
                 raise ValueError("direction and refresh need an id")
-            return ["request", "list", "--json"], "json"
+            return ["request", "list"] + (["--open"] if args.get("open") else []) + ["--json"], "json"
         if "limit" in args or "all_agents" in args:
             raise ValueError("limit and all_agents are for listing requests (without id)")
+        if args.get("open"):
+            raise ValueError("open is for listing tasks (without id)")
         return (["request", "status", "--json", "--direction", args.get("direction", "outgoing")] +
                 (["--refresh"] if args.get("refresh") else []) + ["--", args["id"]]), "json"
     if name == "yobiru_fetch_files":
