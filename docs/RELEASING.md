@@ -220,6 +220,20 @@ none is touched by a deploy.
   -o /srv/yobiru-gateway/restore-test.sqlite3 /srv/yobiru-gateway/gw/gateway.sqlite3`, then check the copy with
   `PRAGMA integrity_check` and delete it. To undo: `systemctl disable --now yobiru-litestream`, remove the key from
   `gateway.json` and restart the gateway.
+- Operations report: `deploy/yobiru-gateway-report.py` takes a snapshot every two minutes for the twice-daily
+  report: counts from a read-only database connection (owners, bots, caller identities, totals 12 h, 1, 7 and 30 days
+  ago, new ones per day, active bots, mail and message backlog), connections held on the gateway port (the online
+  connectors), the gateway's memory and CPU, its units and backup timers, loopback probes of `/v1/health` and one
+  public card, request and error counts from the journal since the previous run, and nginx status counts. It keeps
+  8 days of samples in `/var/lib/yobiru-gateway-report` and uploads `latest.json` (plus one copy per day under
+  `daily/`) to the blob store's bucket under `ops/gateway-report/`, with the blob store's key. Only numbers, sizes,
+  timings and log lines with addresses and long tokens masked leave the server. As root:
+  `install -o root -g root -m 0755 deploy/yobiru-gateway-report.py /usr/local/sbin/yobiru-gateway-report`, copy
+  `deploy/yobiru-gateway-report.service` and `.timer` to `/etc/systemd/system/`, then `systemctl daemon-reload &&
+  systemctl enable --now yobiru-gateway-report.timer`. Check a run with `systemctl status yobiru-gateway-report` or
+  print a snapshot without writing anything: `runuser -u yobiru-gw -G adm -G systemd-journal --
+  /usr/local/sbin/yobiru-gateway-report --print`. To undo: `systemctl disable --now yobiru-gateway-report.timer`,
+  remove the three files and `/var/lib/yobiru-gateway-report`.
 
 ### Prereleases
 
