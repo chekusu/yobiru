@@ -39,6 +39,15 @@ class LitestreamServiceTests(unittest.TestCase):
 
 
 
+class CapacityDropInTests(unittest.TestCase):
+    def test_gateway_caps_glibc_malloc_arenas(self):
+        # A thread per request with glibc's default of 8 arenas per core grew each request process without bound.
+        unit = configparser.ConfigParser(interpolation=None, strict=False)
+        unit.read_string((REPO / "deploy/yobiru-gateway-capacity.conf").read_text())
+        self.assertEqual(unit["Service"]["Environment"], "MALLOC_ARENA_MAX=2")
+        self.assertEqual(unit["Service"]["MemoryHigh"], "8G")
+
+
 class GatewayReportTests(unittest.TestCase):
     """deploy/yobiru-gateway-report.py: aggregate counts only, nothing written to the database."""
 

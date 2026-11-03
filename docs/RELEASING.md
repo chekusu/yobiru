@@ -185,9 +185,10 @@ its setup, so that a change to it is reviewed like code. Each needs root on the 
 none is touched by a deploy.
 
 - `deploy/yobiru-gateway-capacity.conf`: a systemd drop-in for `yobiru-gateway.service` (CPU weight, threads, open
-  files, memory ceiling). Install it as `/etc/systemd/system/yobiru-gateway.service.d/capacity.conf`,
+  files, memory ceiling, `MALLOC_ARENA_MAX=2`). Install it as `/etc/systemd/system/yobiru-gateway.service.d/capacity.conf`,
   `systemctl daemon-reload`; it applies at the next restart. `systemctl show yobiru-gateway -p
-  CPUWeight,TasksMax,LimitNOFILE,MemoryHigh,MemoryMax` shows the values in force.
+  CPUWeight,TasksMax,LimitNOFILE,MemoryHigh,MemoryMax,Environment` shows the values in force. Without the arena cap
+  each request process grew by hundreds of MB a day (a thread per request, glibc's 8 arenas per core).
 - nginx: every held connector poll keeps two connections (Cloudflare to nginx, nginx to the gateway). In
   `/etc/nginx/nginx.conf`, `worker_rlimit_nofile 32768;` at the top level and `worker_connections 8192;` in
   `events` (the Ubuntu default is 768 per worker). In the `bots.yobiru.com` site, its own access log without the
