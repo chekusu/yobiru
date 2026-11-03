@@ -1,0 +1,33 @@
+# Operations snapshot of the official gateway for the twice-daily report (deploy/yobiru-gateway-report.py). Install as
+# /etc/systemd/system/yobiru-gateway-report.service with deploy/yobiru-gateway-report.timer, then
+# `systemctl daemon-reload && systemctl enable --now yobiru-gateway-report.timer`. It runs as the gateway's user, which
+# owns the database (read through a read-only connection) and the blob store's key (used to upload the snapshot to
+# ops/gateway-report/ in the same bucket), plus read access to the journal (systemd-journal) and the nginx logs (adm).
+[Unit]
+Description=Operations snapshot of the yobiru gateway
+After=yobiru-gateway.service
+
+[Service]
+Type=oneshot
+User=yobiru-gw
+Group=yobiru-gw
+SupplementaryGroups=adm systemd-journal
+StateDirectory=yobiru-gateway-report
+StateDirectoryMode=0700
+ExecStart=/usr/local/sbin/yobiru-gateway-report
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+# SQLite needs the -shm file next to the database writable for a normal read-only connection in WAL mode; the
+# connection itself is opened with mode=ro and query_only.
+ReadWritePaths=/srv/yobiru-gateway/gw
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=50%
+MemoryMax=256M
+TimeoutStartSec=100

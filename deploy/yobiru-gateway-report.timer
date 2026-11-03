@@ -1,0 +1,10 @@
+# Every two minutes: one sample of held connections, memory, CPU, probes and the logs since the previous run.
+[Unit]
+Description=Operations snapshot of the yobiru gateway every two minutes
+
+[Timer]
+OnCalendar=*:0/2
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
