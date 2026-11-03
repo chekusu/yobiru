@@ -865,6 +865,16 @@ def cmd_enroll_bot(st, a):
         except ValueError as e:
             die(str(e))
 
+    a.attestation = a.join_attestation = None
+    if a.chekusu:
+        if a.email is not None or a.email_code is not None or a.attestation_file is not None or a.prepare:
+            die("--chekusu replaces --email, --email-code, --attestation-file and --prepare")
+        proven = chekusu_attestations(st, base, a)
+        if proven is None:
+            return
+        a.attestation, a.join_attestation = proven
+        if a.join:
+            a.attestation = a.join_attestation
     if a.email is not None:
         return request_email_code(st, base, a.email, a.lang)
     if a.join:
@@ -897,7 +907,9 @@ def cmd_enroll_bot(st, a):
         body["description"] = pending["description"]
     if pending.get("e2e") and gateway_e2e(base):
         body["e2e_key"] = pending["e2e"]["public"]
-    if a.attestation_file is not None:
+    if a.attestation is not None:
+        body["email_attestation"] = a.attestation
+    elif a.attestation_file is not None:
         try:
             body["email_attestation"] = C.read_json_file(a.attestation_file, 4096, what="attestation file")
         except ValueError as e:
@@ -924,9 +936,12 @@ def cmd_enroll_bot(st, a):
                                "the owner for the 6-digit code from that email, then run it with --email-code CODE")
         elif obj.get("error") == "email_code_invalid":
             refused["attempts_left"] = obj.get("attempts_left")
-        elif obj.get("error") == "email_in_use" and obj.get("join") and a.email_code is not None:
-            # The address already owns a bot here: the same code (a refused enrollment never spends it) adds a new
-            # bot to that owner, with a credential for that bot only. The owner credential stays where it is.
+        elif obj.get("error") == "email_in_use" and obj.get("join") and \
+                (a.email_code is not None or a.join_attestation is not None):
+            # The address already owns a bot here: the same code (a refused enrollment never spends it), or the
+            # Chekusu attestation signed for the join credential, adds a new bot to that owner, with a credential
+            # for that bot only. The owner credential stays where it is.
+            a.attestation = a.join_attestation
             return enroll_join(st, base, a)
         out(refused)
         sys.exit(2)
@@ -945,6 +960,9 @@ def cmd_enroll_bot(st, a):
                 keys.append(pending["e2e"])
         entry.pop("pending_bot", None)
         entry.pop("email_challenge", None)
+        entry.pop("chekusu_request", None)
+        if a.chekusu:
+            entry.pop("pending_join", None)       # prepared in case the address already owned bots here
     st.update("credentials.json", done)
     out({"ok": True, "gateway": base, "bot_id": obj["bot_id"], "handle": obj["handle"], "address": obj["address"],
          "state": obj["state"], "can_publish": obj.get("can_publish"), "duplicate": obj.get("duplicate"),
@@ -988,7 +1006,9 @@ def enroll_join(st, base, a):
         body["lang"] = a.lang
     if pending.get("e2e") and gateway_e2e(base):
         body["e2e_key"] = pending["e2e"]["public"]
-    if a.attestation_file is not None:
+    if a.attestation is not None:
+        body["email_attestation"] = a.attestation
+    elif a.attestation_file is not None:
         try:
             body["email_attestation"] = C.read_json_file(a.attestation_file, 4096, what="attestation file")
         except ValueError as e:
@@ -999,7 +1019,7 @@ def enroll_join(st, base, a):
             die("no email code was requested for %s from this data home: run enroll-bot with --email first" % base)
         body["email_challenge"] = {"id": challenge["id"], "code": a.email_code.strip()}
     else:
-        die("enroll-bot --join needs --email-code CODE (after --email ADDRESS) or --attestation-file FILE")
+        die("enroll-bot --join needs --chekusu, --email-code CODE (after --email ADDRESS) or --attestation-file FILE")
     try:
         status, obj = C.api_call(base, "POST", "/v1/enroll/join", body, pending["manager_token"])
     except C.ApiError as e:
@@ -1031,6 +1051,7 @@ def enroll_join(st, base, a):
                 keys.append(pending["e2e"])
         entry.pop("pending_join", None)
         entry.pop("email_challenge", None)
+        entry.pop("chekusu_request", None)
     st.update("credentials.json", done)
     out({"ok": True, "gateway": base, "bot_id": obj["bot_id"], "handle": obj["handle"], "address": obj["address"],
          "state": obj["state"], "can_publish": obj.get("can_publish"), "duplicate": obj.get("duplicate"),
@@ -1039,6 +1060,97 @@ def enroll_join(st, base, a):
          "note": "a new bot of the owner that uses this email address; this machine holds a credential for this one "
                  "bot only (stored in %s, never printed), and the owner was told by email"
                  % st.path("credentials.json")})
+
+
+CHEKUSU_PARTNER_URL = "https://login.chekusu.com/partner/yobiru"
+CHEKUSU_LANGS = {"en": "en", "zh": "zh-Hans", "ja": "ja"}
+
+
+def chekusu_partner_url():
+    """Where Chekusu signs email attestations for Yobiru gateways (YOBIRU_CHEKUSU_PARTNER_URL overrides it for a
+    test partner)."""
+    return norm_url(os.environ.get("YOBIRU_CHEKUSU_PARTNER_URL") or CHEKUSU_PARTNER_URL, "Chekusu partner URL")
+
+
+def chekusu_attestations(st, base, a):
+    """Sign-in with the Chekusu account (partner `chekusu`). The first run asks Chekusu for a sign-in link and a
+    code for the owner; a later run collects the email attestations Chekusu signed once the owner signed in.
+    -> (attestation for a new owner credential or None, attestation for a join credential), or None after
+    printing what the owner has to do. The credentials are generated and saved here first, as for --prepare, so
+    the attestations name exactly the credentials the next request sends; a retry reuses them."""
+    partner = chekusu_partner_url()
+
+    def prepare(creds):
+        entry = creds["gateways"].setdefault(base, {})
+        if (entry.get("owner") or {}).get("token"):
+            return "owner_exists"
+        if not a.join and not entry.get("pending_bot"):
+            entry["pending_bot"] = {"owner_token": C.new_token("owner"), "source_token": C.new_token("source"),
+                                    "display_name": a.name, "handle": a.handle, "description": a.description,
+                                    "dispatches": 0, "e2e": new_keypair()}
+        if not entry.get("pending_join"):
+            entry["pending_join"] = {"manager_token": C.new_token("manager"), "source_token": C.new_token("source"),
+                                     "display_name": a.name, "handle": a.handle, "description": a.description,
+                                     "dispatches": 0, "e2e": new_keypair()}
+        owner = None if a.join else C.token_hash(entry["pending_bot"]["owner_token"])
+        return {"owner": owner, "manager": C.token_hash(entry["pending_join"]["manager_token"]),
+                "request": entry.get("chekusu_request")}
+    info = st.update("credentials.json", prepare)
+    if info == "owner_exists":
+        die("this data home already holds an owner credential for %s; create more bots with `bot create`" % base)
+    hashes = [h for h in (info["owner"], info["manager"]) if h]
+    req = info["request"]
+
+    def keep_request(value):
+        def save(creds):
+            entry = creds["gateways"].setdefault(base, {})
+            if value is None:
+                entry.pop("chekusu_request", None)
+            else:
+                entry["chekusu_request"] = value
+        st.update("credentials.json", save)
+
+    def call(path, body):
+        try:
+            return C.api_call(partner, "POST", path, body)
+        except C.ApiError as e:
+            out({"ok": False, "error": e.code, "detail": e.detail, "next": "run the same command again"})
+            sys.exit(2)
+        except ValueError as e:
+            die(str(e))
+
+    def tell(r, waiting):
+        out({"ok": True, "gateway": base, "state": "sign_in_required", "sign_in_url": r["sign_in_url"],
+             "code": r["code"], "expires_at": C.iso(r["expires_ts"]),
+             "next": ("%sask your owner to open sign_in_url, sign in with their Chekusu account and check that the "
+                      "page shows the code %s; then run the same enroll-bot command again"
+                      % ("not signed in yet: " if waiting else "", r["code"]))})
+
+    if req and req.get("partner") == partner and req.get("credentials") == hashes and \
+            req.get("expires_ts", 0) > C.now_ts() + 5:
+        status, obj = call("/requests/%s/poll" % req["id"], {"poll_secret": req["poll_secret"]})
+        if status == 200 and obj.get("state") == "done" and isinstance(obj.get("attestations"), dict):
+            keep_request(None)
+            got = obj["attestations"]
+            return (got.get(info["owner"]) if info["owner"] else None), got.get(info["manager"])
+        if status == 200 and obj.get("state") == "pending":
+            tell(req, True)
+            return None
+        # unknown or expired at the partner: start again below
+    lang = CHEKUSU_LANGS.get(a.lang or "")
+    body = {"aud": base, "credentials": hashes}
+    if lang:
+        body["lang"] = lang
+    status, obj = call("/requests", body)
+    if status != 201 or obj.get("ok") is not True:
+        out({"ok": False, "error": obj.get("error"), "detail": obj.get("detail"), "http_status": status})
+        sys.exit(2)
+    fresh = {"partner": partner, "credentials": hashes, "id": obj["id"], "poll_secret": obj["poll_secret"],
+             "code": obj["code"], "sign_in_url": obj["sign_in_url"],
+             "expires_ts": C.now_ts() + 900}
+    keep_request(fresh)
+    tell(fresh, False)
+    return None
 
 
 def request_email_code(st, base, email, lang):
@@ -4305,6 +4417,9 @@ def main(argv=None):
     p.add_argument("--prepare", action="store_true",
                    help="partners: save the new credentials and print the owner credential hash to have signed")
     p.add_argument("--attestation-file", help="partners: a signed email attestation (JSON) instead of --email-code")
+    p.add_argument("--chekusu", action="store_true",
+                   help="prove the owner's email by signing in with their Chekusu account: the first run prints a "
+                        "link and a code for the owner, the next run finishes")
     p.add_argument("--join", action="store_true",
                    help="the address already owns bots here: add one more bot to that owner, with a credential for "
                         "this bot only (done automatically when the gateway says the address is in use)")

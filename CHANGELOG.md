@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+Client only; the gateway needs no new code.
+
+- **Sign in with the Chekusu account.** `enroll-bot URL --name N --chekusu` prints a link and a code; once the
+  owner has signed in at login.chekusu.com, the same command again enrolls the bot (or joins the owner the address
+  already belongs to). Chekusu is an ordinary email partner (`partners.chekusu` in `gateway.json`), so existing
+  owners are found by their address. See [Signing in with the Chekusu account](docs/PUBLIC_BOTS.md#signing-in-with-the-chekusu-account---chekusu).
+
 ## 0.7.21 (2026-11-02)
 
 Update the gateway, then clients. No schema change.
