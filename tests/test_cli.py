@@ -118,7 +118,26 @@ class ReadOnlyTests(Base):
         self.assertEqual(plugin_before, snapshot(PKG.plugin))      # no __pycache__ or state in the plugin
         calls = [json.loads(x) for x in (PKG.root / "ro-calls.log").read_text().splitlines()]
         self.assertTrue(calls)
-        self.assertTrue(all(c in (["status", "--json"], ["debug", "prefs"]) for c in calls), calls)
+        self.assertTrue(all(c in (["status", "--json"], ["debug", "prefs"], ["lock", "status", "--json"]) for c in calls), calls)
+
+    def test_lock_commands_only_read_the_lock(self):
+        state = PKG.fake_state("lock", calls=str(PKG.root / "lock-calls.log"),
+                               lock={"Enabled": True, "PublicKey": "tlpub:" + "a" * 64, "NodeKey": "nodekey:" + "b" * 64,
+                                     "NodeKeySigned": False, "TrustedKeys": [{"Key": "tlpub:" + "c" * 64}]})
+        extra = {"FAKE_TS_STATE": str(state)}
+        r, d = PKG.run_json(["lock", "status", "--json"], self.user, tailscale=True, extra=extra)
+        self.assertEqual(1, r.returncode, r.stderr)
+        self.assertFalse(d["changed"])
+        self.assertEqual("error", d["checks"][0]["status"])
+        self.assertIn("tailscale lock sign nodekey:" + "b" * 64, d["checks"][0]["fix"])
+        r = self.yobiru("lock", "guide", tailscale=True, extra=extra)
+        self.assertEqual(0, r.returncode, r.stderr)
+        self.assertIn("tailscale lock sign tskey-auth-", r.stdout)
+        r = self.yobiru("lock", "guide", "--signer", "tlpub:short", tailscale=True, extra=extra)
+        self.assertNotEqual(0, r.returncode)
+        calls = [json.loads(x) for x in (PKG.root / "lock-calls.log").read_text().splitlines()]
+        self.assertTrue(all(c in (["status", "--json"], ["debug", "prefs"], ["lock", "status", "--json"])
+                            for c in calls), calls)
 
     def test_messaging_commands_refuse_without_config(self):
         for args in (["inbox"], ["send", "peer", "hi"], ["serve"]):

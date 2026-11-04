@@ -4,6 +4,13 @@
 
 Client only; the gateway needs no new code.
 
+- **Tailnet Lock support, read-only.** `doctor` now reports whether Tailnet Lock is on, and when this device is not
+  signed it says so (to other devices it looks offline) and names the `tailscale lock sign nodekey:...` command to
+  run on a signing device. It also lists peers hidden because they are unsigned, warns about a single signing key,
+  and warns when a signing device also wakes agents. New `lock status` and `lock guide` print the state and the
+  owner's own commands, including a pre-signed auth key for assistants that rejoin. Yobiru never runs lock init,
+  sign, add, remove or disable. See [Tailnet Lock](docs/TAILNET-LOCK.md).
+
 - **Sign in with the Chekusu account.** `enroll-bot URL --name N --chekusu` prints a link and a code; once the
   owner has signed in at login.chekusu.com, the same command again enrolls the bot (or joins the owner the address
   already belongs to). Chekusu is an ordinary email partner (`partners.chekusu` in `gateway.json`), so existing

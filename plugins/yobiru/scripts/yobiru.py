@@ -74,6 +74,7 @@ Check and set up (read-only unless --apply):
   status [--json]            summarize config, agents, sessions, versions, wake settings and inbox counts
   session {{list,bind,unbind}} explicit agent -> existing session binding (exact id; bind/unbind need --apply)
   policy {{show,set}}         show or deliberately change incoming access policy (tailnet / allowlist + deny)
+  lock {{status,guide}}        Tailnet Lock state and the owner's steps to turn it on (never signs or changes it)
   update {{check,status,notify,maintain,reminder-template}}
                              official release check, versions, and upgrade notices to your known
                              installations (notify is a dry run unless --apply)
@@ -414,6 +415,94 @@ def inbox_stats(home, default_agent):
 
 
 # ---------------------------------------------------------------- facts shared by doctor/status/paths
+TLPUB_RE = re.compile(r"^tlpub:[0-9a-f]{64}$")
+NODEKEY_RE = re.compile(r"^nodekey:[0-9a-f]{64}$")
+
+
+def parse_tailnet_lock(out):
+    """`tailscale lock status --json` -> facts; public keys only (Tailnet Lock never prints private keys)."""
+    d = json.loads(out)
+    if not isinstance(d, dict):
+        raise ValueError("not an object")
+    trusted = []
+    for k in d.get("TrustedKeys") or []:
+        key = k.get("Key") if isinstance(k, dict) else None
+        if isinstance(key, str) and key:
+            trusted.append(key)
+    filtered = []
+    for p in d.get("FilteredPeers") or []:
+        if not isinstance(p, dict):
+            continue
+        name = (p.get("Name") or "").rstrip(".").lower() or None
+        key = p.get("NodeKey") if isinstance(p.get("NodeKey"), str) else None
+        filtered.append({"name": name, "node_key": key})
+    pub = d.get("PublicKey") if isinstance(d.get("PublicKey"), str) else None
+    node_key = d.get("NodeKey") if isinstance(d.get("NodeKey"), str) else None
+    return {"enabled": bool(d.get("Enabled")), "public_key": pub, "node_key": node_key,
+            "signed": bool(d.get("NodeKeySigned")), "trusted_keys": trusted,
+            "is_signer": bool(pub) and pub in trusted, "filtered_peers": filtered, "error": None}
+
+
+def read_tailnet_lock(cmd):
+    """Read-only. Never runs lock init/sign/add/remove/disable: those stay the tailnet owner's own steps."""
+    out, e = run_tailscale(cmd, ["lock", "status", "--json"])
+    if e:
+        return {"error": e}
+    try:
+        return parse_tailnet_lock(out)
+    except (ValueError, AttributeError, TypeError):
+        return {"error": "`tailscale lock status --json` returned unexpected output"}
+
+
+def wakes_agents(f):
+    return any(a.get("adapter") not in (None, "none") and not str(a.get("adapter")).startswith("MISCONFIGURED")
+               for a in f.get("adapters") or [])
+
+
+def sign_command(node_key):
+    return "tailscale lock sign %s" % (node_key if node_key and NODEKEY_RE.match(node_key) else "<nodekey>")
+
+
+def lock_check(f, add):
+    """Tailnet Lock: whether it is on, whether this device is signed, and which peers it hides. Read-only."""
+    lock = (f.get("tailscale") or {}).get("lock")
+    if lock is None:
+        return
+    if lock.get("error"):
+        add("info", "tailnet-lock", "could not read Tailnet Lock state: %s" % lock["error"],
+            "older Tailscale clients lack `lock status --json`; run `tailscale lock status` yourself")
+        return
+    if not lock["enabled"]:
+        add("info", "tailnet-lock", "off: the Tailscale coordination server alone decides which devices join "
+            "this tailnet", "optional hardening the tailnet owner decides on: `%s lock guide`" % PRODUCT)
+        return
+    n = len(lock["trusted_keys"])
+    if not lock["signed"]:
+        add("error", "tailnet-lock", "on, but this device is not signed: other devices ignore it, so to them it "
+            "looks offline (node key %s)" % (lock.get("node_key") or "unknown"),
+            "on one of your signing devices run `%s` (%s never signs)" % (sign_command(lock.get("node_key")),
+                                                                        PRODUCT))
+    elif n < 2:
+        add("warn", "tailnet-lock", "on; this device is signed; only %d signing key" % n,
+            "add a second signing device so losing one does not stop you adding devices: on a signing device "
+            "`tailscale lock add tlpub:...`")
+    else:
+        add("ok", "tailnet-lock", "on; this device is signed; %d signing keys" % n)
+    if lock["is_signer"] and wakes_agents(f):
+        add("warn", "lock-signer", "this machine is a Tailnet Lock signing device and also wakes agents: an agent "
+            "that follows injected instructions could sign an attacker's device",
+            "keep signing keys on machines where no agent runs commands; from another signing device "
+            "`tailscale lock remove %s`" % lock["public_key"])
+    hidden = lock["filtered_peers"]
+    if hidden:
+        names = ", ".join(p["name"] or p["node_key"] or "?" for p in hidden[:10]) + \
+            (" and %d more" % (len(hidden) - 10) if len(hidden) > 10 else "")
+        add("warn", "lock-unsigned-peers", "%d peer(s) hidden because they are not signed (not offline): %s"
+            % (len(hidden), names),
+            "only if you recognize a device, sign it from a signing device: `tailscale lock sign <nodekey>` "
+            "(`%s lock status` lists the keys)" % PRODUCT)
+
+
 def gather(home, home_source, probe=True):
     f = {"product": PRODUCT, "plugin_version": plugin_version(), "plugin_root": str(PLUGIN_ROOT),
          "core": str(CORE), "core_present": CORE.is_file(),
@@ -488,6 +577,7 @@ def gather(home, home_source, probe=True):
                     ts["shields_up"] = bool(json.loads(out).get("ShieldsUp")) if out else None
                 except (ValueError, AttributeError):
                     ts["shields_up"] = None
+                ts["lock"] = read_tailnet_lock(cmd)
     f["tailscale"] = ts
     if probe and cfg is not None:
         host = cfg.get("bind") or next((i for i in ts.get("ips") or [] if ":" not in i), None)
@@ -634,6 +724,7 @@ def doctor_checks(f):
     maintenance_check(f, add)
     backlog_check(f, add)
     dispatcher_check(f, add)
+    lock_check(f, add)
     rt = f["runtime"]
     if rt["present"] and rt.get("same_as_bundled") is False:
         add("info", "runtime", "%s differs from the bundled tailmsg.py" % rt["path"],
@@ -4067,6 +4158,106 @@ def cmd_claude_bridge(home, home_source, argv):
     return subprocess.call(command)
 
 
+LOCK_ACL = """{
+  "tagOwners": {"tag:assistant": ["autogroup:admin"]},
+  "acls": [
+    // your own (untagged) devices reach everything
+    {"action": "accept", "src": ["autogroup:member"], "dst": ["*:*"]},
+    // assistants only reach Yobiru receivers
+    {"action": "accept", "src": ["tag:assistant"], "dst": ["autogroup:member:%(port)d", "tag:assistant:%(port)d"]}
+  ]
+}"""
+
+
+def lock_guide(lock, signers, port, agent_machine):
+    """-> list of text lines. Prints commands for the owner to run; runs nothing."""
+    lines = []
+    if lock is None or lock.get("error"):
+        lines.append("Tailnet Lock state is unknown here (%s). Run `tailscale lock status` yourself."
+                     % ((lock or {}).get("error") or "not checked"))
+        return lines
+    mine = lock.get("public_key")
+    if lock["enabled"]:
+        lines += ["Tailnet Lock is on (%d signing keys)." % len(lock["trusted_keys"]),
+                  "",
+                  "Add a device: it shows its node key in `%s doctor` (or `tailscale lock status`)." % PRODUCT,
+                  "  On a signing device:  tailscale lock sign nodekey:...",
+                  "Unattended assistants: in the admin console create a tagged (tag:assistant), ephemeral,",
+                  "pre-approved auth key, then pre-sign it on a signing device:",
+                  "  tailscale lock sign tskey-auth-...",
+                  "  Keep the signed key in your own secret store; never send it to a gateway or into a repository.",
+                  "Retire a signing device:  tailscale lock remove tlpub:...   (run from another signing device)"]
+        return lines
+    keys = list(dict.fromkeys(signers))
+    lines += ["Tailnet Lock is off. When it is on, a new device must be signed by one of the signing devices",
+              "you choose, so a stolen login or a compromised coordination server cannot add a device on its own.",
+              "",
+              "1. Choose 2 or 3 of your own devices as signers. Not machines where an agent runs commands%s." %
+              (" (this machine wakes agents)" if agent_machine else ""),
+              "   On each one run `tailscale lock status` and copy its tlpub: key%s." %
+              (" (this device: %s)" % mine if mine else "")]
+    if len(keys) < 2:
+        lines.append("   Then run `%s lock guide --signer tlpub:... --signer tlpub:...` for the exact command." % PRODUCT)
+    lines += ["2. On one signing device run:",
+              "   tailscale lock init --gen-disablements 3 --confirm %s" %
+              (" ".join(keys) if keys else "tlpub:A tlpub:B"),
+              "3. It prints 3 disablement secrets. Store them offline (a password manager). They are the only way",
+              "   to turn the lock off if every signing device is lost. %s never sees or stores them." % DISPLAY,
+              "4. Existing devices are signed during init. Sign later devices with `tailscale lock sign nodekey:...`.",
+              "5. Assistants that rejoin often need a pre-signed auth key (see `%s lock guide` once the lock is on)."
+              % PRODUCT,
+              "",
+              "Recommended policy for assistant machines (paste in the admin console, Access controls):",
+              LOCK_ACL % {"port": port}]
+    return lines
+
+
+def cmd_lock(home, home_source, argv):
+    ap = argparse.ArgumentParser(allow_abbrev=False, prog=PRODUCT + " lock",
+                                 description="read-only Tailnet Lock status and a guide; %s never runs lock "
+                                             "init, sign, add, remove or disable" % DISPLAY)
+    sub = ap.add_subparsers(dest="sub", required=True)
+    ps = sub.add_parser("status", help="whether the lock is on, this device's keys and hidden peers")
+    ps.add_argument("--json", action="store_true")
+    pg = sub.add_parser("guide", help="print the steps and commands to turn the lock on or add devices")
+    pg.add_argument("--signer", action="append", default=[], metavar="tlpub:KEY",
+                    help="a signing device's public key (repeat for each)")
+    a = ap.parse_args(argv)
+    for k in getattr(a, "signer", []):
+        if not TLPUB_RE.match(k):
+            ap.error("--signer must look like tlpub:<64 hex characters>, got %r" % k)
+    f = gather(home, home_source, probe=True)
+    ts = f["tailscale"]
+    lock = ts.get("lock")
+    if lock is None:
+        lock = {"error": ts.get("error") or "Tailscale is not available"}
+    if a.sub == "status":
+        found = []
+        lock_check(dict(f, tailscale=dict(ts, lock=lock)),
+                   lambda st, name, detail, fix=None: found.append({"status": st, "check": name, "detail": detail,
+                                                                    "fix": fix}))
+        if a.json:
+            print(json.dumps({"lock": lock, "checks": found, "changed": False}, indent=2, ensure_ascii=True))
+        else:
+            print("%s lock status (read-only)" % DISPLAY)
+            if not lock.get("error"):
+                print("  enabled        %s" % lock["enabled"])
+                print("  this device    %s, signed %s%s" % (lock.get("node_key") or "-", lock["signed"],
+                                                           ", signing device" if lock["is_signer"] else ""))
+                print("  public key     %s" % (lock.get("public_key") or "-"))
+                for k in lock["trusted_keys"]:
+                    print("  signing key    %s" % k)
+                for p in lock["filtered_peers"]:
+                    print("  hidden peer    %s %s" % (p["name"] or "-", p["node_key"] or "-"))
+            for c in found:
+                print("  %-6s %s" % (c["status"], c["detail"]))
+                if c["fix"]:
+                    print("  %-6s fix: %s" % ("", c["fix"]))
+        return 1 if any(c["status"] == "error" for c in found) else 0
+    print("\n".join(lock_guide(lock, a.signer, f.get("port") or 7766, wakes_agents(f))))
+    return 0
+
+
 def cmd_mcp(home, home_source, argv):
     """Local stdio MCP server over the messaging commands (yobiru_mcp.py next to this file)."""
     sys.path.insert(0, str(HERE))
@@ -4075,7 +4266,7 @@ def cmd_mcp(home, home_source, argv):
 
 
 PLUGIN_COMMANDS = {"paths": cmd_paths, "doctor": cmd_doctor, "status": cmd_status, "setup": cmd_setup,
-                   "policy": cmd_policy,
+                   "policy": cmd_policy, "lock": cmd_lock,
                    "wake-config": cmd_wake_config, "install-runtime": cmd_install_runtime,
                    "service-template": cmd_service_template, "codex-bridge": cmd_codex_bridge,
                    "onboard": cmd_onboard, "agents": cmd_agents, "peers": cmd_agents, "session": cmd_session, "update": cmd_update,
