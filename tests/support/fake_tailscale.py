@@ -3,7 +3,8 @@ every call, so tests can prove nothing ever ran `tailscale up`, `set` or similar
 
 State file (via `--state PATH` before the subcommand, or $FAKE_TS_STATE):
   {"status": {...}, "whois": {...}, "ip4": "127.0.0.1", "shields_up": false, "calls": "/path/calls.log",
-   "status_error": "message printed by a failing `status --json`"}
+   "status_error": "message printed by a failing `status --json`",
+   "lock": {...`lock status --json`...}, "lock_error": "message printed by a failing `lock status --json`"}
 """
 import json
 import os
@@ -12,6 +13,8 @@ import sys
 DEFAULT_STATUS = {"BackendState": "Running",
                   "Self": {"ID": "alpha-stable", "DNSName": "alpha.example.ts.net.", "HostName": "alpha",
                            "TailscaleIPs": ["127.0.0.1"], "Online": True}, "Peer": {}}
+DEFAULT_LOCK = {"SchemaVersion": "1", "Enabled": False, "PublicKey": "tlpub:" + "a" * 64,
+                "NodeKey": "nodekey:" + "b" * 64}
 
 args = sys.argv[1:]
 path = None
@@ -36,6 +39,11 @@ elif args[:2] == ["whois", "--json"] and state.get("whois"):
     print(json.dumps(state["whois"]))
 elif args == ["debug", "prefs"]:
     print(json.dumps({"ShieldsUp": bool(state.get("shields_up", False))}))
+elif args == ["lock", "status", "--json"] and state.get("lock_error"):
+    sys.stderr.write(state["lock_error"] + "\n")
+    sys.exit(1)
+elif args == ["lock", "status", "--json"]:
+    print(json.dumps(state.get("lock", DEFAULT_LOCK)))
 elif args == ["version"]:
     print("1.0.0-fake")
 else:

@@ -9,6 +9,14 @@ Client only; the gateway needs no new code.
   already belongs to). Chekusu is an ordinary email partner (`partners.chekusu` in `gateway.json`), so existing
   owners are found by their address. See [Signing in with the Chekusu account](docs/PUBLIC_BOTS.md#signing-in-with-the-chekusu-account---chekusu).
 
+- **Tailnet Lock support (read-only).** `doctor` now reports the Tailnet Lock state: off, this machine unsigned
+  (with the node key to sign), fewer than two signing keys, a signing device that also runs a woken agent, and
+  unsigned machines hidden from this one. New `lock status`, `lock setup` (prints the `tailscale lock init`/`add`
+  command for your signing devices) and `lock acl` (a recommended tailnet policy that limits assistant machines to
+  the receiver port). Nothing is ever signed or changed for you. See [Tailnet Lock](docs/TAILNET-LOCK.md).
+- `doctor` and `onboard` no longer stop with `PermissionError` on Linux hosts where `/workspace` is a symlink the
+  user cannot follow.
+
 ## 0.7.21 (2026-11-02)
 
 Update the gateway, then clients. No schema change.
