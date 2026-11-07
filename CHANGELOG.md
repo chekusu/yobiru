@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.7.23 (2026-11-07)
 
-Client only; the gateway needs no new code.
+Clients only; the gateway needs no update. No schema change.
 
 - **Tailnet Lock support (read-only).** `doctor` now reports the Tailnet Lock state: off, this machine unsigned
   (with the node key to sign), fewer than two signing keys, a signing device that also runs a woken agent, and
