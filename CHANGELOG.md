@@ -2,8 +2,14 @@
 
 ## Unreleased
 
-Client only; the gateway needs no new code.
+Update the gateway, then clients. No schema change.
 
+- **A worker's poll no longer holds up every write on the gateway.** A worker's GET (`/v1/worker/jobs` above all)
+  ran under the database's write lock because it recorded the worker's last use, and the job list reads message
+  bodies, from the blob store (R2) when they are large. One slow read there made every other write wait, and after
+  15 s they gave up with `503 storage_busy`. Those requests now read first, like every other GET; the last use is
+  recorded right after on its own, waiting at most 2 s for the lock (best effort: the worker's next request records
+  it otherwise).
 - **Sign in with the Chekusu account.** `enroll-bot URL --name N --chekusu` prints a link and a code; once the
   owner has signed in at login.chekusu.com, the same command again enrolls the bot (or joins the owner the address
   already belongs to). Chekusu is an ordinary email partner (`partners.chekusu` in `gateway.json`), so existing

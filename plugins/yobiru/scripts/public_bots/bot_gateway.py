@@ -803,7 +803,7 @@ def row_factory(blobs):
 
 def open_db(path, blobs=None, shared=False):
     """`shared`: the connection may move between request threads (the store's pool hands it to one at a time)."""
-    db = sqlite3.connect(str(path), timeout=15, isolation_level=None, check_same_thread=not shared)
+    db = sqlite3.connect(str(path), timeout=BUSY_TIMEOUT_MS / 1000.0, isolation_level=None, check_same_thread=not shared)
     db.row_factory = row_factory(blobs)
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA synchronous=FULL")
@@ -847,8 +847,8 @@ class Store(object):
         self._idle, self._idle_lock = [], threading.Lock()
         weakref.finalize(self, close_all, self._idle)
 
-    def tx(self, write=True):
-        return _Tx(self, write)
+    def tx(self, write=True, wait_ms=None):
+        return _Tx(self, write, wait_ms)
 
     def attempt(self, fn, write=False):
         """fn(db) in a read transaction, unless `write`: many run at once, in this and in other gateway processes,
@@ -880,8 +880,21 @@ class Store(object):
                 return
         db.close()
 
+    def touch_worker(self, worker_id, now):
+        """Record a worker's last use after a request that ran as a read: one row, so the write lock is held for
+        moments. Best effort: the time is evidence for wake reports, so a database another writer holds makes this
+        give up after SEEN_WAIT_MS (the worker's next request records it) instead of holding up the answer."""
+        try:
+            with self.tx(wait_ms=SEEN_WAIT_MS) as db:
+                db.execute("UPDATE workers SET last_seen_ts=? WHERE id=? AND COALESCE(last_seen_ts, 0)<?",
+                           (int(now), worker_id, int(now)))
+        except sqlite3.OperationalError as e:
+            log("worker last use not recorded:", type(e).__name__)
+
 
 IDLE_CONNECTIONS = 16           # open connections kept for the next requests instead of reconnecting every time
+BUSY_TIMEOUT_MS = 15000         # how long a write waits for the write lock
+SEEN_WAIT_MS = 2000             # how long recording a worker's last use waits for it
 
 
 def close_all(connections):
@@ -900,13 +913,15 @@ class _Tx(object):
     (IMMEDIATE). A read transaction reads one snapshot and neither waits for nor blocks writers; its connection is
     query_only, so a write inside it fails instead of happening outside the lock."""
 
-    def __init__(self, store, write=True):
-        self.store, self.write = store, write
+    def __init__(self, store, write=True, wait_ms=None):
+        self.store, self.write, self.wait_ms = store, write, wait_ms
 
     def __enter__(self):
         db = self.store._take()
         try:
             db.execute("PRAGMA query_only=%d" % (0 if self.write else 1))
+            if self.wait_ms is not None:
+                db.execute("PRAGMA busy_timeout=%d" % self.wait_ms)
             db.execute("BEGIN IMMEDIATE" if self.write else "BEGIN")
         except BaseException:
             db.close()
@@ -929,6 +944,8 @@ class _Tx(object):
             except sqlite3.Error:
                 db.close()                  # the original error matters more than a failed rollback
                 return False
+        if self.wait_ms is not None:
+            db.execute("PRAGMA busy_timeout=%d" % BUSY_TIMEOUT_MS)
         self.store._give(db)
         return False
 
@@ -6250,16 +6267,27 @@ def make_handler(api):
                 def handle(db):
                     # The decision time is taken after the body arrived and the transaction began: a slow body or
                     # a busy database can never make an expired lease or deadline look valid.
-                    req.now = C.now_ts()
+                    req.now, req.seen = C.now_ts(), None
                     if kinds is not None:
-                        req.subject = api.authenticate(db, kinds, req.token, req.now)
+                        # A read transaction cannot record a worker's last use: it is recorded right after, on its
+                        # own (Store.touch_worker).
+                        reading = "worker" in kinds and db.execute("PRAGMA query_only").fetchone()[0] == 1
+                        req.subject = api.authenticate(db, kinds, req.token, req.now, touch=not reading)
                         if req.subject is None:
                             raise Fail(401, "unauthorized")
+                        if reading and C.token_kind(req.token) == "worker" and \
+                                (req.subject.get("last_seen_ts") or 0) < int(req.now):
+                            req.seen = (req.subject["id"], req.now)
                     return getattr(api, name)(db, req)
                 # A GET reads first: most of them never write (the connector poll above all), and one that does
-                # runs again under the write lock. A worker credential records its last use, so it writes anyway.
-                write = self.command != "GET" or "worker" in (kinds or ())
+                # runs again under the write lock. That includes a worker's poll of its jobs: it reads message
+                # bodies, from the blob store when they are large, and under the write lock one slow read there
+                # holds up every other write on the gateway (they give up after 15 s: "storage error", 503
+                # storage_busy). Read first, a second run under the lock finds those bodies in the blob cache.
+                write = self.command != "GET"
                 status, obj = api.store.attempt(handle, write=write)
+                if req.seen:
+                    api.store.touch_worker(*req.seen)
                 if req.wait and status == 200 and req.cursor == obj.get("cursor"):
                     status, obj = self.wait_for_change(req, handle, status, obj)
                 if name == "share_card" and self._html:
