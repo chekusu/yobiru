@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.22 (2026-11-07)
 
 Update the gateway, then clients. No schema change.
 
@@ -19,6 +19,12 @@ Update the gateway, then clients. No schema change.
   owner has signed in at login.chekusu.com, the same command again enrolls the bot (or joins the owner the address
   already belongs to). Chekusu is an ordinary email partner (`partners.chekusu` in `gateway.json`), so existing
   owners are found by their address. See [Signing in with the Chekusu account](docs/PUBLIC_BOTS.md#signing-in-with-the-chekusu-account---chekusu).
+- **Cross-agent tasks stay open until someone resolves them.** A Tailscale request that ended blocked, failed,
+  rejected or timed out no longer drops out of sight after `ack` or chat archival: `request list --open` lists the
+  unresolved tasks and `request resolve TASK_ID` closes one once the trusted owner has decided. A trusted local owner
+  can re-authorize blocked work as a new attempt (`request authorize`, `request attempt`, `request authorize-attempt`,
+  `request revoke`), guarded by a generation number; an old blocked request is never revived. `doctor` warns about
+  tasks that need attention.
 
 ## 0.7.21 (2026-11-02)
 
