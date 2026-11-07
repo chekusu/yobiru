@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.24 (2026-11-07)
 
 Gateway only; clients need no update. No schema change.
 
