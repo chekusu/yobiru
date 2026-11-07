@@ -1,13 +1,30 @@
 # Changelog
 
-## Unreleased
+## 0.7.22 (2026-11-07)
 
-Client only; the gateway needs no new code.
+Update the gateway, then clients. No schema change.
 
+- **A slow blob store no longer holds up every write on the gateway.** Large message bodies live in the blob
+  store (R2), and requests read and stored them while holding the database's write lock: a job poll, a job claim
+  (the body and its transcript), a send. On 2026-11-07 a job poll and, later, a job claim each held the lock for
+  30 s while an R2 call hung, and every other write gave up after 15 s with `503 storage_busy`. Now:
+  - **No blob store call under the write lock.** A write that needs bodies this process does not hold in memory
+    notes them all, is rolled back, reads them with no lock held and runs again; a new large body is stored before
+    the write that refers to it. One that ends without referring to it deletes it again. A slow store call delays
+    that one request only.
+  - **A worker's GETs read first**, like every other GET (`/v1/worker/jobs` above all). They took the write lock to
+    record the worker's last use; that is now recorded right after on its own, waiting at most 2 s for the lock
+    (best effort: the worker's next request records it otherwise).
 - **Sign in with the Chekusu account.** `enroll-bot URL --name N --chekusu` prints a link and a code; once the
   owner has signed in at login.chekusu.com, the same command again enrolls the bot (or joins the owner the address
   already belongs to). Chekusu is an ordinary email partner (`partners.chekusu` in `gateway.json`), so existing
   owners are found by their address. See [Signing in with the Chekusu account](docs/PUBLIC_BOTS.md#signing-in-with-the-chekusu-account---chekusu).
+- **Cross-agent tasks stay open until someone resolves them.** A Tailscale request that ended blocked, failed,
+  rejected or timed out no longer drops out of sight after `ack` or chat archival: `request list --open` lists the
+  unresolved tasks and `request resolve TASK_ID` closes one once the trusted owner has decided. A trusted local owner
+  can re-authorize blocked work as a new attempt (`request authorize`, `request attempt`, `request authorize-attempt`,
+  `request revoke`), guarded by a generation number; an old blocked request is never revived. `doctor` warns about
+  tasks that need attention.
 
 ## 0.7.21 (2026-11-02)
 

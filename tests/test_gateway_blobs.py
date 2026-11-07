@@ -10,6 +10,7 @@ import datetime
 import gzip
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -34,7 +35,7 @@ class FakeS3(object):
     """A minimal path-style S3: PUT/GET/DELETE of objects, each request's SigV4 signature recomputed and checked."""
 
     def __init__(self):
-        self.objects, self.requests, self.down = {}, [], False
+        self.objects, self.requests, self.down, self.hook = {}, [], False, None
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -43,6 +44,8 @@ class FakeS3(object):
 
             def _check(self, body):
                 fake.requests.append((self.command, self.path))
+                if fake.hook:
+                    fake.hook(self.command)
                 if fake.down:
                     return 503
                 when = datetime.datetime.strptime(self.headers.get("x-amz-date", ""), "%Y%m%dT%H%M%SZ").replace(
@@ -160,7 +163,7 @@ class BlobGatewayCase(unittest.TestCase):
         cls._tmp.cleanup()
 
     def setUp(self):
-        self.s3.down = False
+        self.s3.down, self.s3.hook = False, None
 
     def friends(self):
         n = next(COUNTER)
@@ -266,6 +269,92 @@ class BlobGatewayTests(BlobGatewayCase):
         self.assertEqual(1, G.sweep_blobs(store, G.C.now_ts()))
         self.assertNotIn("/%s/gw/%s" % (BUCKET, key), self.s3.objects)
         self.assertEqual([], self.gw.sql("SELECT * FROM blobs WHERE key IN (?,?)", (key, orphan)))
+
+
+class BlobWriteLockTests(BlobGatewayCase):
+    """No blob store call is made under the database's write lock. On 2026-11-07 a job claim and a job poll each held
+    it for 30 s while a store read hung, and every other write on the gateway gave up after 15 s (503 storage_busy).
+    The fake store checks, at each call, whether another connection could take the lock that moment."""
+
+    def lock_free(self):
+        db = sqlite3.connect(str(self.gw.home / "gateway.sqlite3"), timeout=0, isolation_level=None)
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("ROLLBACK")
+            return True
+        except sqlite3.OperationalError:
+            return False
+        finally:
+            db.close()
+
+    def watch(self):
+        calls = []
+        self.s3.hook = lambda command: calls.append((command, self.lock_free()))
+        return calls
+
+    def big(self, cid, b_source, text):
+        status, sent = self.gw.send(cid, b_source, kind="chat", text=text, attachments=[media("m.png", BIG_PNG)])
+        self.assertEqual(202, status, sent)
+        self.assertTrue(self.column(sent["message_id"], "content").startswith(B.PREFIX))
+        return sent["message_id"]
+
+    def store(self):
+        return G.Store(self.gw.home, G.load_config(self.gw.home))     # its own empty body cache
+
+    def test_storing_a_large_message_leaves_the_lock_free(self):
+        a, wtoken, b_source, cid = self.friends()
+        calls = self.watch()
+        self.big(cid, b_source, "stored outside the lock")
+        self.assertEqual([("PUT", True)], calls)
+
+    def test_polling_and_claiming_a_job_read_its_body_with_the_lock_free(self):
+        a, wtoken, b_source, cid = self.friends()
+        mid = self.big(cid, b_source, "read outside the lock")
+        if [x for x in self.gw.reviews(a)["inbound"] if x["job_id"] == mid]:
+            self.assertEqual(200, self.gw.admit(a, mid)[0])
+        for step in ("poll", "claim"):
+            self.gw.restart()                                       # an empty cache: the body comes from the store
+            calls = self.watch()
+            if step == "poll":
+                jobs = self.gw.ok("GET", "/v1/worker/jobs", None, wtoken)["jobs"]
+                self.assertIn(mid, [j["job_id"] for j in jobs])
+            else:
+                status, job = self.gw.claim_job(wtoken, mid)
+                self.assertEqual(200, status, job)
+                self.assertEqual("read outside the lock", job["untrusted_content"]["text"])
+            self.assertTrue(calls, step)
+            self.assertEqual({("GET", True)}, set(calls), step)
+
+    def test_a_write_gathers_the_bodies_it_misses_then_runs_again(self):
+        a, wtoken, b_source, cid = self.friends()
+        ids = (self.big(cid, b_source, "one"), self.big(cid, b_source, "two"))
+        store, runs = self.store(), []
+
+        def texts(db):
+            rows = db.execute("SELECT content FROM messages WHERE id IN (?,?) ORDER BY rowid", ids).fetchall()
+            runs.append([json.loads(r["content"]).get("text") for r in rows])
+            return runs[-1]
+
+        calls = self.watch()
+        self.assertEqual(["one", "two"], store.locked(texts))
+        self.assertEqual([[None, None], ["one", "two"]], runs)      # stand-ins first, both read in one pass
+        self.assertEqual([("GET", True), ("GET", True)], calls)
+
+    def test_a_stored_body_no_committed_row_refers_to_is_deleted(self):
+        store, body = self.store(), {"text": "x" * 8192}
+        before = set(self.s3.objects)
+
+        def gives_up(db):
+            G.stored_body(db, store.blobs, store.limits, body, G.C.now_ts())
+            raise G.Fail(409, "changed_course")
+
+        with self.assertRaises(G.Fail):
+            store.locked(gives_up)
+        self.assertEqual(before, set(self.s3.objects))
+        ref = store.locked(lambda db: G.stored_body(db, store.blobs, store.limits, body, G.C.now_ts()))
+        key = B.parse_ref(ref)[0]
+        self.assertEqual({"/%s/gw/%s" % (BUCKET, key)}, set(self.s3.objects) - before)
+        self.assertEqual(1, len(self.gw.sql("SELECT * FROM blobs WHERE key=?", (key,))))
 
 
 class LocalStoreTests(unittest.TestCase):

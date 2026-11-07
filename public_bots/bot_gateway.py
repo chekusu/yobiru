@@ -781,6 +781,7 @@ def load_config(home):
 
 
 BODY_COLUMNS = ("content", "result", "draft")
+_LOCAL = threading.local()      # .hand: the _BlobHand of the Store.locked call running on this thread
 
 
 class _Row(sqlite3.Row):
@@ -790,11 +791,83 @@ class _Row(sqlite3.Row):
     def __getitem__(self, key):
         value = sqlite3.Row.__getitem__(self, key)
         if key in BODY_COLUMNS and isinstance(value, str) and value.startswith(B.PREFIX):
+            hand = getattr(_LOCAL, "hand", None)
+            text = hand.body(value) if hand is not None else None
+            if text is not None:
+                return text
             try:
                 return self.blobs.read(value)
             except (B.BlobError, AttributeError):
                 raise Fail(503, "storage_unavailable", "a message body could not be read from the blob store")
         return value
+
+
+class _BlobWanted(Exception):
+    """Ends a run under the write lock that needs blob store calls: the bodies it missed, or a new body to store
+    (`text`). Store.locked rolls the transaction back, makes those calls with no lock held and runs the work again."""
+
+    def __init__(self, text=None):
+        Exception.__init__(self, "blob store calls, made outside the write lock")
+        self.text = text
+
+
+class _BlobHand(object):
+    """The blob store calls of one Store.locked call, made between its runs: bodies read, new bodies stored."""
+
+    def __init__(self, blobs):
+        self.blobs, self.bodies, self.made = blobs, {}, {}
+        self.begin(False)
+
+    def begin(self, inline):
+        """A new run. `inline`: the last one, which reads and stores under the lock as before."""
+        self.used, self.missed, self.inline = {}, set(), inline
+
+    def body(self, ref):
+        """The body of `ref` without a store call. A body not at hand is noted and stands in as an empty object:
+        the run goes on to find the others it needs (all in one pass for a job and its transcript), then it is
+        rolled back and runs again with them, whatever it answered. None once `inline`: read it under the lock."""
+        text = self.bodies.get(ref)
+        if text is None and not self.inline:
+            text = self.blobs.cached(ref)
+            if text is None:
+                self.missed.add(ref)
+                text = "{}"
+        return text
+
+    def stored(self, text):
+        """(key, reference, stored bytes) of `text`, stored before this run, or _BlobWanted. None once `inline`."""
+        if self.missed:
+            raise _BlobWanted()             # it may be made of a stand-in: store it once the bodies are here
+        digest = sha(text)
+        made, n = self.made.get(digest, ()), self.used.get(digest, 0)
+        if n < len(made):
+            self.used[digest] = n + 1
+            return made[n]
+        if self.inline:
+            return None
+        raise _BlobWanted(text)
+
+    def fetch(self, text=None):
+        """The store calls a run stopped for. No transaction is open."""
+        try:
+            for ref in sorted(self.missed):
+                self.bodies[ref] = self.blobs.read(ref)
+        except B.BlobError:
+            raise Fail(503, "storage_unavailable", "a message body could not be read from the blob store")
+        if text is not None:
+            try:
+                self.made.setdefault(sha(text), []).append(self.blobs.write(text))
+            except B.BlobError:
+                raise Fail(503, "storage_unavailable", "the blob store did not accept this message body; try again")
+
+    def discard(self, committed):
+        """Delete the bodies stored for runs that no committed row refers to (all of them unless `committed`)."""
+        for digest, made in self.made.items():
+            for key, _ref, _stored in made[self.used.get(digest, 0) if committed else 0:]:
+                try:
+                    self.blobs.delete(key)
+                except (B.BlobError, OSError) as e:
+                    log("blob delete failed:", type(e).__name__)
 
 
 def row_factory(blobs):
@@ -803,7 +876,7 @@ def row_factory(blobs):
 
 def open_db(path, blobs=None, shared=False):
     """`shared`: the connection may move between request threads (the store's pool hands it to one at a time)."""
-    db = sqlite3.connect(str(path), timeout=15, isolation_level=None, check_same_thread=not shared)
+    db = sqlite3.connect(str(path), timeout=BUSY_TIMEOUT_MS / 1000.0, isolation_level=None, check_same_thread=not shared)
     db.row_factory = row_factory(blobs)
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA synchronous=FULL")
@@ -847,8 +920,8 @@ class Store(object):
         self._idle, self._idle_lock = [], threading.Lock()
         weakref.finalize(self, close_all, self._idle)
 
-    def tx(self, write=True):
-        return _Tx(self, write)
+    def tx(self, write=True, wait_ms=None):
+        return _Tx(self, write, wait_ms)
 
     def attempt(self, fn, write=False):
         """fn(db) in a read transaction, unless `write`: many run at once, in this and in other gateway processes,
@@ -861,8 +934,38 @@ class Store(object):
             except sqlite3.OperationalError as e:
                 if not needs_write(e):
                     raise
-        with self.tx() as db:
-            return fn(db)
+        return self.locked(fn)
+
+    def locked(self, fn):
+        """fn(db) under the write lock, which never waits on the blob store: bodies fn needs that this process does
+        not hold in memory, or a new one it stores, roll the transaction back; the store calls run with no lock held
+        (a slow one holds up this request only) and fn runs again. Under the lock, one store read that hung for its
+        30 s timeout held up every other write on the gateway, which gave up after 15 s (503 storage_busy).
+        After MAX_BLOB_RUNS such runs, the next reads and stores under the lock as before."""
+        if self.blobs is None:
+            with self.tx() as db:
+                return fn(db)
+        hand, outer, committed = _BlobHand(self.blobs), getattr(_LOCAL, "hand", None), False
+        _LOCAL.hand = hand
+        try:
+            for run in range(MAX_BLOB_RUNS + 1):
+                hand.begin(run == MAX_BLOB_RUNS)
+                try:
+                    with self.tx() as db:
+                        result = fn(db)
+                        if hand.missed:
+                            raise _BlobWanted()
+                    committed = True
+                    return result
+                except Exception as e:
+                    # A run that missed a body ends here however it ended: what it did rested on a stand-in.
+                    text = e.text if isinstance(e, _BlobWanted) else None
+                    if not hand.missed and text is None:
+                        raise
+                    hand.fetch(text)
+        finally:
+            _LOCAL.hand = outer
+            hand.discard(committed)
 
     def _take(self):
         with self._idle_lock:
@@ -880,8 +983,22 @@ class Store(object):
                 return
         db.close()
 
+    def touch_worker(self, worker_id, now):
+        """Record a worker's last use after a request that ran as a read: one row, so the write lock is held for
+        moments. Best effort: the time is evidence for wake reports, so a database another writer holds makes this
+        give up after SEEN_WAIT_MS (the worker's next request records it) instead of holding up the answer."""
+        try:
+            with self.tx(wait_ms=SEEN_WAIT_MS) as db:
+                db.execute("UPDATE workers SET last_seen_ts=? WHERE id=? AND COALESCE(last_seen_ts, 0)<?",
+                           (int(now), worker_id, int(now)))
+        except sqlite3.OperationalError as e:
+            log("worker last use not recorded:", type(e).__name__)
+
 
 IDLE_CONNECTIONS = 16           # open connections kept for the next requests instead of reconnecting every time
+BUSY_TIMEOUT_MS = 15000         # how long a write waits for the write lock
+SEEN_WAIT_MS = 2000             # how long recording a worker's last use waits for it
+MAX_BLOB_RUNS = 8               # runs of one write that may stop for blob store calls before it makes them inline
 
 
 def close_all(connections):
@@ -900,13 +1017,15 @@ class _Tx(object):
     (IMMEDIATE). A read transaction reads one snapshot and neither waits for nor blocks writers; its connection is
     query_only, so a write inside it fails instead of happening outside the lock."""
 
-    def __init__(self, store, write=True):
-        self.store, self.write = store, write
+    def __init__(self, store, write=True, wait_ms=None):
+        self.store, self.write, self.wait_ms = store, write, wait_ms
 
     def __enter__(self):
         db = self.store._take()
         try:
             db.execute("PRAGMA query_only=%d" % (0 if self.write else 1))
+            if self.wait_ms is not None:
+                db.execute("PRAGMA busy_timeout=%d" % self.wait_ms)
             db.execute("BEGIN IMMEDIATE" if self.write else "BEGIN")
         except BaseException:
             db.close()
@@ -929,6 +1048,8 @@ class _Tx(object):
             except sqlite3.Error:
                 db.close()                  # the original error matters more than a failed rollback
                 return False
+        if self.wait_ms is not None:
+            db.execute("PRAGMA busy_timeout=%d" % BUSY_TIMEOUT_MS)
         self.store._give(db)
         return False
 
@@ -943,10 +1064,14 @@ def stored_body(db, blobs, limits, obj, now):
     text = canonical(obj)
     if blobs is None or len(text) < limits["blob_spill_bytes"]:
         return text
-    try:
-        key, ref, stored = blobs.write(text)
-    except B.BlobError:
-        raise Fail(503, "storage_unavailable", "the blob store did not accept this message body; try again")
+    hand = getattr(_LOCAL, "hand", None)
+    made = hand.stored(text) if hand is not None else None    # stored before this run, with no lock held
+    if made is None:
+        try:
+            made = blobs.write(text)
+        except B.BlobError:
+            raise Fail(503, "storage_unavailable", "the blob store did not accept this message body; try again")
+    key, ref, stored = made
     db.execute("INSERT INTO blobs(key, bytes, stored_bytes, created_ts) VALUES(?,?,?,?)",
                (key, len(text), stored, int(now)))
     return ref
@@ -5846,14 +5971,15 @@ class McpGateway(object):
         self.api, self.token, self.client_ip = api, token, client_ip
 
     def call(self, name, args):
+        def run(db):
+            now = C.now_ts()
+            subject = self.api.authenticate(db, MCP_KINDS, self.token, now)
+            if subject is None:
+                raise Fail(401, "unauthorized")
+            self.db, self.subject, self.now = db, subject, now
+            return getattr(self, "t_" + name[len("yobiru_"):])(args)
         try:
-            with self.api.store.tx() as db:
-                now = C.now_ts()
-                subject = self.api.authenticate(db, MCP_KINDS, self.token, now)
-                if subject is None:
-                    raise Fail(401, "unauthorized")
-                self.db, self.subject, self.now = db, subject, now
-                return getattr(self, "t_" + name[len("yobiru_"):])(args)
+            return self.api.store.locked(run)
         except Fail as f:
             return f.status, dict({"ok": False, "error": f.code, "detail": f.detail}, **f.extra)
         except sqlite3.Error as e:
@@ -6250,16 +6376,27 @@ def make_handler(api):
                 def handle(db):
                     # The decision time is taken after the body arrived and the transaction began: a slow body or
                     # a busy database can never make an expired lease or deadline look valid.
-                    req.now = C.now_ts()
+                    req.now, req.seen = C.now_ts(), None
                     if kinds is not None:
-                        req.subject = api.authenticate(db, kinds, req.token, req.now)
+                        # A read transaction cannot record a worker's last use: it is recorded right after, on its
+                        # own (Store.touch_worker).
+                        reading = "worker" in kinds and db.execute("PRAGMA query_only").fetchone()[0] == 1
+                        req.subject = api.authenticate(db, kinds, req.token, req.now, touch=not reading)
                         if req.subject is None:
                             raise Fail(401, "unauthorized")
+                        if reading and C.token_kind(req.token) == "worker" and \
+                                (req.subject.get("last_seen_ts") or 0) < int(req.now):
+                            req.seen = (req.subject["id"], req.now)
                     return getattr(api, name)(db, req)
                 # A GET reads first: most of them never write (the connector poll above all), and one that does
-                # runs again under the write lock. A worker credential records its last use, so it writes anyway.
-                write = self.command != "GET" or "worker" in (kinds or ())
+                # runs again under the write lock. That includes a worker's poll of its jobs: it reads message
+                # bodies, from the blob store when they are large, and under the write lock one slow read there
+                # holds up every other write on the gateway (they give up after 15 s: "storage error", 503
+                # storage_busy). Read first, a second run under the lock finds those bodies in the blob cache.
+                write = self.command != "GET"
                 status, obj = api.store.attempt(handle, write=write)
+                if req.seen:
+                    api.store.touch_worker(*req.seen)
                 if req.wait and status == 200 and req.cursor == obj.get("cursor"):
                     status, obj = self.wait_for_change(req, handle, status, obj)
                 if name == "share_card" and self._html:
