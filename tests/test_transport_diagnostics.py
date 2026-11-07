@@ -299,7 +299,8 @@ class PackagedDiagnosticsTests(unittest.TestCase):
             self.assertIn("tailscale ping", receiver["detail"])
             self.assertFalse(data["changed"])
             queries = [json.loads(line) for line in calls.read_text().splitlines()]
-            self.assertTrue(all(query in (["status", "--json"], ["debug", "prefs"]) for query in queries), queries)
+            self.assertTrue(all(query in (["status", "--json"], ["debug", "prefs"], ["lock", "status", "--json"])
+                            for query in queries), queries)
 
 
 if __name__ == "__main__":
