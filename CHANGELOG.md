@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+Gateway only; clients need no update. No schema change.
+
+- **A job claim no longer gets slower with every turn of a long conversation.** A claim hands the agent the
+  conversation's newest earlier turns (`transcript_turns`, 20, within `transcript_chars`, 24000), but it read the body
+  of every earlier message first and kept only those. A scan sent to an agent as 100+ sealed page batches, each
+  megabytes in the blob store and together far more than its 64 MB cache, made every claim read all of them back from
+  R2. On 2026-11-07 claims outgrew the host's 15 s request limit: the gateway had granted a lease the host never
+  received, and 10 minutes later those batches were marked read without having been saved. Now the transcript is read
+  newest first and stops once it is full; older messages are checked by their metadata only (one more turn, or one
+  withheld, still makes it a `context_reset`), so a claim reads at most `transcript_turns` earlier bodies however long
+  the conversation is, fewer when `transcript_chars` fills first, and only one when the newest turn alone is over it.
+  Under the write lock the transcript asks the blob store for its newest turn on its own before any others. The
+  transcript an agent gets is unchanged.
+
 ## 0.7.23 (2026-11-07)
 
 Clients only; the gateway needs no update. No schema change.
