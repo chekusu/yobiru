@@ -824,8 +824,9 @@ class _BlobHand(object):
 
     def body(self, ref):
         """The body of `ref` without a store call. A body not at hand is noted and stands in as an empty object:
-        the run goes on to find the others it needs (all in one pass for a job and its transcript), then it is
-        rolled back and runs again with them, whatever it answered. None once `inline`: read it under the lock."""
+        the run goes on to find the others it needs (in one pass for a job and its transcript, except that a
+        transcript first asks for its newest turn alone), then it is rolled back and runs again with them, whatever
+        it answered. None once `inline`: read it under the lock."""
         text = self.bodies.get(ref)
         if text is None and not self.inline:
             text = self.blobs.cached(ref)
@@ -2436,66 +2437,107 @@ def worker_item(db, row, contact, lease_id, lease_expires):
             "previously_started": row["started_attempts"] > 0}
 
 
+def transcript_candidate(m, contact):
+    """True when an earlier message of the conversation gives a transcript turn or is withheld from one (a context
+    reset); False when the transcript skips it. Its metadata only: no body is read."""
+    if m["author"] == "owner":
+        return True
+    if m["state"] != "completed":
+        return False
+    answered = bool(sqlite3.Row.__getitem__(m, "result"))     # a stored result, or a reference to one, is never ""
+    if m["route"] == "agent" and m["code"] == "read" and not answered:
+        return True                                         # read without a reply of its own (inbox)
+    return answered and (m["route"] == "agent" or bool(contact["preapproved"]))
+
+
+def transcript_turn(db, bot, contact, files_ok, m):
+    """The transcript entries of one candidate message, or None when it is withheld (a context reset)."""
+    if m["author"] == "owner":
+        if result_block(db, bot, contact, m):
+            return None
+        content = json.loads(m["content"])
+        return [dict({"role": "owner", "text": content.get("text"), "at": ts_iso(m["created_ts"])},
+                     **transcript_sealed(content))]
+    if m["route"] == "agent" and m["code"] == "read" and not sqlite3.Row.__getitem__(m, "result"):
+        if contact["generation"] != m["generation"]:
+            return None
+        content = json.loads(m["content"])
+        if has_files(content) and not files_ok:
+            return None
+        said = dict({"role": "caller", "message_id": m["id"], "kind": m["kind"], "text": content.get("text"),
+                     "at": ts_iso(m["created_ts"]), "read_without_reply": True}, **transcript_sealed(content))
+        if content.get("attachments"):
+            said["attachments"] = transcript_views(content["attachments"])
+        return [said]
+    if result_block(db, bot, contact, m):
+        return None
+    content, result = json.loads(m["content"]), json.loads(m["result"])
+    if (has_files(content) or has_files(result)) and not files_ok:
+        return None                   # result_block covers this too; kept explicit for the transcript
+    said = content.get("text") or (None if "sealed" in content else "(structured %s request)" % m["kind"])
+    caller_turn = dict({"role": "caller", "message_id": m["id"], "kind": m["kind"], "text": said,
+                        "at": ts_iso(m["created_ts"])}, **transcript_sealed(content))
+    bot_turn = dict({"role": "bot", "in_reply_to": m["id"], "text": result.get("text"),
+                     "at": ts_iso(m["finished_ts"])}, **transcript_sealed(result))
+    if content.get("attachments"):
+        caller_turn["attachments"] = transcript_views(content["attachments"])
+    if result.get("attachments"):
+        bot_turn["attachments"] = transcript_views(result["attachments"])
+    return [caller_turn, bot_turn]
+
+
+def turn_size(turn):
+    return sum(len(e.get("text") or "") + sum(len(a.get("content", "")) for a in e.get("attachments", [])) +
+               sealed_size(e) for e in turn)
+
+
+def bodies_missed():
+    """How many bodies the running Store.locked call has missed so far (each stood in for by an empty object)."""
+    hand = getattr(_LOCAL, "hand", None)
+    return len(hand.missed) if hand is not None else 0
+
+
 def transcript(db, limits, msg, bot, contact):
     """Earlier turns of this one conversation that the caller may still read now: chat turns the agent already
     answered (each was admitted by the owner's review) and their released replies, plus owner messages. Turns
     whose results are withheld (an older grant generation, a withdrawn capability) are left out and reported
     as a context reset. Bodies of faq/leave-message turns never passed the agent's inbound review, so they are
-    included only when the owner trusts this sender. Nothing from other conversations."""
-    rows = db.execute("SELECT * FROM messages WHERE conversation_id=? AND rowid < (SELECT rowid FROM messages "
-                      "WHERE id=?) ORDER BY rowid", (msg["conversation_id"], msg["id"])).fetchall()
-    turns, reset = [], False
+    included only when the owner trusts this sender. Nothing from other conversations.
+
+    The newest transcript_turns turns that fit in transcript_chars, read newest first: once they are found, older
+    messages are checked by their metadata only (one more turn or withheld one makes it a context reset). Reading
+    every earlier body first made a claim slower with each turn of a long conversation: a scan sent as 100+ sealed
+    page batches of megabytes each, all read back from the blob store for every claim, outgrew the host's 15 s
+    request limit, and the lease the host never received ran out (2026-11-07)."""
+    kept, used, reset = [], 0, False
     files_ok = "files" in current_caps(db, bot, msg["actor_id"], contact)
-    for m in rows:
-        content = json.loads(m["content"])
-        if m["author"] == "owner":
-            if result_block(db, bot, contact, m):
-                reset = True
-            else:
-                turns.append([dict({"role": "owner", "text": content.get("text"), "at": ts_iso(m["created_ts"])},
-                                   **transcript_sealed(content))])
-            continue
-        if m["route"] == "agent" and m["state"] == "completed" and m["code"] == "read" and not m["result"]:
-            if contact["generation"] != m["generation"] or (has_files(content) and not files_ok):
+    rows = db.execute("SELECT * FROM messages WHERE conversation_id=? AND rowid < (SELECT rowid FROM messages "
+                      "WHERE id=?) ORDER BY rowid DESC", (msg["conversation_id"], msg["id"]))
+    try:
+        for m in rows:
+            if not transcript_candidate(m, contact):
+                continue
+            if len(kept) == limits["transcript_turns"]:
+                reset = True                # an older turn (or a withheld one) is left out
+                break
+            missed = bodies_missed()
+            turn = transcript_turn(db, bot, contact, files_ok, m)
+            if not kept and bodies_missed() > missed:
+                # Under the write lock without this body: the run is rolled back and runs again once it is read.
+                # Ask for the newest turn alone first: when it is over the budget, no other body is needed.
+                break
+            if turn is None:
                 reset = True
                 continue
-            said = dict({"role": "caller", "message_id": m["id"], "kind": m["kind"], "text": content.get("text"),
-                         "at": ts_iso(m["created_ts"]), "read_without_reply": True}, **transcript_sealed(content))
-            if content.get("attachments"):
-                said["attachments"] = transcript_views(content["attachments"])
-            turns.append([said])          # read without a reply of its own (inbox)
-            continue
-        if m["state"] != "completed" or not m["result"]:
-            continue
-        if m["route"] != "agent" and not contact["preapproved"]:
-            continue
-        if result_block(db, bot, contact, m):
-            reset = True
-            continue
-        result = json.loads(m["result"])
-        if (has_files(content) or has_files(result)) and not files_ok:
-            reset = True                  # result_block covers this too; kept explicit for the transcript
-            continue
-        said = content.get("text") or (None if "sealed" in content else "(structured %s request)" % m["kind"])
-        caller_turn = dict({"role": "caller", "message_id": m["id"], "kind": m["kind"], "text": said,
-                            "at": ts_iso(m["created_ts"])}, **transcript_sealed(content))
-        bot_turn = dict({"role": "bot", "in_reply_to": m["id"], "text": result.get("text"),
-                         "at": ts_iso(m["finished_ts"])}, **transcript_sealed(result))
-        if content.get("attachments"):
-            caller_turn["attachments"] = transcript_views(content["attachments"])
-        if result.get("attachments"):
-            bot_turn["attachments"] = transcript_views(result["attachments"])
-        turns.append([caller_turn, bot_turn])
-    kept, used = [], 0
-    for turn in reversed(turns[-limits["transcript_turns"]:]):
-        size = sum(len(e.get("text") or "") + sum(len(a.get("content", "")) for a in e.get("attachments", [])) +
-                   sealed_size(e) for e in turn)
-        if used + size > limits["transcript_chars"]:
-            reset = True
-            break
-        kept.insert(0, turn)
-        used += size
-    return [entry for turn in kept for entry in turn], reset or len(turns) > len(kept)
+            size = turn_size(turn)
+            if used + size > limits["transcript_chars"]:
+                reset = True
+                break
+            kept.append(turn)
+            used += size
+    finally:
+        rows.close()
+    return [entry for turn in reversed(kept) for entry in turn], reset
 
 
 def job_view(db, cfg, msg, bot, contact, body=None):

@@ -144,12 +144,14 @@ class BlobUnitTests(unittest.TestCase):
 
 
 class BlobGatewayCase(unittest.TestCase):
+    limits = SPILL
+
     @classmethod
     def setUpClass(cls):
         cls._tmp = tempfile.TemporaryDirectory(prefix="yobiru blobs test ")
         cls.root = Path(cls._tmp.name)
         cls.s3 = FakeS3()
-        cls.gw = FriendsGateway(cls.root, limits=SPILL)
+        cls.gw = FriendsGateway(cls.root, limits=cls.limits)
         private(cls.gw.home / "r2.secret", SECRET + "\n")
         private(cls.gw.home / "blobs.json", json.dumps({"kind": "s3", "endpoint": cls.s3.url, "bucket": BUCKET,
                                                         "access_key_id": ACCESS, "secret_access_key_file": "r2.secret",
@@ -355,6 +357,72 @@ class BlobWriteLockTests(BlobGatewayCase):
         key = B.parse_ref(ref)[0]
         self.assertEqual({"/%s/gw/%s" % (BUCKET, key)}, set(self.s3.objects) - before)
         self.assertEqual(1, len(self.gw.sql("SELECT * FROM blobs WHERE key=?", (key,))))
+
+
+class TranscriptReadTests(BlobGatewayCase):
+    """A claim reads the bodies of the newest earlier turns only, however long the conversation. On 2026-11-07 a scan
+    sent to an agent as 100+ page batches (megabytes each, in the blob store) made every claim read back every earlier
+    batch; claims outgrew the host's 15 s limit and the batches whose lease ran out were marked read unsaved."""
+    limits = dict(SPILL, transcript_turns=3, transcript_chars=2000)
+
+    def page(self, a, wtoken, cid, b_source, text):
+        """One page sent with a picture (its body lives in the store), claimed and read by the agent."""
+        _, job = self.claimed(a, wtoken, cid, b_source, [media("page.png", BIG_PNG)], text=text)
+        self.read(wtoken, job)
+
+    def read(self, wtoken, job):
+        status, done = self.gw.call("POST", "/v1/worker/messages/%s/finish" % job["job_id"],
+                                    {"lease_id": job["lease"]["lease_id"], "fence": job["lease"]["fence"],
+                                     "outcome": "read"}, wtoken)
+        self.assertEqual((200, "read"), (status, done.get("code")), done)
+
+    def claim_cold(self, a, wtoken, cid, b_source, text):
+        """Send one more page and claim it with an empty body cache -> (job, store reads the claim made)."""
+        status, sent = self.gw.send(cid, b_source, kind="chat", text=text, attachments=[media("page.png", BIG_PNG)])
+        self.assertEqual(202, status, sent)
+        mid = sent["message_id"]
+        if [x for x in self.gw.reviews(a)["inbound"] if x["job_id"] == mid]:
+            self.assertEqual(200, self.gw.admit(a, mid)[0])
+        self.gw.restart()
+        calls = []
+        self.s3.hook = calls.append
+        status, job = self.gw.claim_job(wtoken, mid)
+        self.s3.hook = None
+        self.assertEqual(200, status, job)
+        return job, calls.count("GET")
+
+    def test_a_claim_reads_only_the_newest_turns_however_long_the_conversation(self):
+        a, wtoken, b_source, cid = self.friends()
+        for n in range(3):
+            self.page(a, wtoken, cid, b_source, "page %d" % n)
+        job, reads = self.claim_cold(a, wtoken, cid, b_source, "page 3")
+        self.assertEqual((["page 0", "page 1", "page 2"], False),
+                         ([t["text"] for t in job["transcript"]], job["context_reset"]))
+        self.assertTrue(all(t["read_without_reply"] for t in job["transcript"]))
+        self.read(wtoken, job)
+        for n in range(4, 12):
+            self.page(a, wtoken, cid, b_source, "page %d" % n)
+        job, reads_later = self.claim_cold(a, wtoken, cid, b_source, "page 12")
+        self.assertEqual((["page 9", "page 10", "page 11"], True),
+                         ([t["text"] for t in job["transcript"]], job["context_reset"]))
+        seen = job["transcript"][0]["attachments"][0]
+        self.assertEqual(("page.png", "image/png", False), (seen["name"], seen["media_type"], "data" in seen))
+        # its own body and the three newest turns', with 3 earlier pages and with 12
+        self.assertEqual([4, 4], [reads, reads_later])
+
+    def test_a_newest_turn_over_the_budget_is_the_only_earlier_body_read(self):
+        a, wtoken, b_source, cid = self.friends()
+        long_page = lambda n: "page %d " % n + "x" * 3000           # one turn is over transcript_chars
+        for n in range(3):
+            self.page(a, wtoken, cid, b_source, long_page(n))
+        job, reads = self.claim_cold(a, wtoken, cid, b_source, long_page(3))
+        self.assertEqual(([], True), (job["transcript"], job["context_reset"]))
+        self.read(wtoken, job)
+        for n in range(4, 12):
+            self.page(a, wtoken, cid, b_source, long_page(n))
+        job, reads_later = self.claim_cold(a, wtoken, cid, b_source, long_page(12))
+        self.assertEqual(([], True), (job["transcript"], job["context_reset"]))
+        self.assertEqual([2, 2], [reads, reads_later])          # its own body and the newest earlier one
 
 
 class LocalStoreTests(unittest.TestCase):
