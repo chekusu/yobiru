@@ -118,7 +118,8 @@ class ReadOnlyTests(Base):
         self.assertEqual(plugin_before, snapshot(PKG.plugin))      # no __pycache__ or state in the plugin
         calls = [json.loads(x) for x in (PKG.root / "ro-calls.log").read_text().splitlines()]
         self.assertTrue(calls)
-        self.assertTrue(all(c in (["status", "--json"], ["debug", "prefs"]) for c in calls), calls)
+        self.assertTrue(all(c in (["status", "--json"], ["debug", "prefs"], ["lock", "status", "--json"])
+                            for c in calls), calls)
 
     def test_messaging_commands_refuse_without_config(self):
         for args in (["inbox"], ["send", "peer", "hi"], ["serve"]):
@@ -161,6 +162,119 @@ class ReadOnlyTests(Base):
         self.assertEqual("ok", checks["tailscale"]["status"])
         self.assertEqual("error", checks["shields-up"]["status"])
         self.assertEqual("warn", checks["receiver"]["status"])
+
+
+KEY_A, KEY_B, KEY_C = ("tlpub:" + c * 64 for c in "abc")
+NODE = "nodekey:" + "d" * 64
+
+
+class TailnetLockTests(Base):
+    """Tailnet Lock support only reads `tailscale lock status --json` and prints commands for the owner."""
+
+    def lock_state(self, name, lock=None, **extra):
+        calls = PKG.root / ("lock-%s-calls.log" % name)
+        state = PKG.fake_state("lock-" + name, calls=str(calls), **(dict(lock=lock) if lock else {}), **extra)
+        return state, calls
+
+    def doctor(self, state):
+        self.write_config({"bind": "127.0.0.1", "port": free_port()})
+        r, d = PKG.run_json(["doctor", "--json"], self.user, tailscale=True, extra={"FAKE_TS_STATE": str(state)})
+        return r, {c["check"]: c for c in d["checks"]}
+
+    def assert_read_only(self, calls):
+        for c in (json.loads(x) for x in calls.read_text().splitlines()):
+            self.assertNotIn(c[:2], (["lock", "init"], ["lock", "sign"], ["lock", "add"], ["lock", "remove"],
+                                     ["lock", "disable"]), c)
+
+    def test_doctor_reports_lock_off_as_info(self):
+        state, calls = self.lock_state("off")
+        r, checks = self.doctor(state)
+        self.assertEqual("info", checks["tailnet-lock"]["status"])
+        self.assertIn("lock setup", checks["tailnet-lock"]["fix"])
+        self.assertNotIn("lock-signers", checks)
+        self.assert_read_only(calls)
+
+    def test_doctor_flags_unsigned_machine_with_the_key_to_sign(self):
+        state, calls = self.lock_state("unsigned", {"Enabled": True, "PublicKey": KEY_C, "NodeKey": NODE,
+                                                     "NodeKeySigned": False,
+                                                     "TrustedKeys": [{"Key": KEY_A}, {"Key": KEY_B}]})
+        r, checks = self.doctor(state)
+        self.assertEqual(1, r.returncode)
+        self.assertEqual("error", checks["tailnet-lock"]["status"])
+        self.assertIn("tailscale lock sign " + NODE, checks["tailnet-lock"]["fix"])
+        self.assertNotIn("lock-signers", checks)
+        self.assert_read_only(calls)
+
+    def test_doctor_warns_about_one_signer_an_agent_signer_and_hidden_peers(self):
+        state, _ = self.lock_state("risky", {"Enabled": True, "PublicKey": KEY_A, "NodeKey": NODE,
+                                              "NodeKeySigned": True, "TrustedKeys": [{"Key": KEY_A}],
+                                              "FilteredPeers": [{"Name": "bot-box.example.ts.net."}]})
+        self.write_config({"bind": "127.0.0.1", "port": free_port(),
+                           "wake_adapter": {"type": "exec", "argv": [FALSE]}})
+        r, d = PKG.run_json(["doctor", "--json"], self.user, tailscale=True, extra={"FAKE_TS_STATE": str(state)})
+        checks = {c["check"]: c for c in d["checks"]}
+        self.assertEqual("ok", checks["tailnet-lock"]["status"])
+        self.assertEqual("warn", checks["lock-signers"]["status"])
+        self.assertEqual("warn", checks["lock-signer-agent"]["status"])
+        self.assertIn("tailscale lock remove " + KEY_A, checks["lock-signer-agent"]["fix"])
+        self.assertEqual("warn", checks["lock-filtered"]["status"])
+        self.assertIn("bot-box.example.ts.net", checks["lock-filtered"]["detail"])
+
+    def test_doctor_survives_tailscale_without_lock_json(self):
+        state, _ = self.lock_state("old", lock_error="flag provided but not defined: -json")
+        r, checks = self.doctor(state)
+        self.assertEqual("info", checks["tailnet-lock"]["status"])
+        self.assertIn("not defined", checks["tailnet-lock"]["detail"])
+
+    def test_status_prints_public_keys_only(self):
+        state, calls = self.lock_state("status", {"Enabled": True, "PublicKey": KEY_A, "NodeKey": NODE,
+                                                   "NodeKeySigned": True, "NodeKeySignature": "secret-ish",
+                                                   "Head": "h", "TrustedKeys": [{"Key": KEY_A}, {"Key": KEY_B}]})
+        r, d = PKG.run_json(["lock", "status", "--json"], self.user, tailscale=True,
+                            extra={"FAKE_TS_STATE": str(state)})
+        self.assertEqual(0, r.returncode, r.stderr)
+        self.assertEqual((True, True, KEY_A, NODE, [KEY_A, KEY_B]),
+                         (d["enabled"], d["is_signer"], d["public_key"], d["node_key"], d["trusted_keys"]))
+        self.assertNotIn("secret-ish", r.stdout)
+        self.assertFalse(d["changed"])
+        self.assertFalse(self.home.exists())
+        self.assert_read_only(calls)
+
+    def test_setup_prints_init_for_the_signers_and_runs_nothing(self):
+        state, calls = self.lock_state("setup")
+        r, d = PKG.run_json(["lock", "setup", "--include-self", "--signer", KEY_B, "--signer", KEY_B, "--json"],
+                            self.user, tailscale=True, extra={"FAKE_TS_STATE": str(state)})
+        self.assertEqual(0, r.returncode, r.stderr)
+        self.assertEqual(["tailscale lock init --gen-disablements 3 --confirm %s %s" % (KEY_A, KEY_B)], d["commands"])
+        self.assertEqual([], d["warnings"])
+        self.assertFalse(d["changed"])
+        self.assert_read_only(calls)
+
+    def test_setup_warns_with_one_signer_and_rejects_bad_keys(self):
+        state, _ = self.lock_state("one")
+        r, d = PKG.run_json(["lock", "setup", "--signer", KEY_B, "--json"], self.user, tailscale=True,
+                            extra={"FAKE_TS_STATE": str(state)})
+        self.assertTrue(any("at least two" in w for w in d["warnings"]))
+        r = self.yobiru("lock", "setup", "--signer", "nodekey:" + "b" * 64, tailscale=True,
+                        extra={"FAKE_TS_STATE": str(state)})
+        self.assertEqual(2, r.returncode)
+        self.assertIn("tlpub", r.stderr)
+
+    def test_setup_on_a_locked_tailnet_adds_only_new_keys(self):
+        state, _ = self.lock_state("add", {"Enabled": True, "PublicKey": KEY_A, "NodeKey": NODE,
+                                            "NodeKeySigned": True, "TrustedKeys": [{"Key": KEY_A}, {"Key": KEY_B}]})
+        r, d = PKG.run_json(["lock", "setup", "--signer", KEY_B, "--signer", KEY_C, "--json"], self.user,
+                            tailscale=True, extra={"FAKE_TS_STATE": str(state)})
+        self.assertEqual(["tailscale lock add " + KEY_C], d["commands"])
+
+    def test_acl_limits_assistants_to_the_receiver_port(self):
+        self.write_config({"port": 7799})
+        r = self.yobiru("lock", "acl", "--assistant-tag", "tag:bot")
+        self.assertEqual(0, r.returncode, r.stderr)
+        policy = json.loads("\n".join(l for l in r.stdout.splitlines() if not l.startswith("//")))
+        self.assertIn({"action": "accept", "src": ["tag:bot"], "dst": ["tag:server:7799", "autogroup:member:7799"]},
+                      policy["acls"])
+        self.assertEqual(2, self.yobiru("lock", "acl", "--server-tag", "server").returncode)
 
 
 class SetupTests(Base):
