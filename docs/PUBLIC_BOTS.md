@@ -1053,7 +1053,9 @@ change and clients need nothing new. Two stores:
 standard library; `secret_access_key_file` (relative to `GW`, 0600) holds the secret. Give the key access to that
 one bucket only, keep the bucket private, and add a lifecycle rule that expires objects after 35 days as a backstop.
 A body is written to the store inside its request: if the store does not accept it the request fails with
-`503 storage_unavailable` and nothing is recorded. A body whose bytes no longer match its reference, or a store that
+`503 storage_unavailable` and nothing is recorded. Store calls never hold the database's write lock: a write that
+needs a body the process does not hold in memory, or a new one to store, rolls back, makes the call and runs again,
+so a slow store delays that request only, never the other writes. A body whose bytes no longer match its reference, or a store that
 cannot be reached, gives the same 503 on reads, never other content. Every 10 minutes the gateway deletes bodies no
 message refers to any more (expired, deleted, discarded drafts, failed requests after an hour). Bodies already in
 the database stay there until they expire; turning the store off again leaves stored references unreadable, so keep

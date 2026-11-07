@@ -248,6 +248,11 @@ class Blobs(object):
             self.cache.put(key, text)
         return text
 
+    def cached(self, value):
+        """The body of a reference when this process holds it in memory, else None: never a store call."""
+        parsed = parse_ref(value)
+        return value if parsed is None else self.cache.get(parsed[0])
+
     def delete(self, key):
         self.cache.drop(key)
         self.store.delete(key)

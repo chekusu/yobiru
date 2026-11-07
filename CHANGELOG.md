@@ -4,12 +4,17 @@
 
 Update the gateway, then clients. No schema change.
 
-- **A worker's poll no longer holds up every write on the gateway.** A worker's GET (`/v1/worker/jobs` above all)
-  ran under the database's write lock because it recorded the worker's last use, and the job list reads message
-  bodies, from the blob store (R2) when they are large. One slow read there made every other write wait, and after
-  15 s they gave up with `503 storage_busy`. Those requests now read first, like every other GET; the last use is
-  recorded right after on its own, waiting at most 2 s for the lock (best effort: the worker's next request records
-  it otherwise).
+- **A slow blob store no longer holds up every write on the gateway.** Large message bodies live in the blob
+  store (R2), and requests read and stored them while holding the database's write lock: a job poll, a job claim
+  (the body and its transcript), a send. On 2026-11-07 a job poll and, later, a job claim each held the lock for
+  30 s while an R2 call hung, and every other write gave up after 15 s with `503 storage_busy`. Now:
+  - **No blob store call under the write lock.** A write that needs bodies this process does not hold in memory
+    notes them all, is rolled back, reads them with no lock held and runs again; a new large body is stored before
+    the write that refers to it. One that ends without referring to it deletes it again. A slow store call delays
+    that one request only.
+  - **A worker's GETs read first**, like every other GET (`/v1/worker/jobs` above all). They took the write lock to
+    record the worker's last use; that is now recorded right after on its own, waiting at most 2 s for the lock
+    (best effort: the worker's next request records it otherwise).
 - **Sign in with the Chekusu account.** `enroll-bot URL --name N --chekusu` prints a link and a code; once the
   owner has signed in at login.chekusu.com, the same command again enrolls the bot (or joins the owner the address
   already belongs to). Chekusu is an ordinary email partner (`partners.chekusu` in `gateway.json`), so existing
