@@ -3814,8 +3814,8 @@ class Api(object):
     def bot_quota(self, db, owner_id):
         if db.execute("SELECT COUNT(*) FROM bots b WHERE b.owner_id=? AND NOT " + RETIRED, (owner_id,)).fetchone()[0] \
                 >= self.limits["bots_per_self_enrolled_owner"]:
-            raise Fail(409, "too_many_bots", "self-enrolled owners have a small bot quota on this gateway; retire a "
-                                             "bot first (revoke its managers with everything)")
+            raise Fail(409, "too_many_bots", "self-enrolled owners have a small bot quota on this gateway; delete a bot "
+                                             "(bot delete) or retire one (revoke its managers with everything) first")
 
     def owner_bots(self, db, owner):
         """The bots a credential administers: all of the owner's, or the one bot of a manager credential."""
@@ -4002,6 +4002,64 @@ class Api(object):
             db.execute("UPDATE contacts SET epoch=epoch+1, generation=generation+1, updated_ts=? WHERE bot_id=?",
                        (int(now), bot["id"]))
         return 200, dict(owner_bot_view(self.cfg, db, self.own_bot(db, r.subject, bot["id"])), ok=True)
+
+    def bot_delete(self, db, r):
+        """Deletes the bot from this gateway for good, in one transaction: its page (picture, links, agents), every
+        credential and binding made for it (sources, managers, workers, connectors, verifiers, its hosted wake), its
+        follows, contacts and inbox in both directions, and every conversation it had, as the bot and as a caller of
+        other bots: pending work is cancelled, message bodies are overwritten before the rows go, and their decision
+        receipts go with them. The handle stays reserved to the owner, so its share link never leads to someone
+        else's bot. The owner credential only (never a manager credential), with the handle repeated. Copies that
+        callers, other owners, agents or their providers already received, and backups, are not affected."""
+        self.owner_only(r)
+        bot, now = self.own_bot(db, r.subject, r.params["bid"]), r.now
+        fields(r.body, ("confirm",), ("confirm",))
+        confirm = r.body["confirm"]
+        if not isinstance(confirm, str) or (confirm[1:] if confirm.startswith("@") else confirm) != bot["handle"]:
+            raise Fail(400, "confirm_mismatch", "confirm: this bot's handle, @%s, to delete it and everything the "
+                                                "gateway keeps for it for good" % bot["handle"])
+        bid, args = bot["id"], (bot["id"], bot["id"])
+        count = lambda q, *a: db.execute(q, a).fetchone()[0]  # noqa: E731
+        peers = {row[0] for row in db.execute(
+            "SELECT dst FROM follows WHERE src=? UNION SELECT src FROM follows WHERE dst=? UNION "
+            "SELECT actor_id FROM contacts WHERE bot_id=? UNION SELECT bot_id FROM contacts WHERE actor_id=? UNION "
+            "SELECT actor_id FROM conversations WHERE bot_id=? UNION SELECT bot_id FROM conversations WHERE actor_id=?",
+            args * 3)} - {bid}
+        convs = "(SELECT id FROM conversations WHERE bot_id=? OR actor_id=?)"
+        removed = {
+            "conversations": count("SELECT COUNT(*) FROM conversations WHERE bot_id=? OR actor_id=?", *args),
+            "messages": count("SELECT COUNT(*) FROM messages WHERE bot_id=? OR actor_id=? OR conversation_id IN "
+                              + convs, *(args * 2)),
+            "follows": count("SELECT COUNT(*) FROM follows WHERE src=? OR dst=?", *args),
+            "contacts": count("SELECT COUNT(*) FROM contacts WHERE bot_id=? OR actor_id=?", *args),
+            "credentials": count("SELECT COUNT(*) FROM credentials WHERE revoked_ts IS NULL AND (subject=? OR subject "
+                                 "IN (SELECT id FROM workers WHERE bot_id=?) OR subject IN (SELECT id FROM verifiers "
+                                 "WHERE bot_id=?))", bid, bid, bid)}
+        cancel_where(db, now, "bot_deleted", "(bot_id=? OR actor_id=?)", args)
+        db.execute("UPDATE messages SET content='{}', result=NULL, draft=NULL, content_attachment_bytes=0, "
+                   "reply_attachment_bytes=0 WHERE bot_id=? OR actor_id=? OR conversation_id IN " + convs, args * 2)
+        db.execute("DELETE FROM messages WHERE bot_id=? OR actor_id=? OR conversation_id IN " + convs, args * 2)
+        db.execute("DELETE FROM decisions WHERE bot_id=? OR contact=? OR conversation_id IN " + convs, args * 2)
+        db.execute("DELETE FROM conversations WHERE bot_id=? OR actor_id=?", args)
+        db.execute("DELETE FROM contacts WHERE bot_id=? OR actor_id=?", args)
+        db.execute("DELETE FROM inbox_acceptances WHERE bot_id=? OR actor_id=?", args)
+        db.execute("DELETE FROM follows WHERE src=? OR dst=?", args)
+        db.execute("DELETE FROM checks WHERE worker_id IN (SELECT id FROM workers WHERE bot_id=?)", (bid,))
+        db.execute("DELETE FROM credentials WHERE subject=? OR subject IN (SELECT id FROM workers WHERE bot_id=?) OR "
+                   "subject IN (SELECT id FROM verifiers WHERE bot_id=?)", (bid, bid, bid))
+        for table in ("workers", "verifiers", "hosted_wakes", "bot_profiles", "bot_stats"):
+            db.execute("DELETE FROM %s WHERE bot_id=?" % table, (bid,))
+        db.execute("DELETE FROM bots WHERE id=?", (bid,))
+        db.execute("DELETE FROM connector_changes WHERE bot_id=?", (bid,))
+        # Deleting rows fires no change trigger: move every bot and caller it knew, so their waiting connectors
+        # and listings see the follows, contacts and conversations gone.
+        for peer in sorted(peers):
+            db.execute(bump_change("?").strip().rstrip(";"), (peer, peer))
+        return 200, {"ok": True, "bot_id": bid, "handle": "@" + bot["handle"], "deleted": True, "removed": removed,
+                     "handle_reserved": True,
+                     "note": "deleted from this gateway with its page, credentials, bindings, follows, contacts and "
+                             "conversations; the handle stays reserved to you. Copies others already received, and "
+                             "the gateway's backups until they expire, are not affected."}
 
     def contact_list(self, db, r):
         bot = self.own_bot(db, r.subject, r.params["bid"])
@@ -5839,6 +5897,7 @@ ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
     ("POST", r"/v1/owner/bots/(?P<bid>%s)/wake/test" % BOT_ID, "hosted_wake_test", OWNER),
     ("DELETE", r"/v1/owner/bots/(?P<bid>%s)/avatar" % BOT_ID, "avatar_remove", OWNER),
     ("POST", r"/v1/owner/bots/(?P<bid>%s)/unpublish" % BOT_ID, "bot_unpublish", OWNER),
+    ("POST", r"/v1/owner/bots/(?P<bid>%s)/delete" % BOT_ID, "bot_delete", OWNER),
     ("GET", r"/v1/owner/bots/(?P<bid>%s)/contacts" % BOT_ID, "contact_list", OWNER),
     ("POST", r"/v1/owner/bots/(?P<bid>%s)/contacts/(?P<aid>%s)" % (BOT_ID, PRINCIPAL), "contact_action", OWNER),
     ("GET", r"/v1/owner/bots/(?P<bid>%s)/followers" % BOT_ID, "followers", OWNER),

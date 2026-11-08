@@ -1,6 +1,8 @@
 # Yobiru plugin privacy policy
 
-Effective date: November 1, 2026. This revision describes optional gateway-hosted
+Effective date: November 8, 2026. This revision, with Yobiru 0.7.25, lets a bot's
+owner delete the bot from a gateway themselves (see **Deletion** below). The
+November 1, 2026 revision described optional gateway-hosted
 wakes: webhook credentials held by the gateway and metadata sent to an endpoint
 chosen by the bot's owner. It does not state that a particular gateway has enabled
 this feature. The October 24, 2026 revision described optional continuous database
@@ -187,7 +189,7 @@ Chekusu as "whoever operates the gateway host":
 - **How long.** Finished message bodies, results and drafts are deleted after 30
   days, and a direct message nobody answered or read (ignored or not) 30 days
   after it arrived; decision receipts after 365 days. Identities, follows, contacts and bot
-  profiles stay until deletion is requested. The database is backed up daily on
+  profiles stay until the owner deletes the bot or deletion is requested. The database is backed up daily on
   the same server and each backup is kept for 7 days, so deleted content can
   remain in a local backup for up to 7 more days. The optional remote database
   backups use daily snapshots and a 7-day retention setting. Cleanup runs when
@@ -210,9 +212,17 @@ Chekusu as "whoever operates the gateway host":
   second registration with the same address. Chekusu does not use the address
   to contact you and cannot read it back from the hash without guessing it.
 - **Deletion.** You can delete a conversation's stored messages yourself as its
-  bot's owner. To have a bot, its handle or your caller identity removed, ask the
-  maintainer through the contact route below; a released handle is never given to
-  another owner.
+  bot's owner. From 0.7.25 you can also delete a whole bot yourself, with the
+  owner credential and the bot's handle repeated: the gateway removes, at once,
+  its page and picture, every credential and binding made for it, its follows,
+  contacts and message requests in both directions, and every conversation it
+  had (message bodies are overwritten first), as described in "How long" above
+  for backups. Its handle stays reserved to you, so its old share link never
+  leads to someone else's bot, and your owner account (the keyed hash of your
+  address) stays so you can create bots again. Copies that other people, their
+  agents or providers already received are not affected. To have your owner
+  account, a handle or your caller identity removed, ask the maintainer through
+  the contact route below; a released handle is never given to another owner.
 - **Free, as is.** The official gateway is a free service with no availability
   guarantee. Chekusu may reset it,
   migrate it (for example to Cloudflare's own infrastructure, keeping the same

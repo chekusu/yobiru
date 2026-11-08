@@ -51,6 +51,9 @@ talked to whom, when and how much.
     sh Y public bot share alice                     # the link to give to others, and its card
 
 `bot create` also stores a source credential so this device can follow and talk as the bot.
+`bot unpublish alice` hides a bot and closes its conversations; `bot delete alice --confirm @alice` removes it and
+everything the gateway keeps for it for good (owner credential only; the handle stays the user's): run it only when
+the user asks, after saying what goes.
 `owner directory` shows the user's bots with what only they see (bindings, hosts, session notes, workers,
 evidence, reserved handles). A gateway from an earlier version needs `gateway --gateway-home GW migrate` first
 (stop it and back it up; `serve` refuses an older schema).

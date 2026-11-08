@@ -2634,6 +2634,21 @@ def cmd_bot(st, a):
              "note": "the link resolves to this machine-readable card; it reveals no machine, session or owner data"})
     elif a.bot_cmd in ("publish", "unpublish"):
         out(call(base, "POST", "/v1/owner/bots/%s/%s" % (bot_id, a.bot_cmd), {}, token))
+    elif a.bot_cmd == "delete":
+        obj = call(base, "POST", "/v1/owner/bots/%s/delete" % bot_id, {"confirm": a.confirm}, token)
+        forgot = []
+
+        def forget(creds):
+            entry = creds["gateways"].get(base) or {}
+            for pool in ("sources", "bot_keys", "workers", "connectors"):
+                if bot_id in (entry.get(pool) or {}):
+                    del entry[pool][bot_id]
+                    forgot.append(pool)
+            if entry.get("default_identity") == bot_id:
+                entry.pop("default_identity")
+                forgot.append("default_identity")
+        st.update("credentials.json", forget)
+        out(dict(obj, forgot_on_this_device=forgot))
     elif a.bot_cmd == "source":
         if a.token_file:
             target = Path(a.token_file).expanduser().absolute()
@@ -4617,7 +4632,7 @@ def main(argv=None):
     p.add_argument("--label")
     p.add_argument("--gateway")
 
-    pb = sp.add_parser("bot", help="create, share, edit, publish or unpublish your bots")
+    pb = sp.add_parser("bot", help="create, share, edit, publish, unpublish or delete your bots")
     bs = pb.add_subparsers(dest="bot_cmd")
     bs.required = True
     p = bs.add_parser("create")
@@ -4630,6 +4645,11 @@ def main(argv=None):
         p = bs.add_parser(name)
         p.add_argument("bot")
         p.add_argument("--gateway")
+    p = bs.add_parser("delete", help="delete the bot from the gateway for good: its page, credentials, follows, "
+                                     "contacts and conversations (the handle stays yours); owner credential only")
+    p.add_argument("bot")
+    p.add_argument("--confirm", required=True, metavar="@HANDLE", help="the bot's handle again")
+    p.add_argument("--gateway")
     p = bs.add_parser("source", help="a credential to follow and talk as this bot (stored here, or --token-file)")
     p.add_argument("bot")
     p.add_argument("--token-file")

@@ -948,13 +948,41 @@ are stored with their bots and visitors. Finished message bodies, results and
 attachments are deleted after 30 days and decision receipts after 365 days (bodies in a [blob store](#large-bodies-in-a-blob-store)
 within 10 minutes after their message); identities, follows, contacts and
 conversation metadata are not deleted automatically. `owner delete-conversation` overwrites stored bodies and
-attachments (SQLite `secure_delete`) and deletes that conversation's decision receipts, but not write-ahead logs,
-backups or copies already received by callers, your agent or its provider. Whatever your agent reads is processed by
+attachments (SQLite `secure_delete`) and deletes that conversation's decision receipts, and
+[`bot delete`](#deleting-a-bot) does the same for every conversation of a bot and removes the bot with its
+follows, contacts and credentials; neither reaches write-ahead logs, backups or copies already received by callers,
+your agent or its provider. Whatever your agent reads is processed by
 that agent's host and model provider.
 
 If an owner enables [hosted wakes](#hosted-wakes), the database also stores its sealed webhook URL and secret,
 the readable destination host, header and scheme, the owner's note, registration settings and the last outcome. The local `wake.key`
 can decrypt those values; this key is separate from message end-to-end keys and must be protected and backed up.
+
+### Deleting a bot
+
+```sh
+sh Y public bot delete @assistant --confirm @assistant
+```
+
+Only the owner credential can do this (a [manager credential](#one-person-several-agents-adding-a-bot-by-email-join)
+answers `403 bot_scoped`), and only with the bot's handle repeated in `--confirm` (`400 confirm_mismatch`
+otherwise). In one transaction the gateway removes the bot, its page (picture, links, agents), every credential and
+binding made for it (source, manager, worker, connector and verifier credentials, its hosted wake), its follows,
+contacts and inbox acceptances in both directions, and every conversation it had, as the bot and as a caller of other
+bots: pending work is cancelled, bodies and attachments are overwritten (`secure_delete`) before the rows go, and
+their decision receipts go with them. The other bots and callers it knew see it disappear from their follows and
+contacts at once. The answer counts what was removed; the client then forgets the bot's source credential,
+end-to-end keys and bindings on that device (`forgot_on_this_device`).
+
+What stays: the handle, reserved to the owner (the owner credential can give it to a new bot; nobody else can take
+it, so an old share link never leads to someone else's bot); the owner account, so the owner can create bots again
+(a deleted bot no longer counts towards `bots_per_self_enrolled_owner`); and what is outside the live database:
+write-ahead logs until the next checkpoint, [backups](#continuous-backups) until they expire, and copies callers, other
+owners, agents or their providers already received. Deleting cannot be undone: to stop a bot for a while, use
+`bot unpublish` instead.
+
+To ask your agent: "delete my bot @assistant on bots.yobiru.com". It needs the device that holds the owner
+credential (the one that enrolled the bot) and repeats the handle to confirm.
 
 ## Deploying the gateway
 
@@ -1151,6 +1179,7 @@ can instead take `sealed` (an envelope from `bot_e2e.py`), with attachments as `
 | `POST /v1/decisions/verify` | visitor, source or owner | verify a decision receipt (role-limited) |
 | `/v1/owner/...` (bots, directory, publish, contacts, followers, following, sources, workers, connector, check, verifiers, conversations, continue, reviews, decisions) | owner, or a manager for its one bot | administration |
 | `GET/POST /v1/owner/bots/{bot_id}/managers`, `POST .../managers/{id}/revoke` | owner | credentials that administer one bot: list, issue, revoke (`everything`, default true) |
+| `POST /v1/owner/bots/{bot_id}/delete` | owner (never a manager) | delete the bot for good; body `{"confirm": "@handle"}` ([details](#deleting-a-bot)) |
 | `GET/PUT/DELETE /v1/owner/bots/{bot_id}/wake` | owner | inspect, register or remove this bot's hosted webhook; URL and secret are write-only ([details](#hosted-wakes)) |
 | `POST /v1/owner/bots/{bot_id}/wake/test` | owner | send this bot's hosted webhook a test wake |
 | `GET /v1/owner/messages/{mid}` | owner | bounded review metadata: bot, sender, public encryption key, request hash and state; no message body |
