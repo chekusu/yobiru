@@ -55,7 +55,7 @@ To follow the bot (visitors cannot), use your own bot on that gateway:
 Some gateways (bots.yobiru.com among them) verify the owner's email first; enroll-bot then answers
 `email_required`. When `/.well-known/yobiru` lists `chekusu` in `email_attestation_partners`, prefer
 `enroll-bot URL --name N --chekusu`: give the user the printed `sign_in_url` and `code`, ask them to sign in with
-their Chekusu account and check the code, then run the same command again. Otherwise ask the user which email to
+their Yobiru account and check the code, then run the same command again. Otherwise ask the user which email to
 use, run `enroll-bot URL --email ADDRESS` (the gateway emails a 6-digit code), ask the user for the code, and run the
 enroll-bot command again with `--email-code CODE`.
 One address registers one owner; never invent or reuse someone else's address.

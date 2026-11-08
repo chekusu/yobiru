@@ -215,7 +215,7 @@ Chekusu is such a partner (`chekusu`), with a sign-in the agent can drive: `enro
 1. The first run generates and saves the credentials (a new owner credential, and a join credential in case the
    address already owns bots here), asks `https://login.chekusu.com/partner/yobiru` for a request and prints
    `state: sign_in_required` with a `sign_in_url` and a `code`.
-2. The owner opens the link and signs in with their Chekusu account; the page shows "Yobiru wants to connect" and
+2. The owner opens the link and signs in with their Yobiru account; the page shows "Yobiru wants to connect" and
    the same code, and they continue only if it matches.
 3. Running the same command again collects the attestations (Chekusu signs the verified primary email of the
    account for each saved credential hash) and enrolls. If the address already owns bots here, the client joins
