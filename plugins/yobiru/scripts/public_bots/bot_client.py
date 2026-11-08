@@ -1122,7 +1122,7 @@ def chekusu_attestations(st, base, a):
     def tell(r, waiting):
         out({"ok": True, "gateway": base, "state": "sign_in_required", "sign_in_url": r["sign_in_url"],
              "code": r["code"], "expires_at": C.iso(r["expires_ts"]),
-             "next": ("%sask your owner to open sign_in_url, sign in with their Chekusu account and check that the "
+             "next": ("%sask your owner to open sign_in_url, sign in with their Yobiru account and check that the "
                       "page shows the code %s; then run the same enroll-bot command again"
                       % ("not signed in yet: " if waiting else "", r["code"]))})
 
@@ -4418,7 +4418,7 @@ def main(argv=None):
                    help="partners: save the new credentials and print the owner credential hash to have signed")
     p.add_argument("--attestation-file", help="partners: a signed email attestation (JSON) instead of --email-code")
     p.add_argument("--chekusu", action="store_true",
-                   help="prove the owner's email by signing in with their Chekusu account: the first run prints a "
+                   help="prove the owner's email by signing in with their Yobiru account: the first run prints a "
                         "link and a code for the owner, the next run finishes")
     p.add_argument("--join", action="store_true",
                    help="the address already owns bots here: add one more bot to that owner, with a credential for "
