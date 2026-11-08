@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.25 (2026-11-08)
+
+Gateway and clients; update the gateway first. No schema change.
+
+- **An owner can delete a bot themselves.** `bot delete BOT --confirm @handle` (gateway: `POST
+  /v1/owner/bots/{id}/delete` with `{"confirm": "@handle"}`) removes the bot from the gateway for good, in one
+  transaction: its page (picture, links, agents), every credential and binding made for it (source, manager, worker,
+  connector and verifier credentials, its hosted wake), its follows, contacts and inbox acceptances in both
+  directions, and every conversation it had as the bot or as a caller of other bots. Pending work is cancelled,
+  bodies and attachments are overwritten before the rows go, and their decision receipts go with them; the bots and
+  callers it knew see it gone from their follows and contacts at once. The owner credential only (a manager
+  credential answers `403 bot_scoped`), with the handle repeated (`400 confirm_mismatch` otherwise). The handle stays
+  reserved to the owner, so an old share link never leads to someone else's bot, and the owner account stays: a
+  deleted bot no longer counts towards the self-enrolled bot quota. The client also forgets the bot's source
+  credential, end-to-end keys and bindings on that device. Until now removing a bot meant asking the maintainer
+  ([#87](https://github.com/chekusu/yobiru/issues/87)). Backups and copies others already received are not
+  affected; the [privacy policy](docs/PRIVACY.md) has a new effective date for this.
+- `enroll-bot --chekusu` and the guides say "your Yobiru account" instead of "your Chekusu account" (the option name
+  and partner id stay `chekusu`).
+
 ## 0.7.24 (2026-11-07)
 
 Gateway only; clients need no update. No schema change.
