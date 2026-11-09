@@ -83,6 +83,9 @@ class GatewayReportTests(unittest.TestCase):
             ("2026-11-02 10:00:05 mail relay: sent 0, failed 1", "yobiru-gateway-mail.service"),
             ("2026-11-02 10:00:06 yobiru-bot-gateway serving on 127.0.0.1:7780 home=/x processes=8",
              "yobiru-gateway.service"),
+            ("2026-11-02 10:00:07 request process 41 holds 530 MB, over 512 MB: starting another; this one finishes "
+             "its requests and stops", "yobiru-gateway.service"),
+            ("2026-11-02 10:00:09 request process 41 recycled (status 0)", "yobiru-gateway.service"),
         )] + ["not json"]
         out = self.report.count_journal(lines)
         self.assertEqual(out["requests"]["total"], 6)
@@ -91,7 +94,8 @@ class GatewayReportTests(unittest.TestCase):
                                          "other": 1})
         self.assertEqual(out["errors_5xx"], {"share_card 500": 1})
         self.assertEqual(out["events"], {"yobiru-gateway:internal_error": 1, "yobiru-gateway-mail:mail": 1,
-                                         "yobiru-gateway:aborted": 1, "yobiru-gateway:start": 1})
+                                         "yobiru-gateway:aborted": 1, "yobiru-gateway:start": 1,
+                                         "yobiru-gateway:recycled": 1})
         self.assertEqual(len(out["samples"]), 2)                 # the internal error and the mail failure
         text = " ".join(out["samples"])
         self.assertNotIn("someone@example.com", text)

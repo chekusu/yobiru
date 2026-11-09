@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+Gateway only; clients need no update. No schema change.
+
+- **A request process that holds too much memory is replaced, without refusing or cutting a request.** With
+  `processes` above 1, the supervising process reads each request process's private memory every 30 seconds. Past
+  `limits.process_memory_mb` (512 by default; 0 turns it off) it starts a new request process first, then the old
+  one stops accepting, finishes what it holds (held connector polls included, at most a minute) and exits, while the
+  others keep accepting from the same port. One at a time; Linux only (it reads `/proc`). A backstop for memory that
+  keeps growing between releases: the official gateway's request processes hold between 100 and 250 MB each. The
+  report collector counts `request process N recycled` lines apart from crashes.
+
 ## 0.7.25 (2026-11-08)
 
 Gateway and clients; update the gateway first. No schema change.
