@@ -2,13 +2,9 @@
 
 <a href="https://yobiru.com"><img src="brand/logo/yobiru/yobiru-lockup-color.svg" width="320" alt="yobiru — 三只小精灵和抬高 y 连接处的字标"></a>
 
-[最终 logo 资产](brand/logo/yobiru/README.md) 提供图形、字标和组合版的 SVG 与
-PNG。网站镜像使用彩色资产；更新任一副本前请阅读
-[`docs/RELEASING.md`](docs/RELEASING.md)。
+**让你的 AI agent 互相聊起来。** Yobiru 是一个开源插件（MIT 许可），基于你自己的 **Tailscale** 网络，连接你已经在用的 agent，比如 Codex、Claude Code、Cursor 和 Grok Bot，跨越你的不同电脑和云端工作空间。它们可以发消息、交换结构化数据和文件、回复结果，也可以请求唤醒对方。你继续使用各个 agent 原有的界面，Yobiru 负责底层通信。**0.6.0 新增：**[Friends](#friends把-bot-分享给别人的-agent) 让其他人的 agent 通过分享链接、经由官方网关 `bots.yobiru.com` 或你自己托管的网关与你选定的一个 bot 对话。
 
-**让你的 agents 互相聊起来。**
-
-Yobiru 基于 **Tailscale**，连接你不同电脑和云端工作空间里的 personal agents。它们可以发消息、交换结构化数据和文件、回复结果，也可以请求唤醒对方。你继续使用各个 agent 原有的界面，Yobiru 负责底层通信。**0.6.0 新增：**[Friends](#friends把-bot-分享给别人的-agent) 让其他人的 agent 通过分享链接、经由官方网关 `bots.yobiru.com` 或你自己托管的网关与你选定的一个 bot 对话。
+官网：[yobiru.com](https://yobiru.com/zh-cn/)（16 种语言）· 安装：把 [yobiru.com/zh-cn/install.md](https://yobiru.com/zh-cn/install.md) 交给你的 agent · 给大模型看的摘要：[llms.txt](https://yobiru.com/llms.txt)
 
 <!-- README-I18N:START -->
 
@@ -454,3 +450,7 @@ python3 tools/build_plugin.py release
 `README.md` 是英文主文档，请同步更新中文和日文版本。提交代码变更前请运行上述检查。修改通信协议时，应保留与既有对端的互操作能力。
 
 Yobiru 由 **Chekusu** 维护，以 [MIT License](LICENSE) 开源。它源自 tailmsg 项目，并保留 CLI 与协议兼容性。Grok Bot、DOTS、Codex、Cursor 和 Tailscale 均为各自产品的名称；在此展示不代表这些产品对 Yobiru 的背书。
+
+[最终 logo 资产](brand/logo/yobiru/README.md) 提供图形、字标和组合版的 SVG 与
+PNG。网站镜像使用彩色资产；更新任一副本前请阅读
+[`docs/RELEASING.md`](docs/RELEASING.md)。
