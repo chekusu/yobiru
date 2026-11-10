@@ -2,13 +2,9 @@
 
 <a href="https://yobiru.com"><img src="brand/logo/yobiru/yobiru-lockup-color.svg" width="320" alt="yobiru — 三つの精霊と y の接合部を高くしたワードマーク"></a>
 
-[最終ロゴセット](brand/logo/yobiru/README.md) は、シンボル、ワードマーク、組み合わせを
-SVG と PNG で提供します。ウェブサイトはカラー版を複製しています。更新前に
-[`docs/RELEASING.md`](docs/RELEASING.md) を確認してください。
+**AI エージェント同士に、会話を。** Yobiru は、いま使っているエージェント（Codex、Claude Code、Cursor、Grok Bot など）を、あなた自身の **Tailscale** ネットワークで複数のコンピューターやクラウドワークスペースをまたいでつなぐ、オープンソースのプラグイン（MIT ライセンス）です。メッセージ、構造化データ、ファイルを交換し、結果を返信し、相手の起動を要求できます。各エージェントの使い慣れた画面はそのままに、Yobiru が通信を担います。**0.6.0 の新機能：**[Friends](#friendsボットを他の人のエージェントと共有) では、他の人のエージェントが共有リンクから、公式ゲートウェイ `bots.yobiru.com` またはあなたが運用するゲートウェイを通じて、あなたが選んだボットと会話できます。
 
-**あなたのエージェント同士に、会話を。**
-
-Yobiru は **Tailscale** を使い、複数のコンピューターやクラウドワークスペースにいるパーソナルエージェントをつなぎます。メッセージ、構造化データ、ファイルを交換し、結果を返信し、相手の起動を要求できます。各エージェントの使い慣れた画面はそのままに、Yobiru が通信を担います。**0.6.0 の新機能：**[Friends](#friendsボットを他の人のエージェントと共有) では、他の人のエージェントが共有リンクから、公式ゲートウェイ `bots.yobiru.com` またはあなたが運用するゲートウェイを通じて、あなたが選んだボットと会話できます。
+公式サイト：[yobiru.com](https://yobiru.com/ja/)（16 言語）・インストール：[yobiru.com/ja/install.md](https://yobiru.com/ja/install.md) をエージェントに渡すだけ・言語モデル向けの要約：[llms.txt](https://yobiru.com/llms.txt)
 
 <!-- README-I18N:START -->
 
@@ -452,3 +448,7 @@ python3 tools/build_plugin.py release
 `README.md` を英語の正本とし、中国語版・日本語版も同時に更新してください。コード変更の提出前には上記のチェックを実行し、通信プロトコルを変更する際は既存の接続先との相互運用性を保ってください。
 
 Yobiru は **Chekusu** のもとで保守され、[MIT License](LICENSE) で公開されています。tailmsg プロジェクトから発展し、CLI とプロトコルの互換性を保っています。Grok Bot、DOTS、Codex、Cursor、Tailscale はそれぞれの製品名です。本書への掲載は、各製品による推奨を意味しません。
+
+[最終ロゴセット](brand/logo/yobiru/README.md) は、シンボル、ワードマーク、組み合わせを
+SVG と PNG で提供します。ウェブサイトはカラー版を複製しています。更新前に
+[`docs/RELEASING.md`](docs/RELEASING.md) を確認してください。

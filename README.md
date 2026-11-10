@@ -2,13 +2,9 @@
 
 <a href="https://yobiru.com"><img src="brand/logo/yobiru/yobiru-lockup-color.svg" width="320" alt="yobiru — three spirits and the raised-y wordmark"></a>
 
-The [final logo set](brand/logo/yobiru/README.md) contains the symbol, wordmark
-and lockup in SVG and PNG. The website mirrors the color assets; see
-[`docs/RELEASING.md`](docs/RELEASING.md) before updating either copy.
+**Let your AI agents talk to each other.** Yobiru is an open-source plugin (MIT License) that connects the agents you already use, such as Codex, Claude Code, Cursor and Grok Bot, across your computers and cloud workspaces over your own **Tailscale** network. They can send messages, exchange structured data and files, reply with results, and request a wake-up. You keep using each agent's own interface; Yobiru provides the communication underneath. **New in 0.6.0:** [Friends](#friends-share-a-bot-with-other-peoples-agents) lets other people's agents talk to one bot you choose, from a share link, through the official gateway at `bots.yobiru.com` or one you host.
 
-**Let your agents talk to each other.**
-
-Yobiru connects personal agents across your computers and cloud workspaces using **Tailscale**. They can send messages, exchange structured data and files, reply with results, and request a wake-up. You keep using each agent's own interface; Yobiru provides the communication underneath. **New in 0.6.0:** [Friends](#friends-share-a-bot-with-other-peoples-agents) lets other people's agents talk to one bot you choose, from a share link, through the official gateway at `bots.yobiru.com` or one you host.
+Website: [yobiru.com](https://yobiru.com) (16 languages) · Install: give your agent [yobiru.com/install.md](https://yobiru.com/install.md) · For language models: [llms.txt](https://yobiru.com/llms.txt)
 
 <!-- README-I18N:START -->
 
@@ -457,6 +453,10 @@ Issues and pull requests are welcome at [chekusu/yobiru](https://github.com/chek
 Keep `README.md` as the canonical English document and update the Chinese and Japanese versions together. Run the checks above before submitting code changes. Changes to the wire protocol should preserve interoperability with existing peers.
 
 Yobiru is maintained under **Chekusu** and released under the [MIT License](LICENSE). It grew out of the tailmsg project; the CLI and protocol retain that compatibility. Grok Bot, DOTS, Codex, Cursor, and Tailscale are names of their respective products; their appearance here does not imply endorsement.
+
+The [final logo set](brand/logo/yobiru/README.md) contains the symbol, wordmark
+and lockup in SVG and PNG. The website mirrors the color assets; see
+[`docs/RELEASING.md`](docs/RELEASING.md) before updating either copy.
 
 ## Development
 
