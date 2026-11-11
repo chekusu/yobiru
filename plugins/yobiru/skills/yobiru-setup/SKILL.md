@@ -10,6 +10,16 @@ no central server and identity from Tailscale. It also supports requests and rep
 shared-machine connection. Installing the plugin ran nothing (there is no install hook); this skill
 makes it work.
 
+## Grok Bot: official Tailscale plugin first
+
+On Grok Bot, use **yobiru-grok-bot** first. Ask the owner to connect Grok Bot's official Tailscale plugin (Connect
+apps → Your plugins → Tailscale → Authenticate) and set this computer up with `setup --tailnet-route connector`. Do
+not install Tailscale on Grok Bot's computer while the plugin can be used: it is wiped when the computer is replaced.
+On the connector route the computer installs no client, runs no receiver and sends tracked pull requests to a
+receiver's full MagicDNS name; receivers need 0.7.26 or later, and messages that should reach Grok Bot go through
+Friends. Fall back to step 2 below only when the plugin is unavailable or cannot be used, or the owner explicitly
+wants direct incoming private messages on Grok Bot.
+
 ## Muse: official connector and outbound-only setup
 
 On Meta Muse, use **yobiru-muse** first. Ask the user to connect the official Tailscale connector through Muse's own connection flow. Muse can reach a tailnet as a separate outbound-only node; `yobiru muse check` tests whether this execution environment exposes the identity and route the adapter needs. Do not start a receiver or install another Tailscale daemon in Muse. If the connector cannot be connected or used, offer the intended bot's Yobiru Friends link instead. A blanket "cloud agents cannot use Tailscale" statement is incorrect.
@@ -65,6 +75,8 @@ not survive between commands in many hosts). On Windows use `py -3 "<plugin>\scr
    to act, and the official Tailscale documentation. Work through it top to bottom; re-run it after
    each step.
 2. **Install Tailscale** (official sources only):
+   - A hosted agent computer whose host offers an official Tailscale connector (Grok Bot's Tailscale plugin):
+     install nothing here; follow the Grok Bot section above (`setup --tailnet-route connector`).
    - Linux: `curl -fsSL https://tailscale.com/install.sh | sh` (needs root or sudo; docs:
      https://tailscale.com/docs/install/linux). Without root and sudo, without `/dev/net/tun`
      (containers, some cloud sandboxes) or without a way to keep `tailscaled` running, report the
@@ -212,9 +224,10 @@ an automatic state-migration command or an install hook.
 - Grok Bot: commands run on the computer the current conversation uses (the owner's chat: the owner's
   computer; a teammate's chat with a Team Bot: usually that teammate's; Slack channels and group
   chats: a shared computer). Each is its own machine, tailnet node and data home: never copy another
-  computer's identity or config. These Debian-based computers may lack `/dev/net/tun`, sudo or a
-  service manager; `onboard` reports which, and an administrator may provide Tailscale through
-  Enterprise Team Setup. For a new setup use a visible private folder such as
+  computer's identity or config. Connect Grok Bot's official Tailscale plugin first and use the connector
+  route (see above); only on the fallback do these Debian-based computers need `/dev/net/tun`, sudo or a
+  service manager, which `onboard` reports, or an administrator providing Tailscale through Enterprise
+  Team Setup. For a new setup use a visible private folder such as
   `--home /workspace/yobiru-data`; preserve an existing data home. Persistent files do not imply that
   a receiver restarts after a rebuild. For computer selection, plugin verification and recovery, use
   [yobiru-grok-bot](../yobiru-grok-bot/SKILL.md).

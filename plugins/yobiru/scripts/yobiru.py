@@ -461,9 +461,12 @@ def gather(home, home_source, probe=True):
                 entry["checks"] = [("error", str(e))]
             f["adapters"].append(entry)
         f["inbox"] = inbox_stats(home, cfg.get("default_agent"))
+    f["tailnet_route"] = (cfg or {}).get("tailnet_route") or "local"
     ts = {"cmd": None, "found": None, "error": None, "probed": False}
     cmd = (cfg or {}).get("tailscale_cmd") or ["tailscale"]
-    if not isinstance(cmd, list) or not cmd or not all(isinstance(x, str) and x for x in cmd):
+    if f["tailnet_route"] == "connector":
+        ts.update(cmd=cmd, connector=True)      # no local client to ask: the host's connector is the route
+    elif not isinstance(cmd, list) or not cmd or not all(isinstance(x, str) and x for x in cmd):
         ts["error"] = "tailscale_cmd in config.json must be a non-empty list of strings"
     else:
         ts["cmd"] = cmd
@@ -492,7 +495,7 @@ def gather(home, home_source, probe=True):
                     ts["shields_up"] = None
                 ts["lock"] = lock_facts(cmd)
     f["tailscale"] = ts
-    if probe and cfg is not None:
+    if probe and cfg is not None and f["tailnet_route"] != "connector":
         host = cfg.get("bind") or next((i for i in ts.get("ips") or [] if ":" not in i), None)
         f["receiver"] = probe_health(host, f["port"], peer=ts.get("node")) if host else {"reachable": False,
                                                                      "error": "no Tailscale IPv4 address"}
@@ -606,7 +609,11 @@ def doctor_checks(f):
     ts = f["tailscale"]
     state = classify_tailscale(ts)
     linux = sys.platform.startswith("linux")
-    if ts.get("cmd") is None:
+    if ts.get("connector"):
+        add("ok", "tailnet-route", CONNECTOR_ROUTE_DETAIL,
+            "check a receiver: `%s doctor --peer NAME.TAILNET.ts.net`; the host's own Tailscale settings show "
+            "whether its connector is on" % PRODUCT)
+    elif ts.get("cmd") is None:
         add("error", "tailscale", ts["error"], "fix tailscale_cmd in config.json by hand, or use "
             "`%s setup --tailscale-cmd PATH --replace tailscale_cmd`" % PRODUCT)
     elif state == "missing":
@@ -668,6 +675,12 @@ def doctor_checks(f):
                 (r.get("url", "-"), r.get("error")),
                 "to receive messages run the receiver as a service: `%s install-runtime`, then install "
                 "the definition printed by `%s service-template ...`" % (PRODUCT, PRODUCT))
+    if f.get("tailnet_route") == "connector":
+        backlog_check(f, add)
+        add("info", "incoming", "nothing can connect to this computer through its host's connector, so it runs no "
+            "receiver, wake adapter or session binding; replies come back when it checks a request's status",
+            "for messages that should reach this agent, use Yobiru Friends (yobiru-bot-contacts skill)")
+        return doctor_tail(f, checks, add)
     maintenance_check(f, add)
     backlog_check(f, add)
     dispatcher_check(f, add)
@@ -699,6 +712,16 @@ def doctor_checks(f):
                                          "; " + "; ".join(s["problems"]) if s["problems"] else ""),
             None if not s["unbound"] else "name each agent's existing session: `%s session bind --agent NAME "
             "--session-id ID` (see `%s agents`)" % (PRODUCT, PRODUCT))
+    return doctor_tail(f, checks, add)
+
+
+CONNECTOR_ROUTE_DETAIL = ("this computer reaches the tailnet through its host's official Tailscale connector "
+                          "(for example Grok Bot's Tailscale plugin): no local Tailscale client, outbound only; "
+                          "it sends tracked pull requests to receivers by their full MagicDNS name")
+
+
+def doctor_tail(f, checks, add):
+    """Version and update checks shared by both routes."""
     rt_version = f.get("runtime_version")
     if rt_version and rt_version != f["plugin_version"]:
         add("info", "versions", "plugin %s, durable runtime %s" % (f["plugin_version"], rt_version),
@@ -1197,8 +1220,11 @@ def cmd_setup(home, home_source, argv):
     ap.add_argument("--port", type=int, help="receiver port (default 7766)")
     ap.add_argument("--tailscale-cmd", metavar="CMD",
                     help='tailscale CLI path, or a JSON list such as ["sudo","-n","tailscale"]')
+    ap.add_argument("--tailnet-route", choices=("local", "connector"),
+                    help="connector: this computer reaches the tailnet only through its host's official Tailscale "
+                         "connector (Grok Bot's Tailscale plugin): no local client, no receiver, pull requests only")
     ap.add_argument("--replace", action="append", default=[],
-                    choices=("self_agent", "default_agent", "port", "tailscale_cmd"),
+                    choices=("self_agent", "default_agent", "port", "tailscale_cmd", "tailnet_route"),
                     help="allow changing this already-set field (repeatable)")
     ap.add_argument("--apply", action="store_true", help="write the change (a backup of the old file is kept)")
     ap.add_argument("--json", action="store_true")
@@ -1275,6 +1301,18 @@ def cmd_setup(home, home_source, argv):
         if not isinstance(cmd, list) or not cmd or not all(isinstance(x, str) and x and "\n" not in x for x in cmd):
             die("--tailscale-cmd must be a path or a JSON list of strings", 2)
         set_scalar(plan, "tailscale_cmd", cmd, "tailscale_cmd" in a.replace)
+    if a.tailnet_route is not None:
+        current = plan.after.get("tailnet_route") or ("local" if plan.exists else None)
+        if current is not None and current != a.tailnet_route and "tailnet_route" not in a.replace:
+            # An existing installation without the key already uses the local route (and may run a receiver).
+            plan.error("tailnet_route is already %s; pass --replace tailnet_route to change it to %s" % (
+                json.dumps(current), json.dumps(a.tailnet_route)))
+        elif current != a.tailnet_route:
+            set_scalar(plan, "tailnet_route", a.tailnet_route, True)
+        if a.tailnet_route == "connector":
+            plan.note("connector route: this computer uses its host's official Tailscale connector and installs no "
+                      "Tailscale client; it runs no receiver and sends tracked pull requests to a receiver's full "
+                      "MagicDNS name (receivers need Yobiru 0.7.26 or later); messages for it go through Friends")
     if plan.changes:
         plan.note("a 0.4.0+ receiver reloads access policy per request; other config changes require a receiver restart "
                   "(%s never restarts services)" % PRODUCT)
@@ -2241,6 +2279,12 @@ def validate_info(body, expect_node=None):
                        "session": validate_session_view(item.get("session"))})
     node = clean(obj.get("node"), 253)
     info = {"version": fmt_semver(version) if version else None, "node": node, "agents": agents, "warnings": []}
+    caller = obj.get("caller") if isinstance(obj.get("caller"), dict) else {}
+    for key, value in (("node_id", obj.get("node_id")), ("caller_id", caller.get("id"))):
+        if isinstance(value, str) and core().PEER_ID_RE.fullmatch(value):
+            info[key] = value
+    if clean(caller.get("node"), 253):
+        info["caller_node"] = clean(caller.get("node"), 253)
     caps = obj.get("capabilities")
     info["capabilities"] = [c for c in caps[:32] if isinstance(c, str) and
                             re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", c)] if isinstance(caps, list) else []
@@ -2321,6 +2365,13 @@ def peer_doctor_checks(facts, peer, port, timeout=3.0):
             return checks
         # Shared peers may have no DNSName in status. Their explicit Tailscale address is still useful.
         ip = peer
+    elif facts.get("tailnet_route") == "connector":
+        try:
+            expect_node, ip = core().connector_resolve(peer)
+        except RuntimeError as e:
+            add("error", "peer-target", clean(str(e), 300),
+                "use the receiver's full MagicDNS name and check that this host's Tailscale connector is on")
+            return checks
     else:
         cmd = (facts.get("cfg") or {}).get("tailscale_cmd") or ["tailscale"]
         nodes, error = tailnet_nodes(cmd)
@@ -2372,6 +2423,14 @@ def peer_doctor_checks(facts, peer, port, timeout=3.0):
         add("ok" if pull else "warn", "peer-pull", "request-pull-v1 %s" % ("supported" if pull else "not advertised"),
             None if pull else "upgrade the target receiver before using request send --transport pull; "
             "legacy push replies and request attachments need a reverse connection")
+        if facts.get("tailnet_route") == "connector":
+            info = result["info"]
+            if "caller-identity-v1" in info["capabilities"] and info.get("caller_id") and info.get("node_id"):
+                add("ok", "peer-connector", "the receiver confirms this computer as %s" % (
+                    info.get("caller_node") or info["caller_id"]))
+            else:
+                add("error", "peer-connector", "the receiver cannot confirm identities for a computer on a host "
+                    "connector", "upgrade that receiver to Yobiru 0.7.26 or later")
         if pull:
             add("info", "peer-verification", "capability checks do not prove a message or attachment round trip",
                 "with authorization, send a pull request with a harmless file, refresh its final response, "
@@ -2618,6 +2677,11 @@ def cmd_agents(home, home_source, argv):
     f = gather(home, home_source, probe=False)
     cfg = f.get("cfg")
     port = f.get("port") or 7766
+    if f.get("tailnet_route") == "connector":
+        msg = ("this computer reaches the tailnet through its host's Tailscale connector and cannot list its "
+               "machines; check a known receiver with `%s doctor --peer NAME.TAILNET.ts.net`" % PRODUCT)
+        print(json.dumps({"ok": False, "error": msg}) if a.json else "%s: %s" % (PRODUCT, msg))
+        return 1
     cmd = (cfg or {}).get("tailscale_cmd") or ["tailscale"]
     nodes, err = tailnet_nodes(cmd)
     if err:
@@ -3884,9 +3948,15 @@ def onboarding_steps(home, f, facts):
     step("python", "done" if ok_py else "blocked", "Python 3.8+", f["python"]["version"],
          who="agent" if ok_py else "user")
     ts = f["tailscale"]
+    if ts.get("connector"):
+        return connector_steps(f, step, steps)
     state = classify_tailscale(ts)
     if state == "missing":
         st, detail, cmds, docs, who = tailscale_install_steps(facts)
+        if plat.startswith("linux"):
+            detail += (". On a hosted agent computer whose host offers an official Tailscale connector (Grok Bot: "
+                       "Connect apps > Your plugins > Tailscale), connect that instead of installing Tailscale "
+                       "here, then `%s setup --tailnet-route connector ...`; see the yobiru-grok-bot skill" % PRODUCT)
         step("tailscale-install", st, "Install Tailscale", detail, cmds, docs, who)
     elif state == "error" and ts.get("cmd") is None:
         step("tailscale-install", "todo", "Fix tailscale_cmd", ts.get("error") or "", [], [], "agent")
@@ -4029,6 +4099,26 @@ def onboarding_steps(home, f, facts):
                "`show ID` for wake_delivery", cmds, [], "agent, with the user's choice of adapter")
     step("verify", "todo", "Verify", "check this machine and the other installations",
          ["%s doctor" % PRODUCT, "%s agents --online" % PRODUCT, "%s send PEER/AGENT \"hello\"" % PRODUCT])
+    return steps
+
+
+def connector_steps(f, step, steps):
+    """Onboarding for a computer on its host's Tailscale connector: nothing to install, sign in or serve here."""
+    step("tailscale-connector", "done", "Tailscale through the host's connector",
+         "%s. The owner connects or disconnects it in the host app (Grok Bot: Connect apps > Your plugins > "
+         "Tailscale); do not install a Tailscale client on this computer" % CONNECTOR_ROUTE_DETAIL)
+    if f["config_error"]:
+        step("config", "blocked", "Configure Yobiru", f["config_error"], [], [], "user (fix config.json by hand)")
+    else:
+        step("config", "done", "Agent name", "this agent sends as %s" % (f.get("self_agent") or "(no self agent)"))
+    step("incoming", "optional", "Messages for this agent",
+         "other computers cannot connect to this one; use Yobiru Friends so other agents can reach it "
+         "(yobiru-bot-contacts skill)", [], [], "user decides")
+    step("verify", "todo", "Verify", "check a receiver the owner names (it needs Yobiru 0.7.26 or later), then send "
+         "a harmless tracked request and check its result",
+         ["%s doctor --peer NAME.TAILNET.ts.net" % PRODUCT,
+          "%s request send NAME.TAILNET.ts.net/AGENT \"hello\"" % PRODUCT,
+          "%s request status ID --refresh --json" % PRODUCT])
     return steps
 
 

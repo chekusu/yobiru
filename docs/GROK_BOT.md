@@ -4,6 +4,10 @@ Use Grok Bot's existing conversation to exchange requests, results and files wit
 home computer or cloud server. Yobiru runs on the computer attached to that conversation, not on
 the phone displaying it. It uses the same plugin and tailmsg protocol as Codex and Cursor.
 
+**Connect Grok Bot's official Tailscale plugin first** ([below](#connect-with-grok-bots-official-tailscale-plugin)).
+Install a Tailscale client on Grok Bot's computer only as the [fallback](#fallback-run-tailscale-on-the-conversations-computer)
+when the plugin is unavailable or cannot be used.
+
 ## Install and locate the plugin
 
 The repository contains a portable `plugin.json`, a Cursor manifest and the shared `skills/` and
@@ -23,8 +27,9 @@ Account and team policy can limit this route. See the host's
 [plugin instructions](https://cursor.com/help/grok-bot/connect-plugins).
 
 Ask: **“Use yobiru-grok-bot to connect this conversation's computer to my other agents.”**
-The skill first identifies this conversation's computer, existing installation and data home.
-It then uses `yobiru-setup` for ordinary setup. If the host exposes only skill text, the agent can
+The skill first identifies this conversation's computer, existing installation and data home, then asks the
+owner to connect Grok Bot's official Tailscale plugin and uses the connector route; `yobiru-setup` covers the
+fallback. If the host exposes only skill text, the agent can
 download the official plugin archive and its checksum, verify them, and unpack into a new directory
 under `/workspace`. That is a manual installation fallback, not proof of a marketplace install.
 
@@ -35,7 +40,73 @@ with the exact filename's checksum entry before extraction. Extract into an empt
 as `/workspace/yobiru-<version>/`; keep runtime data elsewhere. Run the extracted
 `yobiru/scripts/yobiru` with `sh`, so ZIP extraction need not preserve executable modes.
 
-## Prepare the conversation's computer
+## Connect with Grok Bot's official Tailscale plugin
+
+Grok Bot 0.49 and newer has an official Tailscale plugin. The owner opens **Connect apps → Your plugins →
+Tailscale** in the Grok Bot desktop app and clicks **Authenticate** on the tailnet's slot; Tailscale's consent
+screen opens and the bot's device joins the tailnet (it appears as `grokbot-…` in the Tailscale admin console). A
+personal tailnet must be one the owner owns or administers. A company tailnet must first be enabled by a team admin
+at cursor.com **Integrations → Tailscale** (Tailscale Premium or Enterprise). Grok Bot shows an Allow/Deny card
+before it adds a tailnet, changes the default or removes a device. Grok Bot's own setup guidance says not to install
+a Tailscale client on the bot's computer, because it is wiped when that computer is replaced. Sources:
+[the plugin](https://github.com/cursor/plugins/tree/main/third_party/tailscale) and its `tailscale-setup` skill,
+[Tailscale's announcement](https://tailscale.com/blog/oauth-apps-ga) (checked 2026-11-11).
+
+With the plugin connected, commands on Grok Bot's computer reach tailnet machines by their full
+`name.tailnet.ts.net` MagicDNS name or `100.x` address, over HTTP or TCP, during the owner's own turns and the
+routines the owner schedules. The connection is **outbound only**: nothing can connect to Grok Bot's computer, and
+the computer has no `tailscale` command. Since 0.7.26 Yobiru has a matching **connector route**. `Y` is the
+verified plugin's launcher (see below) and `/workspace/yobiru-data` a visible, private data home:
+
+```sh
+sh "$Y" --home /workspace/yobiru-data setup --self-agent grok --tailnet-route connector
+sh "$Y" --home /workspace/yobiru-data setup --self-agent grok --tailnet-route connector --apply
+sh "$Y" --home /workspace/yobiru-data doctor
+sh "$Y" --home /workspace/yobiru-data doctor --peer mac-studio.example.ts.net
+sh "$Y" --home /workspace/yobiru-data request send mac-studio.example.ts.net/codex 'A harmless authorized request' --file ./input.txt
+sh "$Y" --home /workspace/yobiru-data request status REQUEST_ID --refresh --json
+sh "$Y" --home /workspace/yobiru-data fetch RESPONSE_ID
+```
+
+On this route Grok Bot:
+
+- installs nothing and runs no receiver; `onboard`, `doctor` and every send never call a local Tailscale client;
+- sends tracked **pull** requests (the default on this route) with files to the owner's other computers, addressed
+  by full MagicDNS name, and collects the result and its files by checking the request's status, over connections it
+  opens itself (see [one-way sharing](SHARING.md) for the pull flow);
+- learns its own tailnet identity from the receiver it calls: the receiver's own Tailscale authenticates the
+  `grokbot-…` device as usual and tells it who it is (`/info` `caller`, [SPEC §9.1](../SPEC.md)). Receiving computers
+  need Yobiru **0.7.26** or later; an older receiver is refused with an upgrade hint, never used another way;
+- cannot be messaged directly by other computers. For messages that should reach Grok Bot, use
+  [Yobiru Friends](PUBLIC_BOTS.md) (contact bots, routines and the gateway's hosted wake), which needs only outbound
+  HTTPS.
+
+Receiving computers in `tailnet` mode accept the `grokbot-…` device like any authenticated device the tailnet policy
+lets through. In allowlist mode add its host name (`doctor --peer` prints the name the receiver sees). Applying a tag
+to the Grok Bot device is currently reported to disconnect it
+([cursor/plugins#1140](https://github.com/cursor/plugins/issues/1140)); restrict it with tailnet grants, or on a
+company tailnet with a `custom:grokbot` posture, not a tag. Yobiru never changes tailnet policy.
+
+Verification so far: automated tests run a real receiver that sees a connector-style device and a sender with no
+Tailscale client (round trip with files, resume, refused short names, push and receivers). The route has not yet
+been run on a live Grok Bot with the plugin connected.
+
+### When to fall back
+
+Use the fallback below (a Tailscale client and a Yobiru receiver on Grok Bot's computer) only when:
+
+- the account shows no Tailscale plugin, Grok Bot is older than 0.49, or **Authenticate** cannot complete (for
+  example a company tailnet without Premium or Enterprise, or a personal sign-in to a tailnet the team lists as its
+  company tailnet);
+- or the owner explicitly wants other computers to push private messages to Grok Bot directly and accepts that the
+  client must be restored after Grok Bot replaces the computer.
+
+Do not run both on one computer. An existing installation that already runs its own client keeps working as it is;
+moving it to the plugin is the owner's decision: connect the plugin, stop the old receiver and client through their
+own managers, then `setup --tailnet-route connector --replace tailnet_route --apply` on the same data home (its
+request records stay). Its receiver, wake routine and direct incoming messages are no longer used after that.
+
+## Fallback: run Tailscale on the conversation's computer
 
 Each conversation may use a different computer. Owner conversations, team conversations and shared
 channels need not share a shell, filesystem or Tailscale identity. Inspect the current environment
@@ -63,6 +134,9 @@ The owner signs in to their own Tailscale account. Keep authentication keys out 
 existing agents, webhook files, access policy, session bindings and reply permissions.
 
 ## Connect incoming messages to a routine
+
+This and the next section apply to the fallback only: on the plugin's connector route nothing connects to Grok Bot's
+computer, so use Friends and its hosted wake for incoming messages instead.
 
 A running receiver stores incoming messages; Grok Bot also needs an authorized routine or other
 adapter to process them. Follow `yobiru-wake` to configure the account's routine webhook. Keep its
@@ -223,6 +297,11 @@ the routine what to run). The gateway then wakes the routine with ids only, once
 aside while a connector is online. Not yet verified against a live Grok routine.
 
 ## Recover after a rebuild
+
+On the plugin's connector route only the data home in `/workspace` has to survive: Grok Bot keeps the plugin's
+connection itself (an expired device needs **Authenticate** again in **Connect apps**), and there is no client,
+receiver or startup definition to restore. Run `doctor` and `doctor --peer` against the existing home. The rest of
+this section is for the fallback.
 
 Files stored durably and running processes are different things. A rebuild may retain a data home
 while removing installed packages or stopping the receiver. Start with `onboard`, `doctor` and

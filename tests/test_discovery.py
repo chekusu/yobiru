@@ -120,6 +120,9 @@ class InfoEndpointTests(unittest.TestCase):
     def test_projection_is_minimal_and_hides_configuration(self):
         status, body = self.rx.get("/info")
         self.assertEqual(200, status)
+        # The caller is told only its own identity, as this receiver's Tailscale sees it (SPEC §9.1).
+        self.assertEqual({"node": "alpha.example.ts.net"}, body.pop("caller"))
+        self.assertIn(core.CALLER_IDENTITY_CAPABILITY, body["capabilities"])
         text = json.dumps(body)
         for secret in ("/opt/private", "/srv/private", "--token", "PRIVATE_URL_ENV", "PRIVATE MESSAGE BODY",
                        "allow_replies", "wake_adapter", "private_note", "alpha", "unix://"):

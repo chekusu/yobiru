@@ -65,6 +65,14 @@ spec = importlib.util.spec_from_file_location("tailmsg", sys.argv[1])
 core = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(core)
 core.TAILNET_NETS.append(ipaddress.ip_network("127.0.0.0/8"))
+if os.environ.get("TEST_MAGICDNS"):
+    # A host's managed Tailscale connector answers MagicDNS names; here they all point at the test receiver.
+    real_getaddrinfo = socket.getaddrinfo
+    def getaddrinfo(host, *args, **kwargs):
+        if isinstance(host, str) and host.endswith(".example.ts.net"):
+            host = os.environ["TEST_MAGICDNS"]
+        return real_getaddrinfo(host, *args, **kwargs)
+    socket.getaddrinfo = getaddrinfo
 if os.environ.get("TEST_CLOCK"):
     actual_now = core.now_utc
     def now():

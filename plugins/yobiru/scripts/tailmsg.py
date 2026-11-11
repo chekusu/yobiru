@@ -15,7 +15,7 @@ from pathlib import Path
 
 VERSION = 1                     # wire protocol version (unchanged)
 PRODUCT = "yobiru"
-PRODUCT_VERSION = "0.7.25"  # Yobiru release of this file; tools/build_plugin.py check keeps it in sync
+PRODUCT_VERSION = "0.7.26"  # Yobiru release of this file; tools/build_plugin.py check keeps it in sync
 DEFAULTS = {
     "port": 7766,
     "access_policy": "tailnet",    # authenticated Tailscale peers; use "allowlist" for opt-in restriction
@@ -60,6 +60,17 @@ def stable_peer_id(stable_id):
     if not isinstance(stable_id, str) or not STABLE_ID_RE.fullmatch(stable_id):
         return None
     return "node:" + stable_id.encode("ascii").hex()
+
+
+def stable_id_from_peer(value):
+    """'node:<hex>' wire spelling -> the StableID it encodes, or None."""
+    if not isinstance(value, str) or not PEER_ID_RE.fullmatch(value):
+        return None
+    try:
+        raw = bytes.fromhex(value[5:]).decode("ascii")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return raw if stable_peer_id(raw) == value else None
 
 
 def peer_identity(ident):
@@ -419,6 +430,8 @@ def parse_config(raw):
     cfg = dict(DEFAULTS)
     cfg.update(raw)
     cfg.update(parse_access_policy(raw))
+    if cfg.get("tailnet_route", "local") not in TAILNET_ROUTES:
+        raise RuntimeError("config tailnet_route must be \"local\" or \"connector\"")
     for k in ("self_agent", "default_agent"):
         if cfg.get(k) is not None:
             err = agent_name_error(cfg[k])
@@ -441,6 +454,37 @@ def parse_config(raw):
             raise RuntimeError("config agents[%r].wake_max must be one of now/batch/none" % name)
         out[norm_agent(name)] = spec
     return cfg, out
+
+
+def connector_resolve(peer):
+    """Connector route: a receiver's full MagicDNS name -> (name, tailnet address), through the host's DNS.
+    Short names and bare addresses are refused: the name is the identity the receiver must confirm."""
+    name = str(peer).strip().lower().rstrip(".")
+    if not MAGICDNS_RE.fullmatch(name):
+        raise RuntimeError("through the host's Tailscale connector, name the receiver by its full MagicDNS name, "
+                           "such as mac-studio.example.ts.net (got %r)" % str(peer)[:100])
+    try:
+        found = socket.getaddrinfo(name, None, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError("the host's Tailscale connector did not resolve %s (%s); check that this host's "
+                           "Tailscale connection is on and that the name is right" % (name, exc)) from exc
+    ips = []
+    for item in found:
+        ip = str(item[4][0])
+        if is_tailnet_ip(ip) and ip not in ips:
+            ips.append(ip)
+    if not ips:
+        raise RuntimeError("%s did not resolve to a Tailscale address through this host's connector" % name)
+    v4 = [ip for ip in ips if ":" not in ip]
+    return name, (v4 or ips)[0]
+
+
+def destination_whois(ctx, ip, port):
+    """Sender side, a destination's current identity: fresh LocalAPI whois, or on the connector route the
+    destination's own /info statement (see Ctx.connector_whois)."""
+    if ctx.connector():
+        return ctx.connector_whois(ip, port)
+    return fresh_whois(ctx, ip)
 
 
 class TailscaleUnavailable(RuntimeError):
@@ -468,6 +512,39 @@ class Ctx:
         self._name_lookup = threading.Lock()   # one lookup subprocess at a time
         self.maintenance = None                # set by `serve`: supervised maintenance workers
         self.receiver_identity = None          # set by `serve`: pinned LocalAPI identity, never rebound live
+        self.connector_self = None             # connector route: this computer as the last receiver saw it
+        self._connector_hosts = {}             # connector route: address -> the MagicDNS name it was resolved from
+
+    def connector(self):
+        """True when this computer reaches the tailnet only outbound, through its host's managed Tailscale
+        connector (for example Grok Bot's official Tailscale plugin), with no local Tailscale client."""
+        return self.cfg.get("tailnet_route") == "connector"
+
+    def connector_whois(self, ip, port):
+        """Connector route: the destination's identity as the destination itself states it in /info, and this
+        computer's identity as the destination's own Tailscale sees it. The destination still authenticates
+        this computer through its own LocalAPI; without a local client, the route to its address is the
+        host connector's. None when the destination refuses this computer (HTTP 401/403)."""
+        host = self._connector_hosts.get(ip, ip)
+        status, info = http_json(ip, port, "GET", "/info", host=host, timeout=5, deadline=5, limit=64 * 1024)
+        if status in (401, 403):
+            return None
+        if status != 200 or not isinstance(info, dict):
+            raise RuntimeError("receiver identity unavailable through the host's Tailscale connector (HTTP %s)" % status)
+        caps = info.get("capabilities")
+        if not isinstance(caps, list) or CALLER_IDENTITY_CAPABILITY not in caps:
+            raise RuntimeError("the receiver %s cannot confirm identities for a computer that uses its host's "
+                               "Tailscale connector; upgrade it to Yobiru 0.7.26 or later" % host)
+        node, caller = info.get("node"), info.get("caller")
+        stable = stable_id_from_peer(info.get("node_id"))
+        mine = stable_id_from_peer(caller.get("id")) if isinstance(caller, dict) else None
+        if not isinstance(node, str) or not node.strip(".") or any(c.isspace() for c in node) or not stable or not mine:
+            raise RuntimeError("the receiver %s returned no usable identity" % host)
+        caller_node = caller.get("node") if isinstance(caller.get("node"), str) else ""
+        self.connector_self = {"node": caller_node.rstrip(".").lower(), "stable_id": mine, "ips": []}
+        node = node.rstrip(".").lower()
+        return {"ip": ip, "node": node, "host": node.split(".")[0], "tags": [], "user": "",
+                "stable_id": stable, "dns_name": node}
 
     def native_name(self, binding):
         """Read-only native session name for a bound session, cached (bounded subprocess cost)."""
@@ -475,6 +552,8 @@ class Ctx:
 
     # -------- tailscale CLI (LocalAPI) --------
     def ts(self, *args, timeout=15):
+        if self.connector():
+            raise RuntimeError(CONNECTOR_NO_CLI)
         cmd = list(self.cfg["tailscale_cmd"]) + list(args)
         try:
             p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -544,12 +623,20 @@ class Ctx:
         return ident
 
     def self_node(self):
+        if self.connector():
+            if not self.connector_self:
+                raise RuntimeError("no receiver has confirmed this computer's tailnet identity yet")
+            return dict(self.connector_self)
         s = self.status()["Self"]
         return {"node": s["DNSName"].rstrip(".").lower(), "ips": s.get("TailscaleIPs") or [],
                 "stable_id": s.get("ID")}
 
     def resolve(self, peer):
         """'ubuntu' | 'ubuntu.tailXXXX.ts.net' | '100.x.y.z' -> (fqdn, ipv4)"""
+        if self.connector():
+            name, ip = connector_resolve(peer)
+            self._connector_hosts[ip] = name
+            return name, ip
         st = self.status()
         nodes = []
         entries = [(True, st.get("Self"))] + [(False, n) for n in (st.get("Peer") or {}).values()]
@@ -765,6 +852,16 @@ def validate_env(env):
 # ---------------------------------------------------------------- durable request lifecycle (optional protocol v1 extension)
 REQUEST_CAPABILITY = "request-lifecycle-v1"
 REQUEST_PULL_CAPABILITY = "request-pull-v1"
+# A receiver with this capability tells an authenticated caller its own identity in /info, and states its own
+# StableID: a sender that reaches the tailnet through its host's managed Tailscale connector has no local
+# Tailscale client to ask (SPEC §9.1).
+CALLER_IDENTITY_CAPABILITY = "caller-identity-v1"
+TAILNET_ROUTES = ("local", "connector")
+MAGICDNS_RE = re.compile(r"^(?=.{4,253}\Z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+ts\.net\Z")
+PEER_ID_RE = re.compile(r"^node:(?:[0-9a-f]{2}){1,128}\Z")
+CONNECTOR_NO_CLI = ("this computer reaches the tailnet through its host's Tailscale connector (tailnet_route "
+                    "\"connector\"); it has no local Tailscale client, runs no receiver and only sends tracked pull "
+                    "requests to a receiver's full MagicDNS name")
 REQUEST_STATES = ("received", "running", "completed", "failed", "rejected", "blocked", "timed_out")
 REQUEST_FINAL = ("completed", "failed", "rejected", "blocked")
 TASK_RESOLUTIONS = ("open", "resolved")
@@ -1822,7 +1919,7 @@ def save_outgoing_request(ctx, env, peer, port, client_ref=None):
         task_create_or_link(db, "outgoing", env["id"], env, "pending", client_ref)
         if is_pull_request(env):
             resolved, ip = ctx.resolve(peer)
-            ident = fresh_whois(ctx, ip)
+            ident = destination_whois(ctx, ip, port)
             key = stable_peer_id(ident.get("stable_id")) if ident else None
             if resolved != peer or not key or not ctx.access_decision(ident)[0]:
                 raise ValueError("pull destination requires an authenticated stable node identity and local authorization")
@@ -2552,8 +2649,13 @@ def make_handler(ctx, me):
                     return
                 if not self.authorize(ident, self_discovery=ident["node"] == me):
                     return
+                guard = getattr(ctx, "receiver_identity", None)
+                node_id = stable_peer_id(guard.initial[1]) if guard is not None else None
+                caller = {"node": ident["node"]}
+                if stable_peer_id(ident.get("stable_id")):
+                    caller["id"] = stable_peer_id(ident["stable_id"])
                 try:
-                    body = info_payload(ctx.home, ctx.cfg, ctx.agents, me, ctx.native_name)
+                    body = info_payload(ctx.home, ctx.cfg, ctx.agents, me, ctx.native_name, node_id, caller)
                 except Exception as e:
                     log("info failed:", type(e).__name__)
                     return self.reply(500, {"ok": False, "error": "info unavailable"})
@@ -3018,10 +3120,12 @@ def session_view(binding, native):
     return v
 
 
-def info_payload(home, cfg, agents, me, native_name):
+def info_payload(home, cfg, agents, me, native_name, node_id=None, caller=None):
     """Body of GET /info. Deliberately minimal: product version, node, addressable agent names and, for
     explicitly bound agents only, the session id plus display metadata. Never config values, paths,
-    adapter argv, webhook URLs, secrets, message previews, transcripts or account details."""
+    adapter argv, webhook URLs, secrets, message previews, transcripts or account details. A receiver also
+    states its own StableID (`node_id`) and the authenticated caller's own identity (`caller`), for a caller
+    without a local Tailscale client (SPEC §9.1)."""
     total = len(info_agent_names(cfg, agents, limit=None))
     names = info_agent_names(cfg, agents)
     bound, _ = session_bindings(home, names)
@@ -3030,9 +3134,15 @@ def info_payload(home, cfg, agents, me, native_name):
         b = bound.get(name)
         out.append({"agent": name, "default": name == cfg.get("default_agent"),
                     "session": session_view(b, native_name(b)) if b else None})
-    return {"ok": True, "v": VERSION, "product": PRODUCT, "version": PRODUCT_VERSION, "node": me,
-            "capabilities": [REQUEST_CAPABILITY, REQUEST_PULL_CAPABILITY], "agents": out, "agents_total": total, "agents_truncated": total > len(names),
+    body = {"ok": True, "v": VERSION, "product": PRODUCT, "version": PRODUCT_VERSION, "node": me,
+            "capabilities": [REQUEST_CAPABILITY, REQUEST_PULL_CAPABILITY, CALLER_IDENTITY_CAPABILITY],
+            "agents": out, "agents_total": total, "agents_truncated": total > len(names),
             "generated_at": iso(now_utc())}
+    if node_id:
+        body["node_id"] = node_id
+    if caller:
+        body["caller"] = caller
+    return body
 
 
 # ---------------------------------------------------------------- wake adapters (SPEC §5.8)
@@ -3616,6 +3726,9 @@ class NumericHTTPServer(ThreadingHTTPServer):
 
 
 def cmd_serve(ctx, a):
+    if ctx.connector():
+        die(CONNECTOR_NO_CLI + ": other computers cannot connect to it, so it cannot run a receiver; "
+            "use Yobiru Friends for messages that should reach it")
     me = ctx.self_node()
     ctx.receiver_identity = ReceiverIdentity(ctx, me)
     bind = ctx.cfg.get("bind") or ctx.ts("ip", "-4").split()[0]
@@ -3883,7 +3996,7 @@ def upload_request_file(ctx, env, item, ip, port, peer):
         raise ValueError("saved request attachment is missing or changed: " + item["name"])
     # Hashing a large snapshot takes time: check the pinned destination again right before connecting, so a
     # private input never goes to whoever holds the address now.
-    verify_pull_destination(ctx, env, peer, ip)
+    verify_pull_destination(ctx, env, peer, ip, port)
     connection = http.client.HTTPConnection(ip, port, timeout=30)
     try:
         with open(source, "rb") as stream:
@@ -3906,12 +4019,12 @@ def upload_request_file(ctx, env, item, ip, port, peer):
         connection.close()
 
 
-def verify_pull_destination(ctx, env, peer, ip):
+def verify_pull_destination(ctx, env, peer, ip, port):
     """The destination pinned when the request was saved, checked again before each new connection: the
     address must still belong to that stable Tailscale identity and local policy must still allow it, and
     this machine must still be the request's sender. Each upload and the final commit opens a new
     connection, and the identity behind the address can change between them."""
-    identity = fresh_whois(ctx, ip)
+    identity = destination_whois(ctx, ip, port)
     if not identity or identity.get("node") != peer or not ctx.access_decision(identity)[0]:
         raise RuntimeError("request destination denied by local identity/access policy")
     with request_db(ctx) as db:
@@ -3924,7 +4037,7 @@ def verify_pull_destination(ctx, env, peer, ip):
 
 
 def submit_pull_request(ctx, env, peer, ip, port):
-    verify_pull_destination(ctx, env, peer, ip)
+    verify_pull_destination(ctx, env, peer, ip, port)
     try:
         status, prepared = http_json(ip, port, "POST", "/requests/prepare", env, host=peer)
         if (status not in (200, 201) or not isinstance(prepared, dict) or prepared.get("ok") is not True or
@@ -3934,7 +4047,7 @@ def submit_pull_request(ctx, env, peer, ip, port):
         if not prepared.get("committed"):
             for item in env["request"].get("uploads", []):
                 upload_request_file(ctx, env, item, ip, port, peer)   # checks the destination before connecting
-        verify_pull_destination(ctx, env, peer, ip)
+        verify_pull_destination(ctx, env, peer, ip, port)
         status, body = http_json(ip, port, "POST", "/msg", env, host=peer)
     except (RuntimeError, OSError, ValueError) as exc:
         with request_db(ctx) as db:
@@ -3961,14 +4074,20 @@ def cmd_send(ctx, a, reply_to=None, peer=None, agent=None):
     for k, v in (("agent", agent), ("from_agent", from_agent)):
         if v is not None and agent_name_error(v):
             die("bad %s %r: %s" % (k, v, agent_name_error(v)))
-    self_node = ctx.self_node()
-    me = self_node["node"]
+    connector = ctx.connector()
+    tracked = a.kind == "request" and not getattr(a, "legacy_request", False)
+    # The connector route has no reverse path: the only delivery it supports is a tracked pull request.
+    transport = getattr(a, "transport", None) or ("pull" if connector else "push")
+    if connector and (not tracked or transport != "pull"):
+        die(CONNECTOR_NO_CLI + ": use `request send NAME.TAILNET.ts.net/AGENT TEXT` and check the result with "
+            "`request status ID --refresh`")
+    self_node = None if connector else ctx.self_node()   # connector: learned from the receiver below
+    me = None if connector else self_node["node"]
     host, port = split_peer(addr, int(ctx.cfg["port"]))
     to_fqdn, to_ip = ctx.resolve(host)
-    tracked = a.kind == "request" and not getattr(a, "legacy_request", False)
     if getattr(a, "client_ref", None) and not tracked:
         die("--client-ref requires a tracked request")
-    pull = getattr(a, "transport", "push") == "pull"
+    pull = transport == "pull"
     if pull and not tracked:
         die("--transport pull requires a tracked request; it cannot be combined with --legacy-request")
     if tracked:
@@ -3997,6 +4116,13 @@ def cmd_send(ctx, a, reply_to=None, peer=None, agent=None):
         timeout_seconds = getattr(a, "timeout_seconds", 900)
         if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 604800:
             die("--timeout-seconds must be 1..604800")
+    if connector:
+        try:
+            if ctx.connector_whois(to_ip, port) is None:
+                die("request preflight access denied; check authenticated identity and receiver policy; no request created")
+        except TransportError as exc:
+            die("request preflight transport failure; no request created: %s" % exc)
+        self_node = ctx.self_node()
     if pull:
         me = stable_peer_id(self_node.get("stable_id"))
         if not me:
@@ -4214,7 +4340,7 @@ def cmd_fetch(ctx, a):
                 with request_db(ctx) as db:
                     original = request_row(db, "outgoing", env["reply_to"])
                 if original and is_pull_request(json.loads(original["envelope"])):
-                    ident = fresh_whois(ctx, ip)
+                    ident = destination_whois(ctx, ip, u.port or 80)
                     pinned = json.loads(original["record"] or "{}").get("peer_identity")
                     if not ident or pinned != peer_identity(ident) or not ctx.access_decision(ident)[0]:
                         raise RuntimeError("result attachment destination identity or authorization changed")
@@ -4445,7 +4571,7 @@ def cmd_request(ctx, a):
             peer, ip = ctx.resolve(output["peer"])
             if peer != output["peer"]:
                 raise RuntimeError("request destination identity changed")
-            identity = fresh_whois(ctx, ip) if output.get("transport") == "pull" else ctx.whois(ip)
+            identity = destination_whois(ctx, ip, output["port"]) if output.get("transport") == "pull" else ctx.whois(ip)
             if not identity or identity.get("node") != peer or not ctx.access_decision(identity)[0]:
                 raise RuntimeError("request destination denied by local identity/access policy")
             if output.get("transport") == "pull":
@@ -4542,7 +4668,8 @@ def main():
             p.add_argument("--timeout-seconds", type=int, default=900)
             p.add_argument("--client-ref", help="local stable reference for the long-lived task")
             p.add_argument("--legacy-request", action="store_true", help="opt out of request lifecycle for an old peer")
-            p.add_argument("--transport", choices=("push", "pull"), default="push")
+            p.add_argument("--transport", choices=("push", "pull"),
+                           help="default push; pull on a computer using its host's Tailscale connector")
     pr = sp.add_parser("request", help="tracked requests, receipts, results and timeout status")
     rs = pr.add_subparsers(dest="request_cmd", required=True)
     rq = rs.add_parser("send")
@@ -4551,8 +4678,9 @@ def main():
     rq.add_argument("--timeout-seconds", type=int, default=900)
     rq.add_argument("--client-ref", help="local stable reference for the long-lived task")
     rq.add_argument("--legacy-request", action="store_true")
-    rq.add_argument("--transport", choices=("push", "pull"), default="push",
-                    help="pull sends files and polls results without any reverse connections")
+    rq.add_argument("--transport", choices=("push", "pull"),
+                    help="pull sends files and polls results without any reverse connections (default push; "
+                         "pull on a computer using its host's Tailscale connector)")
     rq.add_argument("--file", action="append", default=[])
     rq.add_argument("--ttl-hours", type=float)
     rq.add_argument("--wake", choices=WAKE_LEVELS)
