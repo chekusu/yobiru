@@ -2,13 +2,9 @@
 
 <a href="https://yobiru.com"><img src="brand/logo/yobiru/yobiru-lockup-color.svg" width="320" alt="yobiru — three spirits and the raised-y wordmark"></a>
 
-The [final logo set](brand/logo/yobiru/README.md) contains the symbol, wordmark
-and lockup in SVG and PNG. The website mirrors the color assets; see
-[`docs/RELEASING.md`](docs/RELEASING.md) before updating either copy.
+**Let your AI agents talk to each other.** Yobiru is an open-source plugin (MIT License) that connects the agents you already use, such as Codex, Claude Code, Cursor and Grok Bot, across your computers and cloud workspaces over your own **Tailscale** network. They can send messages, exchange structured data and files, reply with results, and request a wake-up. You keep using each agent's own interface; Yobiru provides the communication underneath. **New in 0.6.0:** [Friends](#friends-share-a-bot-with-other-peoples-agents) lets other people's agents talk to one bot you choose, from a share link, through the official gateway at `bots.yobiru.com` or one you host.
 
-**Let your agents talk to each other.**
-
-Yobiru connects personal agents across your computers and cloud workspaces using **Tailscale**. They can send messages, exchange structured data and files, reply with results, and request a wake-up. You keep using each agent's own interface; Yobiru provides the communication underneath. **New in 0.6.0:** [Friends](#friends-share-a-bot-with-other-peoples-agents) lets other people's agents talk to one bot you choose, from a share link, through the official gateway at `bots.yobiru.com` or one you host.
+Website: [yobiru.com](https://yobiru.com) (16 languages) · Install: give your agent [yobiru.com/install.md](https://yobiru.com/install.md) · For language models: [llms.txt](https://yobiru.com/llms.txt)
 
 <!-- README-I18N:START -->
 
@@ -168,7 +164,7 @@ You can also place `plugins/yobiru` in `~/.cursor/plugins/local/yobiru` and relo
 
 In Grok Bot, use **Connect apps** to add Yobiru once a marketplace available to your account exposes it; a Cursor team administrator can control marketplace access. See [Grok Bot plugins](https://cursor.com/help/grok-bot/connect-plugins). The [official submission page](https://x.ai/bot/marketplace/submit-a-plugin) covers Grok Bot and Cursor. A submitted package still needs review; check the [submission record](docs/MARKETPLACE_SUBMISSION.md) for status.
 
-Ask Grok Bot: **“Use yobiru-grok-bot to connect this conversation's computer to my other agents.”** Keep a new installation's data in a visible, private folder such as `/workspace/yobiru-data`, apart from the package folder; preserve any existing data home ([why visible](docs/GROK_BOT.md#prefer-visible-folders-under-workspace)). The skill handles computer selection, verified archive fallback when scripts are missing, stable device naming and recovery checks. A running receiver, a completed request and a native plugin install are separate evidence. Follow the [Grok Bot guide](docs/GROK_BOT.md) and [platform notes](docs/PLATFORMS.md).
+Ask Grok Bot: **“Use yobiru-grok-bot to connect this conversation's computer to my other agents.”** Since 0.7.26 it first asks you to connect Grok Bot's official Tailscale plugin (**Connect apps → Your plugins → Tailscale → Authenticate**) and installs no Tailscale client on Grok Bot's computer: Grok Bot then sends requests and files to your other computers by their full MagicDNS name and collects the results, outbound only; messages that should reach Grok Bot go through Friends. A Tailscale client and receiver on Grok Bot's computer are the fallback when the plugin is unavailable ([connector route](docs/GROK_BOT.md#connect-with-grok-bots-official-tailscale-plugin); receivers need 0.7.26). Keep a new installation's data in a visible, private folder such as `/workspace/yobiru-data`, apart from the package folder; preserve any existing data home ([why visible](docs/GROK_BOT.md#prefer-visible-folders-under-workspace)). The skill handles computer selection, verified archive fallback when scripts are missing, stable device naming and recovery checks. A running receiver, a completed request and a native plugin install are separate evidence. Follow the [Grok Bot guide](docs/GROK_BOT.md) and [platform notes](docs/PLATFORMS.md).
 
 ### CLI without a plugin host
 
@@ -184,7 +180,7 @@ For an installed plugin, replace `Y` with its absolute `scripts/yobiru` path. Qu
 
 ### Upgrading
 
-The current stable release is 0.7.25. Release archives are pinned to their tag; repository installation follows `main`, which may also contain unreleased fixes. The [upgrade guide](docs/UPGRADING-0.7.md) covers the release archive verified with `SHA256SUMS`, Cursor and Grok Bot, the durable receiver, migrating an existing gateway, rollback limits and an acceptance checklist. On a machine that runs a development build, keep its runtime and bridge as they are; the guide explains how to try a release next to them.
+The current stable release is 0.7.26. Release archives are pinned to their tag; repository installation follows `main`, which may also contain unreleased fixes. The [upgrade guide](docs/UPGRADING-0.7.md) covers the release archive verified with `SHA256SUMS`, Cursor and Grok Bot, the durable receiver, migrating an existing gateway, rollback limits and an acceptance checklist. On a machine that runs a development build, keep its runtime and bridge as they are; the guide explains how to try a release next to them.
 
 ## First-time setup, even without Tailscale
 
@@ -457,6 +453,10 @@ Issues and pull requests are welcome at [chekusu/yobiru](https://github.com/chek
 Keep `README.md` as the canonical English document and update the Chinese and Japanese versions together. Run the checks above before submitting code changes. Changes to the wire protocol should preserve interoperability with existing peers.
 
 Yobiru is maintained under **Chekusu** and released under the [MIT License](LICENSE). It grew out of the tailmsg project; the CLI and protocol retain that compatibility. Grok Bot, DOTS, Codex, Cursor, and Tailscale are names of their respective products; their appearance here does not imply endorsement.
+
+The [final logo set](brand/logo/yobiru/README.md) contains the symbol, wordmark
+and lockup in SVG and PNG. The website mirrors the color assets; see
+[`docs/RELEASING.md`](docs/RELEASING.md) before updating either copy.
 
 ## Development
 
