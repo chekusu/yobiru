@@ -271,7 +271,8 @@ agent 名字规则：1–64 个字符，可以用中文等任意 Unicode；不�
 
 ```json
 {"ok": true, "v": 1, "product": "yobiru", "version": "0.5.0", "node": "dev-server.example.ts.net",
- "capabilities": ["request-lifecycle-v1"],
+ "capabilities": ["request-lifecycle-v1", "request-pull-v1", "caller-identity-v1"],
+ "node_id": "node:<十六进制 StableID>", "caller": {"node": "laptop.example.ts.net", "id": "node:<十六进制>"},
  "agents_total": 2, "agents_truncated": false, "generated_at": "2026-10-11T00:00:00Z",
  "agents": [
   {"agent": "codex", "default": true, "session": {
@@ -286,6 +287,17 @@ agent 名字规则：1–64 个字符，可以用中文等任意 Unicode；不�
 - 只投影**明确绑定**的会话：`<home>/sessions.json`（`yobiru session bind` 写入）中的绑定，以及已安装 Codex 桥接的固定入口会话（agent `codex`，以桥接配置为准，冲突的绑定不会改变它）。绝不返回配置、路径、适配器 argv、webhook 地址、密钥、消息预览、会话记录、任意会话列表或账户信息。
 - `display_name` 是本地别名，`confirmed_title` 是用户绑定时确认的标题；两者都不是原生名称。`native_name` 只来自只读查询：Codex 桥接用 `thread/read`（`includeTurns: false`）读取绑定 UUID 的 `Thread.name`，从不使用 `preview`（首条用户消息），不启动模型回合。查询有界（子进程组超时清理、输出上限），结果按进程缓存约 5 分钟（失败 1 分钟）；冷查询超过约 1.5 秒时返回 `pending`，或返回带 `stale` 标记的旧值。短时读取器看到的 `notLoaded` 等状态不代表会话所属运行时的状态，因此 `activity` 永远是 `unknown`。
 - 发现方必须把整个响应当作不可信数据：限制大小与总时长，校验类型，去掉控制字符和终端转义，Codex 会话 ID 必须是小写 UUID。
+
+### 9.1 调用方身份与托管连接器（Yobiru 0.7.26 起）
+
+`capabilities` 含 `caller-identity-v1` 时，`/info` 另外给出两项：`node_id` 是接收端自己的 StableID（线上写法 `node:<十六进制>`，与拉取请求的 `from` 相同），`caller` 是这次已通过鉴权的调用方在接收端本机 `tailscale whois` 下的身份：`{"node": "<MagicDNS 名称或 node:...>", "id": "node:<十六进制>"}`（没有可用 StableID 时不给 `id`）。这只是把调用方自己的身份告诉它本人，不含任何配置或其他节点的信息。
+
+用途：有些托管 agent 的电脑通过宿主提供的官方 Tailscale 连接器上网（例如 Grok Bot 的 Tailscale 插件，宿主后端托管一台 `grokbot-…` 设备）。这样的电脑能按 MagicDNS 名称或 `100.x` 地址主动连到 tailnet 里的机器，但本机没有 `tailscale` 命令、LocalAPI 或可被连入的地址。它的配置写 `"tailnet_route": "connector"`，此时：
+
+- 不运行接收端，不调用本机 Tailscale；只发**拉取式**跟踪请求（§10 的 `transport: "pull"`），目标必须写完整 MagicDNS 名称，经宿主的 DNS 解析到 tailnet 地址。
+- 发件身份（`from`）取自目标接收端 `/info` 的 `caller.id`；接收端照常用自己的 `whois` 校验来源地址，`from` 与之不符就拒收。认证仍完全由接收端的 Tailscale 完成。
+- 目标身份：发件方无法自行 `whois`，改为固定目标 `/info` 的 `node_id`，并在每次新连接（上传、提交、刷新状态、下载结果）前重新读取比对；名称或 `node_id` 变了就停止。到该地址的路由由宿主连接器保证，这是与本机 LocalAPI 不同的信任边界。
+- 目标接收端不支持 `caller-identity-v1`（早于 0.7.26）时直接报错，不退化成别的方式。
 
 ### 升级通知（kind `yobiru-upgrade-notice`）
 

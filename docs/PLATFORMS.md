@@ -129,7 +129,14 @@ Grok Bot is documented on cursor.com and docs.x.ai. It is not the Grok Build CLI
 - Custom MCP servers can be **Command** (runs on the conversation's computer) or **Remote HTTPS**:
   <https://docs.x.ai/grok-bot/team-bots>. Neither has been tried with Yobiru's public bot MCP endpoint
   or stdio proxy; a Remote HTTPS server that requires OAuth cannot use its static bearer credential.
-- Tailscale on team computers (Enterprise **Team Setup** scripts, Debian-based Linux, `sudo`
+- Official Tailscale plugin (Grok Bot 0.49+): **Connect apps → Your plugins → Tailscale →
+  Authenticate**. Commands on the bot's computer reach tailnet machines by full MagicDNS name or `100.x`
+  address, outbound only, during the owner's turns and scheduled routines; Grok Bot's guidance is not to
+  install a Tailscale client on the bot's computer. Yobiru uses it first, on its connector route
+  (`setup --tailnet-route connector`, since 0.7.26): pull requests only, no receiver, receivers 0.7.26+.
+  Sources: <https://github.com/cursor/plugins/tree/main/third_party/tailscale>,
+  <https://tailscale.com/blog/oauth-apps-ga>. See [the Grok Bot guide](GROK_BOT.md#connect-with-grok-bots-official-tailscale-plugin).
+- Fallback, Tailscale on team computers (Enterprise **Team Setup** scripts, Debian-based Linux, `sudo`
   available): <https://cursor.com/docs/grok-bot/private-networks>
 - Routine webhooks: the routine's **Webhook** section shows the URL, the key and the header
   `Authorization: Bearer <key>`; a 200 means a run was accepted and started, not finished:

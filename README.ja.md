@@ -162,7 +162,7 @@ agent --plugin-dir "$PWD/plugins/yobiru"
 
 アカウントで利用できるマーケットプレイスに Yobiru が表示されたら、Grok Bot の **Connect apps** から追加します。Cursor チーム管理者がアクセスを制限する場合があります。[Grok Bot のプラグイン文書](https://cursor.com/help/grok-bot/connect-plugins)を参照してください。[公式申請ページ](https://x.ai/bot/marketplace/submit-a-plugin)は Grok Bot と Cursor の両方に対応します。申請後も審査が必要です。進捗は[申請記録](docs/MARKETPLACE_SUBMISSION.md)で確認できます。
 
-Grok Bot に **「yobiru-grok-bot を使い、この会話のコンピューターを他のエージェントにつないで」** と依頼できます。新規導入のデータは `/workspace/yobiru-data` のような隠しでない非公開フォルダーに、パッケージとは別に置きます。既存のデータの場所は維持します（[理由](docs/GROK_BOT.md#prefer-visible-folders-under-workspace)）。このスキルはコンピューターの確認、スクリプトがない場合の公式アーカイブの検証、固定デバイス名と復旧方法を案内します。受信プロセスの稼働、依頼の完了、ネイティブプラグインの導入は別の検証結果です。[Grok Bot ガイド](docs/GROK_BOT.md)と[プラットフォーム別の注意点](docs/PLATFORMS.md)を参照してください。
+Grok Bot に **「yobiru-grok-bot を使い、この会話のコンピューターを他のエージェントにつないで」** と依頼できます。0.7.26 からは、まず Grok Bot 公式の Tailscale プラグイン（**Connect apps → Your plugins → Tailscale → Authenticate**）の接続を案内し、Grok Bot のコンピューターには Tailscale をインストールしません。Grok Bot は完全な MagicDNS 名で他のコンピューターに依頼とファイルを送り、結果を取りに行きます（外向きの接続のみ）。Grok Bot 宛てのメッセージは Friends を使います。プラグインが使えない場合だけ、Grok Bot のコンピューターに Tailscale と受信プロセスを入れる従来の方法に戻ります（[コネクター経路](docs/GROK_BOT.md#connect-with-grok-bots-official-tailscale-plugin)。受信側は 0.7.26 以降が必要）。新規導入のデータは `/workspace/yobiru-data` のような隠しでない非公開フォルダーに、パッケージとは別に置きます。既存のデータの場所は維持します（[理由](docs/GROK_BOT.md#prefer-visible-folders-under-workspace)）。このスキルはコンピューターの確認、スクリプトがない場合の公式アーカイブの検証、固定デバイス名と復旧方法を案内します。受信プロセスの稼働、依頼の完了、ネイティブプラグインの導入は別の検証結果です。[Grok Bot ガイド](docs/GROK_BOT.md)と[プラットフォーム別の注意点](docs/PLATFORMS.md)を参照してください。
 
 ### プラグインホストを使わず CLI を利用
 
@@ -178,7 +178,7 @@ sh "$Y" doctor
 
 ### アップグレード
 
-現在の安定版は 0.7.25 です。0.7.15 以降のリリースには Muse カスタムコネクター（公式 Tailscale を先に使い、使えない場合は Friends に案内）と Claude の可視 Remote Control ブリッジ、復旧修正が含まれます。リリースアーカイブは対応するタグに固定されます。リポジトリからのインストールは `main` に従うため、未リリースの修正を含む場合もあります。[アップグレードガイド](docs/UPGRADING-0.7.md)（英語）では、`SHA256SUMS` で検証するリリースアーカイブ、Cursor と Grok Bot、常駐受信プロセス、既存ゲートウェイの移行、ロールバックの制約、受け入れチェックリストを説明しています。開発版を動かしているマシンでは、そのランタイムとブリッジをそのままにしてください。その横で正式版を試す方法もガイドにあります。
+現在の安定版は 0.7.26 です。0.7.15 以降のリリースには Muse カスタムコネクター（公式 Tailscale を先に使い、使えない場合は Friends に案内）と Claude の可視 Remote Control ブリッジ、復旧修正が含まれます。リリースアーカイブは対応するタグに固定されます。リポジトリからのインストールは `main` に従うため、未リリースの修正を含む場合もあります。[アップグレードガイド](docs/UPGRADING-0.7.md)（英語）では、`SHA256SUMS` で検証するリリースアーカイブ、Cursor と Grok Bot、常駐受信プロセス、既存ゲートウェイの移行、ロールバックの制約、受け入れチェックリストを説明しています。開発版を動かしているマシンでは、そのランタイムとブリッジをそのままにしてください。その横で正式版を試す方法もガイドにあります。
 
 ## 初回セットアップ（Tailscale がまだなくても）
 

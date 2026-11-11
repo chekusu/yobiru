@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.26 (2026-11-11)
+
+Clients and receivers; the gateway is unchanged. No schema change. Upgrade the receivers Grok Bot should reach first.
+
+- **Grok Bot connects through its official Tailscale plugin first.** Grok Bot 0.49+ has an official Tailscale plugin
+  (Connect apps → Your plugins → Tailscale → Authenticate): commands on the bot's computer reach tailnet machines by
+  full MagicDNS name, outbound only, and Grok Bot's guidance is not to install a Tailscale client there (it is wiped
+  when the computer is replaced). The `yobiru-grok-bot` and `yobiru-setup` skills now ask the owner to connect it
+  and set the computer up on the new **connector route**; a local Tailscale client and receiver on Grok Bot's
+  computer are only the fallback when the plugin is unavailable or the owner wants direct incoming messages.
+- **Connector route** (`setup --tailnet-route connector`, config `"tailnet_route": "connector"`): for a computer
+  that reaches the tailnet only through its host's managed connector and has no `tailscale` command. It never calls
+  a local Tailscale client, runs no receiver (`serve` refuses) and sends only tracked pull requests (the default on
+  this route) to a receiver's full MagicDNS name, with files, resume, status refresh and result downloads as before.
+  It learns its own identity from the receiver it calls, and pins the receiver's own StableID, checked again before
+  every new connection. `doctor`, `onboard` and `doctor --peer` understand the route (`peer-connector` shows the
+  name the receiver sees for this computer); `agents` explains that it cannot list machines. Switching an existing
+  installation needs `--replace tailnet_route`.
+- **Receivers state identities in `/info`** (capability `caller-identity-v1`, [SPEC §9.1](SPEC.md)): `node_id` is
+  the receiver's own StableID and `caller` the authenticated caller's identity as the receiver's own Tailscale sees
+  it. Authentication stays on the receiver. A connector-route sender refuses an older receiver with an upgrade hint.
+
 ## 0.7.25 (2026-11-08)
 
 Gateway and clients; update the gateway first. No schema change.

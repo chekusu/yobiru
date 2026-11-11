@@ -164,7 +164,7 @@ agent --plugin-dir "$PWD/plugins/yobiru"
 
 在账户可用的市场提供 Yobiru 后，从 Grok Bot 的 **Connect apps** 添加；Cursor 团队管理员可能控制市场访问范围。参见 [Grok Bot 插件文档](https://cursor.com/help/grok-bot/connect-plugins)。[官方提交页面](https://x.ai/bot/marketplace/submit-a-plugin)同时覆盖 Grok Bot 和 Cursor。提交之后仍需审核，实际进度以[提交记录](docs/MARKETPLACE_SUBMISSION.md)为准。
 
-可以对 Grok Bot 说：**“使用 yobiru-grok-bot，把当前会话的云电脑连接到我的其他 agents。”** 新安装把数据放在 `/workspace/yobiru-data` 这样不隐藏、仅本人可访问的目录，与安装包分开；已有安装保留原数据目录（[原因](docs/GROK_BOT.md#prefer-visible-folders-under-workspace)）。该 skill 引导确认当前电脑、校验官方安装包、处理脚本缺失，并检查固定设备名与恢复方式。接收进程正在运行、请求已经完成、原生插件已经安装，是三种不同的验证结果。参见 [Grok Bot 指南](docs/GROK_BOT.md)和[平台说明](docs/PLATFORMS.md)。
+可以对 Grok Bot 说：**“使用 yobiru-grok-bot，把当前会话的云电脑连接到我的其他 agents。”** 从 0.7.26 起，它会先请你连接 Grok Bot 官方的 Tailscale 插件（**Connect apps → Your plugins → Tailscale → Authenticate**），不在 Grok Bot 的电脑上安装 Tailscale：之后 Grok Bot 按完整 MagicDNS 名称向你的其他电脑发送请求和文件并取回结果，只往外连；要发给 Grok Bot 的消息走 Friends。只有插件不可用时，才退回在 Grok Bot 电脑上装 Tailscale 和接收端的旧方法（[连接器方式](docs/GROK_BOT.md#connect-with-grok-bots-official-tailscale-plugin)；接收端需要 0.7.26）。新安装把数据放在 `/workspace/yobiru-data` 这样不隐藏、仅本人可访问的目录，与安装包分开；已有安装保留原数据目录（[原因](docs/GROK_BOT.md#prefer-visible-folders-under-workspace)）。该 skill 引导确认当前电脑、校验官方安装包、处理脚本缺失，并检查固定设备名与恢复方式。接收进程正在运行、请求已经完成、原生插件已经安装，是三种不同的验证结果。参见 [Grok Bot 指南](docs/GROK_BOT.md)和[平台说明](docs/PLATFORMS.md)。
 
 ### 不通过插件宿主，直接使用 CLI
 
@@ -180,7 +180,7 @@ sh "$Y" doctor
 
 ### 升级
 
-当前稳定版是 0.7.25。Release 压缩包固定于对应标签；从仓库安装会跟随 `main`，其中也可能包含尚未发布的修复。[升级指南](docs/UPGRADING-0.7.md)（英文）介绍用 `SHA256SUMS` 校验的 release 压缩包、Cursor 与 Grok Bot、常驻接收端、已有网关的迁移、回滚限制和验收清单。运行开发版的机器请保持其运行时和桥接不变；指南说明了如何在它们旁边试用正式版。
+当前稳定版是 0.7.26。Release 压缩包固定于对应标签；从仓库安装会跟随 `main`，其中也可能包含尚未发布的修复。[升级指南](docs/UPGRADING-0.7.md)（英文）介绍用 `SHA256SUMS` 校验的 release 压缩包、Cursor 与 Grok Bot、常驻接收端、已有网关的迁移、回滚限制和验收清单。运行开发版的机器请保持其运行时和桥接不变；指南说明了如何在它们旁边试用正式版。
 
 ## 首次配置（即使还没有 Tailscale）
 
