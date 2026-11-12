@@ -11,6 +11,10 @@ Gateway only; clients need no update. No schema change.
   others keep accepting from the same port. One at a time; Linux only (it reads `/proc`). A backstop for memory that
   keeps growing between releases: the official gateway's request processes hold between 100 and 250 MB each. The
   report collector counts `request process N recycled` lines apart from crashes.
+- **A hosted wake's deadline holds whatever signal mask the gateway was started with.** The process that calls a
+  webhook ends itself with an alarm when the call (name lookup included) runs past `hosted_wake_timeout_seconds`.
+  It inherited its parent's signal mask, so under a supervisor or CI runner that blocks `SIGALRM` the alarm never
+  came and a stuck lookup outlived its deadline until maintenance killed it. It now unblocks `SIGALRM` first.
 
 ## 0.7.27 (2026-11-12)
 

@@ -7060,6 +7060,9 @@ def hosted_wake_delivery(home, limits, route, body, result):
     timeout = limits["hosted_wake_timeout_seconds"]
     if hasattr(signal, "setitimer"):
         signal.signal(signal.SIGALRM, signal.SIG_DFL)
+        # A spawned process inherits the signal mask: started under something that blocks SIGALRM, the alarm would
+        # never arrive and a stuck resolver would outlive its deadline.
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
         signal.setitimer(signal.ITIMER_REAL, timeout)
     else:
         watchdog = threading.Timer(timeout, os._exit, args=(1,))

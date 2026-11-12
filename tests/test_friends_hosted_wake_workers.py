@@ -123,6 +123,19 @@ class HostedWakeWorkerTests(unittest.TestCase):
         self.assertEqual(2, len(self.slow.requests))
 
     def test_hung_dns_is_bounded_and_releases_a_slot_without_replay(self):
+        self.hung_dns_is_bounded()
+
+    @unittest.skipUnless(hasattr(signal, "pthread_sigmask"), "needs signal masks")
+    def test_hung_dns_is_bounded_when_the_gateway_was_started_with_alarms_blocked(self):
+        # A spawned worker inherits its parent's signal mask; a CI runner (or a supervisor) may start the gateway
+        # with SIGALRM blocked. The worker's own deadline must still end it.
+        old = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+        try:
+            self.hung_dns_is_bounded()
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, old)
+
+    def hung_dns_is_bounded(self):
         self.store.limits["hosted_wake_timeout_seconds"] = 1
         with mock.patch.object(G, "HOSTED_WAKE_WORKERS", 1):
             with mock.patch.object(G, "hosted_wake_delivery", hung_dns_delivery):
