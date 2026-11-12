@@ -55,7 +55,9 @@ a Tailscale client on the bot's computer, because it is wiped when that computer
 With the plugin connected, commands on Grok Bot's computer reach tailnet machines by their full
 `name.tailnet.ts.net` MagicDNS name or `100.x` address, over HTTP or TCP, during the owner's own turns and the
 routines the owner schedules. The connection is **outbound only**: nothing can connect to Grok Bot's computer, and
-the computer has no `tailscale` command. Since 0.7.26 Yobiru has a matching **connector route**. `Y` is the
+the computer has no `tailscale` command. The plugin answers a MagicDNS name on that computer with a local stand-in
+address (198.18.x.x) and carries the connection to the named node. Since 0.7.26 Yobiru has a matching **connector
+route**; Grok Bot's computer needs **0.7.27** or later, the first release that dials those stand-in addresses. `Y` is the
 verified plugin's launcher (see below) and `/workspace/yobiru-data` a visible, private data home:
 
 ```sh
@@ -88,8 +90,10 @@ to the Grok Bot device is currently reported to disconnect it
 company tailnet with a `custom:grokbot` posture, not a tag. Yobiru never changes tailnet policy.
 
 Verification so far: automated tests run a real receiver that sees a connector-style device and a sender with no
-Tailscale client (round trip with files, resume, refused short names, push and receivers). The route has not yet
-been run on a live Grok Bot with the plugin connected.
+Tailscale client (round trip with files, also through a simulated 198.18.x.x stand-in address; resume, refused
+short names, push and receivers). The first live run on Grok Bot (2026-11-12, 0.7.26) connected the plugin and
+passed setup and `doctor`, then stopped at `doctor --peer` because 0.7.26 refused the stand-in address; 0.7.27
+fixes that.
 
 ### When to fall back
 

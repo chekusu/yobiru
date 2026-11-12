@@ -42,7 +42,8 @@ Tailscale client on this computer: Grok Bot's own guidance says it is wiped when
    the Tailscale admin console or by `tailscale status` on that computer). Then check it without sending anything:
    `sh Y --home /workspace/yobiru-data doctor --peer NAME.TAILNET.ts.net`. `peer-connector` shows the name that
    receiver sees for this computer. A receiver older than 0.7.26 must be upgraded first (yobiru-upgrade on that
-   computer); nothing else works around it.
+   computer); nothing else works around it. The plugin answers MagicDNS names here with 198.18.x.x stand-in
+   addresses; this computer needs Yobiru 0.7.27 or later to dial them.
 4. Send only what the owner authorized: `request send NAME.TAILNET.ts.net/AGENT TEXT [--file PATH]` (a tracked pull
    request is the default on this route), keep the returned ID, and check `request status ID --refresh --json` in
    later turns; `fetch RESPONSE_ID` downloads and verifies result files. A receipt is not a result.
