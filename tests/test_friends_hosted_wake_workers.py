@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -26,14 +27,33 @@ def hung_dns_delivery(home, limits, route, body, result):
         with open(trace, "a") as f:
             f.write("%.3f %s\n" % (time.time(), text))
 
-    def resolve(*args, **kwargs):
+    def state():
         blocked = signal.pthread_sigmask(signal.SIG_BLOCK, []) if hasattr(signal, "pthread_sigmask") else "n/a"
-        note("resolver stuck: alarm %r, SIGALRM handler %r, blocked %r, threads %d"
-             % (signal.getitimer(signal.ITIMER_REAL), signal.getsignal(signal.SIGALRM), sorted(blocked),
-                threading.active_count()))
+        return "alarm %r, SIGALRM handler %r, blocked %r, threads %d" % (
+            signal.getitimer(signal.ITIMER_REAL), signal.getsignal(signal.SIGALRM), sorted(blocked),
+            threading.active_count())
+
+    def resolve(*args, **kwargs):
+        note("resolver stuck: " + state())
         time.sleep(60)
-    note("worker %d started" % os.getpid())
-    with mock.patch.object(G.C.socket, "getaddrinfo", side_effect=resolve):
+
+    def watch(main):
+        # Where the worker is, if it is still here after its deadline should have ended it.
+        time.sleep(2)
+        frame = sys._current_frames().get(main)
+        where = "".join(traceback.format_stack(frame)[-6:]) if frame else "(no main thread)"
+        note("still alive after 2 s: %s; main thread at:\n%s" % (state(), where))
+
+    arm = signal.setitimer
+
+    def armed(*args):
+        out = arm(*args)
+        note("alarm set to %r: %s" % (args[1:], state()))
+        return out
+    note("worker %d started: %s" % (os.getpid(), state()))
+    threading.Thread(target=watch, args=(threading.get_ident(),), daemon=True).start()
+    with mock.patch.object(G.C.socket, "getaddrinfo", side_effect=resolve), \
+            mock.patch.object(G.signal, "setitimer", armed):
         G.hosted_wake_delivery(home, dict(limits, hosted_wake_private_hosts=0), route, body, result)
 
 
