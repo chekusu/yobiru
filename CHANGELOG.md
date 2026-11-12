@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.27 (2026-11-12)
+
+Grok Bot's computer only; receivers and the gateway are unchanged (receivers stay on 0.7.26 or later).
+
+- **The connector route dials the plugin's stand-in addresses.** The first live run on Grok Bot showed that its
+  official Tailscale plugin answers a MagicDNS name with a local stand-in address from the benchmarking range
+  (198.18.x.x) and carries the connection to that node; 0.7.26 accepted only 100.x/fd7a: tailnet addresses there, so
+  `doctor --peer` and `request send` stopped before connecting. On the connector route Yobiru now also dials
+  addresses in 198.18.0.0/15 for a full MagicDNS name (a real tailnet address is still preferred). The destination's
+  identity still comes from its own `/info` statement, pinned and re-checked before every connection; the local
+  route and receivers accept nothing new. `doctor --peer` says when it uses such an address.
+
 ## 0.7.26 (2026-11-11)
 
 Clients and receivers; the gateway is unchanged. No schema change. Upgrade the receivers Grok Bot should reach first.

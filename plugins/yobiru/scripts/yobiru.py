@@ -2389,7 +2389,8 @@ def peer_doctor_checks(facts, peer, port, timeout=3.0):
                 "check that the share was accepted; use its full MagicDNS name or exact Tailscale IP")
             return checks
         ip, expect_node = node["ip"], node["node"]
-    add("ok", "peer-target", "%s resolves to %s:%d" % (peer, ip, port))
+    via = " (this host connector's address for it)" if core().is_connector_ip(ip) else ""
+    add("ok", "peer-target", "%s resolves to %s:%d%s" % (peer, ip, port, via))
     grant = {"src": ["<CALLER_TAILSCALE_IP>"], "dst": ["<RECEIVER_TAILSCALE_IP>"], "ip": ["tcp:%d" % port]}
     add("info", "peer-network-policy", "tailnet policy was not read; a timeout alone cannot identify an ACL/grant failure",
         "only with owner authorization, review this grant template alongside existing rules: %s; "
