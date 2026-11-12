@@ -26,6 +26,13 @@ LINUX = sys.platform.startswith("linux")
 FAST_CHECKS = [sys.executable, "-c",
                "import sys; sys.path.insert(0, %r); import bot_gateway as G; G.MEMORY_CHECK_SECONDS = 0.3; "
                "sys.exit(G.main(sys.argv[1:]))" % str(PUBLIC)]
+# The same, with every newer process reading a little heavier, as a process forked late can (it starts with what the
+# supervising process holds by then). Seen on a CI runner: replacements were replaced again and the first ones stayed.
+NEWER_HEAVIER = [sys.executable, "-c",
+                 "import sys; sys.path.insert(0, %r); import bot_gateway as G; G.MEMORY_CHECK_SECONDS = 0.3; "
+                 "read = G.private_memory; "
+                 "G.private_memory = lambda pid: None if read(pid) is None else read(pid) + (pid << 12); "
+                 "sys.exit(G.main(sys.argv[1:]))" % str(PUBLIC)]
 
 
 def children(pid):
@@ -111,11 +118,12 @@ class SettingTests(unittest.TestCase):
 @unittest.skipUnless(LINUX, "reads process trees and memory from /proc")
 class RecycleTests(unittest.TestCase):
     memory_mb = 1                             # every process is over this: they are replaced one after another
+    prefix = FAST_CHECKS
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory(prefix="yobiru recycle ")
         self.addCleanup(tmp.cleanup)
-        self.gw = FriendsGateway(Path(tmp.name), prefix=FAST_CHECKS,
+        self.gw = FriendsGateway(Path(tmp.name), prefix=self.prefix,
                                  limits={"process_memory_mb": self.memory_mb, "wake_retry_seconds": 1,
                                          "min_deadline_seconds": 1})
         cfg = json.loads((self.gw.home / "gateway.json").read_text())
@@ -196,6 +204,17 @@ class ReplacingTests(RecycleTests):
             self.assertGreater(took, 3.5, "held for the whole wait, not cut short")
         self.assertTrue(wait_until(lambda: self.recycled() > before), "processes holding polls were replaced")
         self.assertTrue(wait_until(lambda: not set(held[1:]) & set(children(self.parent)), timeout=20))
+
+
+class NewerHeavierTests(RecycleTests):
+    """The oldest process over the limit goes first, even when a newer one holds more."""
+    prefix = NEWER_HEAVIER
+
+    def test_the_first_processes_are_replaced_even_when_newer_ones_read_heavier(self):
+        first = children(self.parent)
+        self.assertTrue(wait_until(lambda: len(set(first) & set(children(self.parent))) == 1, timeout=20),
+                        "only the maintenance process is never replaced: " + self.log.read_text()[-2000:])
+        self.assertTrue(wait_until(lambda: self.recycled() >= 2), self.log.read_text()[-3000:])
 
 
 class OffTests(RecycleTests):

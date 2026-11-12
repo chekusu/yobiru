@@ -6944,15 +6944,18 @@ def supervise(srv, store, count, memory_limit=0):
             except OSError:
                 pass
 
-    def replace_heaviest():
-        heavy = []
+    def replace_oldest_over():
+        over = []
         for pid, role in children.items():
             used = private_memory(pid) if role == "request" else None
             if used is not None and used > memory_limit:
-                heavy.append((used, -born[pid], pid))     # the most memory; of equals, the oldest
-        if not heavy:
+                over.append((born[pid], pid, used))
+        if not over:
             return
-        used, _, pid = max(heavy)
+        # The oldest goes first, not the one holding the most: a process forked just now starts with what the
+        # supervising process holds by then and can read a little heavier, and replacing it again and again
+        # would leave the old ones running for ever.
+        _, pid, used = min(over)
         log("request process %d holds %d MB, over %d MB: starting another; this one finishes its requests and stops"
             % (pid, used >> 20, memory_limit >> 20))
         spawn("request")
@@ -6984,7 +6987,7 @@ def supervise(srv, store, count, memory_limit=0):
                         pass
             if now >= next_check and not draining and not stopping:
                 next_check = now + MEMORY_CHECK_SECONDS
-                replace_heaviest()
+                replace_oldest_over()
             time.sleep(REAP_SECONDS)
             continue
         role = children.pop(pid, None)
