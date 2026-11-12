@@ -73,6 +73,22 @@ if os.environ.get("TEST_MAGICDNS"):
             host = os.environ["TEST_MAGICDNS"]
         return real_getaddrinfo(host, *args, **kwargs)
     socket.getaddrinfo = getaddrinfo
+if os.environ.get("TEST_CONNECTOR_ADDRESS"):
+    # Like Grok Bot's Tailscale plugin: MagicDNS names answer with a local stand-in address, and the host
+    # carries each connection to that address on to the named node (here, the test receiver).
+    stand_in, target = os.environ["TEST_CONNECTOR_ADDRESS"], os.environ.get("TEST_MAGICDNS", "127.0.0.1")
+    named_getaddrinfo = socket.getaddrinfo
+    def stand_in_getaddrinfo(host, *args, **kwargs):
+        if isinstance(host, str) and host.endswith(".example.ts.net"):
+            return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (stand_in, 0))]
+        return named_getaddrinfo(host, *args, **kwargs)
+    socket.getaddrinfo = stand_in_getaddrinfo
+    carried_connect = socket.socket.connect
+    def carry(self, address):
+        if isinstance(address, tuple) and address and address[0] == stand_in:
+            address = (target,) + tuple(address[1:])
+        return carried_connect(self, address)
+    socket.socket.connect = carry
 if os.environ.get("TEST_CLOCK"):
     actual_now = core.now_utc
     def now():

@@ -15,7 +15,7 @@ from pathlib import Path
 
 VERSION = 1                     # wire protocol version (unchanged)
 PRODUCT = "yobiru"
-PRODUCT_VERSION = "0.7.26"  # Yobiru release of this file; tools/build_plugin.py check keeps it in sync
+PRODUCT_VERSION = "0.7.27"  # Yobiru release of this file; tools/build_plugin.py check keeps it in sync
 DEFAULTS = {
     "port": 7766,
     "access_policy": "tailnet",    # authenticated Tailscale peers; use "allowlist" for opt-in restriction
@@ -45,6 +45,11 @@ DEFAULTS = {
 WAKE_LEVELS = ("none", "batch", "now")  # ascending
 WAKE_DEFAULT = "batch"
 TAILNET_NETS = [ipaddress.ip_network("100.64.0.0/10"), ipaddress.ip_network("fd7a:115c:a1e0::/48")]
+# A host's managed Tailscale connector may answer MagicDNS names with local stand-in ("fake IP") addresses
+# from the benchmarking range (RFC 2544, never routed on the Internet) and carry each connection to the named
+# node; Grok Bot's official Tailscale plugin answers 198.18.x.x. Only the connector route dials them, and the
+# destination's identity still comes from its own pinned /info statement (SPEC §9.1).
+CONNECTOR_NETS = [ipaddress.ip_network("198.18.0.0/15")]
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}\Z")      # \Z, not $: "$" would also accept a trailing newline
 MSG_REF_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")  # a message id or a unique prefix of one (CLI input)
 INBOX_PREVIEW = 500                                 # characters of text per `inbox --json` row
@@ -258,14 +263,21 @@ def durable_write(path, data):
         if temporary.exists():
             temporary.unlink()
 
-def is_tailnet_ip(ip):
+def ip_in(ip, nets):
     try:
         a = ipaddress.ip_address(ip.split("%")[0])
-    except ValueError:
+    except (AttributeError, ValueError):
         return False
     if getattr(a, "ipv4_mapped", None):
         a = a.ipv4_mapped
-    return any(a in n for n in TAILNET_NETS)
+    return any(a in n for n in nets)
+
+def is_tailnet_ip(ip):
+    return ip_in(ip, TAILNET_NETS)
+
+def is_connector_ip(ip):
+    """A host connector's stand-in address for a MagicDNS name (CONNECTOR_NETS); never a tailnet address."""
+    return ip_in(ip, CONNECTOR_NETS)
 
 def select_peer(nodes, peer):
     """Resolve a name from a fresh normalized Tailscale snapshot, never by list order.
@@ -457,7 +469,8 @@ def parse_config(raw):
 
 
 def connector_resolve(peer):
-    """Connector route: a receiver's full MagicDNS name -> (name, tailnet address), through the host's DNS.
+    """Connector route: a receiver's full MagicDNS name -> (name, address to dial), through the host's DNS:
+    a tailnet address, or else the connector's stand-in address for that name (CONNECTOR_NETS).
     Short names and bare addresses are refused: the name is the identity the receiver must confirm."""
     name = str(peer).strip().lower().rstrip(".")
     if not MAGICDNS_RE.fullmatch(name):
@@ -468,13 +481,16 @@ def connector_resolve(peer):
     except (OSError, UnicodeError) as exc:
         raise RuntimeError("the host's Tailscale connector did not resolve %s (%s); check that this host's "
                            "Tailscale connection is on and that the name is right" % (name, exc)) from exc
-    ips = []
+    tailnet, stand_in, other = [], [], []
     for item in found:
         ip = str(item[4][0])
-        if is_tailnet_ip(ip) and ip not in ips:
-            ips.append(ip)
+        bucket = tailnet if is_tailnet_ip(ip) else stand_in if is_connector_ip(ip) else other
+        if ip not in bucket:
+            bucket.append(ip)
+    ips = tailnet or stand_in
     if not ips:
-        raise RuntimeError("%s did not resolve to a Tailscale address through this host's connector" % name)
+        raise RuntimeError("%s did not resolve to a Tailscale address or to this host connector's address for it "
+                           "(got %s)" % (name, ", ".join(other[:3]) or "nothing"))
     v4 = [ip for ip in ips if ":" not in ip]
     return name, (v4 or ips)[0]
 
@@ -520,6 +536,11 @@ class Ctx:
         connector (for example Grok Bot's official Tailscale plugin), with no local Tailscale client."""
         return self.cfg.get("tailnet_route") == "connector"
 
+    def dialable(self, ip):
+        """An address this computer may dial for a peer: a tailnet address, or on the connector route the
+        host connector's stand-in address for a MagicDNS name."""
+        return is_tailnet_ip(ip) or (self.connector() and is_connector_ip(ip))
+
     def connector_whois(self, ip, port):
         """Connector route: the destination's identity as the destination itself states it in /info, and this
         computer's identity as the destination's own Tailscale sees it. The destination still authenticates
@@ -543,8 +564,11 @@ class Ctx:
         caller_node = caller.get("node") if isinstance(caller.get("node"), str) else ""
         self.connector_self = {"node": caller_node.rstrip(".").lower(), "stable_id": mine, "ips": []}
         node = node.rstrip(".").lower()
-        return {"ip": ip, "node": node, "host": node.split(".")[0], "tags": [], "user": "",
-                "stable_id": stable, "dns_name": node}
+        ident = {"node": node, "host": node.split(".")[0], "tags": [], "user": "", "stable_id": stable,
+                 "dns_name": node}
+        if is_tailnet_ip(ip):          # a connector's stand-in address is no attribute of the destination
+            ident["ip"] = ip
+        return ident
 
     def native_name(self, binding):
         """Read-only native session name for a bound session, cached (bounded subprocess cost)."""
@@ -4334,7 +4358,7 @@ def cmd_fetch(ctx, a):
                 print("OK    %s (already fetched)" % name)
                 continue
             _, ip = ctx.resolve(u.hostname)
-            if not is_tailnet_ip(ip):
+            if not ctx.dialable(ip):
                 raise RuntimeError("resolved to non-tailnet ip %s" % ip)
             if env.get("response") and env.get("reply_to"):
                 with request_db(ctx) as db:

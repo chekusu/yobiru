@@ -294,7 +294,7 @@ agent 名字规则：1–64 个字符，可以用中文等任意 Unicode；不�
 
 用途：有些托管 agent 的电脑通过宿主提供的官方 Tailscale 连接器上网（例如 Grok Bot 的 Tailscale 插件，宿主后端托管一台 `grokbot-…` 设备）。这样的电脑能按 MagicDNS 名称或 `100.x` 地址主动连到 tailnet 里的机器，但本机没有 `tailscale` 命令、LocalAPI 或可被连入的地址。它的配置写 `"tailnet_route": "connector"`，此时：
 
-- 不运行接收端，不调用本机 Tailscale；只发**拉取式**跟踪请求（§10 的 `transport: "pull"`），目标必须写完整 MagicDNS 名称，经宿主的 DNS 解析到 tailnet 地址。
+- 不运行接收端，不调用本机 Tailscale；只发**拉取式**跟踪请求（§10 的 `transport: "pull"`），目标必须写完整 MagicDNS 名称，经宿主的 DNS 解析到 tailnet 地址；有的连接器（例如 Grok Bot 的插件）会把名称解析成本机代用地址（198.18.0.0/15，RFC 2544 基准测试网段，不在公网路由），再把连接送到该节点，0.7.27 起这条路线也接受这种地址（有真实 tailnet 地址时优先用它）。地址本身不算目标身份，身份仍以下一条固定的 `node_id` 为准；本机路线和接收端不接受这种地址。
 - 发件身份（`from`）取自目标接收端 `/info` 的 `caller.id`；接收端照常用自己的 `whois` 校验来源地址，`from` 与之不符就拒收。认证仍完全由接收端的 Tailscale 完成。
 - 目标身份：发件方无法自行 `whois`，改为固定目标 `/info` 的 `node_id`，并在每次新连接（上传、提交、刷新状态、下载结果）前重新读取比对；名称或 `node_id` 变了就停止。到该地址的路由由宿主连接器保证，这是与本机 LocalAPI 不同的信任边界。
 - 目标接收端不支持 `caller-identity-v1`（早于 0.7.26）时直接报错，不退化成别的方式。

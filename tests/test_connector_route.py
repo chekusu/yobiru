@@ -8,6 +8,7 @@ and every test proves it was never run.
 """
 import importlib.util
 import json
+import socket
 import sys
 import unittest
 from pathlib import Path
@@ -79,6 +80,35 @@ class ConnectorRouteTests(unittest.TestCase):
         self.assertEqual(shared.digest(result_data), shared.digest(downloaded.read_bytes()))
         self.t.no_reverse_connections()
 
+    def test_round_trip_through_the_connectors_stand_in_address(self):
+        # Grok Bot's plugin answers MagicDNS names with 198.18.x.x and carries the connection to the node.
+        self.extra = dict(self.extra, TEST_CONNECTOR_ADDRESS="198.18.128.1")
+        source = self.root / "input.txt"
+        source.write_bytes(b"plugin route test\n")
+        sent = self.alpha_json("request", "send", self.address, "Plugin route test", "--wake", "none",
+                               "--file", str(source))
+        self.assertEqual((202, "pull", "accepted"), (sent["status"], sent["transport"], sent["submission"]))
+        mid = sent["id"]
+        self.assertEqual(GROK_ID, self.t.tm_json("bravo", "show", mid)["received"]["peer"]["stable_id"])
+        self.assertEqual(0, self.t.tm("bravo", "fetch", mid).returncode)
+        result = self.root / "result.txt"
+        result.write_bytes(b"plugin route test OK\n")
+        self.t.tm_json("bravo", "reply", mid, "OK", "--file", str(result))
+        state = self.alpha_json("request", "status", mid, "--refresh", "--json")
+        self.assertEqual(("completed", "ok"), (state["state"], state["refresh"]))
+        fetched = self.alpha("fetch", state["response"]["id"])
+        self.assertEqual(0, fetched.returncode, fetched.stdout + fetched.stderr)
+        downloaded = self.t.homes["alpha"] / "inbox" / state["response"]["id"] / "files" / result.name
+        self.assertEqual(b"plugin route test OK\n", downloaded.read_bytes())
+        self.t.no_reverse_connections()
+
+    def test_an_address_outside_the_tailnet_and_the_connector_range_is_refused(self):
+        self.extra = dict(self.extra, TEST_CONNECTOR_ADDRESS="10.9.8.7")
+        result = self.alpha("request", "send", self.address, "Elsewhere", "--wake", "none")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("10.9.8.7", result.stderr)
+        self.assertEqual([], list((self.t.homes["bravo"] / "inbox").glob("*.json")))
+
     def test_resume_reuses_the_same_request(self):
         sent = self.alpha_json("request", "send", self.address, "Resume me", "--wake", "none")
         resumed = self.alpha_json("request", "resume", sent["id"])
@@ -145,6 +175,34 @@ class ConnectorIdentityUnitTests(unittest.TestCase):
         self.assertEqual(core.stable_peer_id("MacStable"), core.peer_identity(ident))
         self.assertEqual({"node": "grokbot-user-1.example.ts.net", "stable_id": "GrokStable", "ips": []}, ctx.self_node())
         self.assertEqual([("100.64.0.2", 7766, "GET", "/info", "mac.example.ts.net")], self.calls)
+
+    def test_a_stand_in_address_is_dialled_but_is_no_identity(self):
+        ctx = self.ctx((200, self.info()))
+        ident = ctx.connector_whois("198.18.128.1", 7766)
+        self.assertNotIn("ip", ident)
+        self.assertEqual(core.stable_peer_id("MacStable"), core.peer_identity(ident))
+        self.assertEqual((True, "tailnet"), core.access_decision({"access_policy": "tailnet"}, ident))
+        self.assertTrue(ctx.dialable("198.18.128.1") and ctx.dialable("100.64.0.2"))
+        self.assertFalse(ctx.dialable("10.9.8.7") or ctx.dialable("198.20.0.1"))
+        ctx.cfg = {"tailnet_route": "local"}
+        self.assertFalse(ctx.dialable("198.18.128.1"))
+
+    def test_resolution_prefers_a_tailnet_address_and_falls_back_to_the_stand_in(self):
+        answers = {}
+        self.addCleanup(setattr, socket, "getaddrinfo", socket.getaddrinfo)
+        socket.getaddrinfo = lambda host, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))
+                                                    for ip in answers[host]]
+        for found, expected in ((["198.18.128.1"], "198.18.128.1"),
+                                (["198.18.128.1", "100.64.0.2"], "100.64.0.2"),
+                                (["10.9.8.7"], None), (["8.8.8.8", "198.20.0.1"], None)):
+            answers["mac.example.ts.net"] = found
+            with self.subTest(found=found):
+                if expected:
+                    self.assertEqual(("mac.example.ts.net", expected), core.connector_resolve("mac.example.ts.net"))
+                else:
+                    with self.assertRaises(RuntimeError) as caught:
+                        core.connector_resolve("mac.example.ts.net")
+                    self.assertIn(found[0], str(caught.exception))
 
     def test_refusal_is_no_identity(self):
         self.assertIsNone(self.ctx((403, {"ok": False})).connector_whois("100.64.0.2", 7766))
