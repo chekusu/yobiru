@@ -18,9 +18,21 @@ import bot_gateway as G
 
 
 def hung_dns_delivery(home, limits, route, body, result):
-    """Run the real transport with an OS resolver that never returns during this test."""
+    """Run the real transport with an OS resolver that never returns during this test. Leaves a trace in the gateway
+    home (when the worker started, and its alarm and signal state once stuck) for a failure message."""
+    trace = Path(home) / "hung-dns.trace"
+
+    def note(text):
+        with open(trace, "a") as f:
+            f.write("%.3f %s\n" % (time.time(), text))
+
     def resolve(*args, **kwargs):
+        blocked = signal.pthread_sigmask(signal.SIG_BLOCK, []) if hasattr(signal, "pthread_sigmask") else "n/a"
+        note("resolver stuck: alarm %r, SIGALRM handler %r, blocked %r, threads %d"
+             % (signal.getitimer(signal.ITIMER_REAL), signal.getsignal(signal.SIGALRM), sorted(blocked),
+                threading.active_count()))
         time.sleep(60)
+    note("worker %d started" % os.getpid())
     with mock.patch.object(G.C.socket, "getaddrinfo", side_effect=resolve):
         G.hosted_wake_delivery(home, dict(limits, hosted_wake_private_hosts=0), route, body, result)
 
@@ -139,6 +151,7 @@ class HostedWakeWorkerTests(unittest.TestCase):
         self.store.limits["hosted_wake_timeout_seconds"] = 1
         with mock.patch.object(G, "HOSTED_WAKE_WORKERS", 1):
             with mock.patch.object(G, "hosted_wake_delivery", hung_dns_delivery):
+                spawned = time.time()
                 self.pump()
             pool = self.store.hosted_wake_workers
             self.assertEqual([self.a], list(pool.active))
@@ -148,7 +161,12 @@ class HostedWakeWorkerTests(unittest.TestCase):
                 self.assertEqual(1, len(pool.active))
             # The child has its own deadline even if its maintenance parent stops collecting.
             process.join(3)
-            self.assertFalse(process.is_alive(), "resolver outlived the delivery deadline")
+            if process.is_alive():
+                trace = self.gw.home / "hung-dns.trace"
+                notes = trace.read_text() if trace.exists() else "(the worker left no trace)\n"
+                process.kill()
+                self.fail("resolver outlived the delivery deadline: spawned at %.3f, %.1f s ago; the worker's trace:\n%s"
+                          % (spawned, time.time() - spawned, notes))
             self.assertTrue(wait_until(lambda: (self.pump(), len(self.fast.requests) == 1)[1], timeout=4))
             for _ in range(3):
                 self.pump()
