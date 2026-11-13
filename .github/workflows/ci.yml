@@ -16,10 +16,17 @@ concurrency:
 
 jobs:
   test:
+    name: test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [hayabuild-linux, hayabuild-macos]
+        # The gateway runs on Linux only: macOS runs the client suite, which leaves out the modules that test only the
+        # gateway server (tools/ci_tests.py names them).
+        include:
+          - os: hayabuild-linux
+            suite: all
+          - os: hayabuild-macos
+            suite: client
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -31,8 +38,9 @@ jobs:
       - name: Plugin check
         run: python3 tools/build_plugin.py check
       - name: Gateway startup diagnostics
+        if: matrix.suite == 'all'
         run: python3 -u tools/ci_gateway_startup.py
       - name: Tests
         run: |
-          python3 -u -m unittest discover -s tests -v -f
+          python3 -u tools/ci_tests.py --suite ${{ matrix.suite }}
           python3 -u -m unittest -v -f test_codex_bridge test_codex_queue_client test_codex_resident test_install_codex_bridge test_install_codex_bridge_linux

@@ -141,7 +141,8 @@ The workflow then
 
 `Actions → Release → Run workflow` with an existing tag republishes it; untick *deploy* to skip the gateway, or use it
 to redeploy (or roll back to) an older stable tag. `.github/workflows/ci.yml` runs `check` and the tests on every pull
-request and push to `main`, on GitHub-hosted runners only.
+request and push to `main`: the whole suite on Linux, and on macOS the client suite, which leaves out the modules that
+test only the gateway server (`python3 tools/ci_tests.py --suite client --list` shows what runs there).
 
 ### Deploying the official gateway
 
