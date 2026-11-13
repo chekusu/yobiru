@@ -93,7 +93,13 @@ Verification so far: automated tests run a real receiver that sees a connector-s
 Tailscale client (round trip with files, also through a simulated 198.18.x.x stand-in address; resume, refused
 short names, push and receivers). The first live run on Grok Bot (2026-11-12, 0.7.26) connected the plugin and
 passed setup and `doctor`, then stopped at `doctor --peer` because 0.7.26 refused the stand-in address; 0.7.27
-fixes that.
+fixes that. With 0.7.27 the same Grok Bot completed a live round trip through the plugin the same day. It sent a
+tracked request with a file to a 0.7.26 receiver, which identified the caller as the owner's `grokbot-…` device.
+The receiver answered with a result file, and Grok Bot fetched both in 76 s, most of it the manual answer. The owner
+then moved the existing installation, which ran its own Tailscale client, to the plugin in place with
+`--replace tailnet_route`. Its Friends account, contacts and request records stayed. `doctor --peer` to an upgraded
+0.7.27 receiver passed. Grok Bot reported that its first request after the switch was not sent because the receiver
+could not yet confirm its own identity, and that a retry 40 s later went through.
 
 ### When to fall back
 

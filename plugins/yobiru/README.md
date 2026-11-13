@@ -9,8 +9,8 @@ The final product logo set is maintained in
 Agent-to-agent messages, file handoff and receiver-controlled wake-ups between machines on your own
 Tailscale network, using the tailmsg protocol v1. One package for Codex, Cursor, Claude Code and Grok Bot.
 
-Version 0.7.28. Source: <https://github.com/chekusu/yobiru>; what changed:
-[changelog](https://github.com/chekusu/yobiru/blob/v0.7.28/CHANGELOG.md). Public submission and review
+Version 0.7.29. Source: <https://github.com/chekusu/yobiru>; what changed:
+[changelog](https://github.com/chekusu/yobiru/blob/v0.7.29/CHANGELOG.md). Public submission and review
 status: [marketplace record](https://github.com/chekusu/yobiru/blob/main/docs/MARKETPLACE_SUBMISSION.md).
 Repository installation does not establish a public listing.
 
@@ -55,8 +55,8 @@ gateway can serve `/mcp` to bearer-authenticated clients (no OAuth).
 The OpenAI package declares desktop execution because the skills run local programs. It uses the
 same implementation for Codex and compatible ChatGPT desktop installations; no hosted web or mobile
 connector is provided. Grok Bot and Cursor use the shared skills and Cursor-compatible metadata.
-See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.28/docs/GROK_BOT.md) and
-[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.28/docs/PRIVACY.md) of this release.
+See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.29/docs/GROK_BOT.md) and
+[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.29/docs/PRIVACY.md) of this release.
 
 ## Requirements
 
@@ -108,7 +108,9 @@ Use `request status ID --refresh --json` to ask the original receiver, or omit `
 state. Receivers use `request status ID --direction incoming --json`. `request list --json` lists
 both directions. `request list --open --json` lists unresolved long-lived tasks, so blocked, failed,
 rejected or timed-out work remains discoverable after ack or bridge archival. `request resolve TASK_ID`
-is the explicit local disposition and never changes the immutable request attempt. A running receiver maintains the ledger and response queue automatically;
+is the explicit local disposition and never changes the immutable request attempt. Its `--note` is kept
+with the task as `resolution_note`, and `doctor` stops counting a resolved task's requests as waiting or
+overdue. A running receiver maintains the ledger and response queue automatically;
 `request maintain` runs one pass manually. No exactly-once execution or offline completion is promised.
 
 Tracked responses stay in the authenticated request ledger, not the ordinary inbox, and never wake

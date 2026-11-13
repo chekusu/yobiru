@@ -1,5 +1,7 @@
 """Long-lived task projection stays visible after immutable request outcomes."""
+import contextlib
 import importlib.util
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -37,6 +39,37 @@ class TaskLedgerTests(unittest.TestCase):
         self.assertEqual((task_id, "resolved"), (resolved["task_id"], resolved["resolution"]))
         self.assertEqual([], core.task_snapshots(self.home, open_only=True))
         self.assertEqual("blocked", core.request_snapshot(self.home, self.mid)["state"])
+
+    def test_resolve_keeps_its_note_until_the_task_reopens(self):
+        core.accept_request(self.ctx, self.rec)
+        core.respond_request(self.ctx, self.mid, "blocked", "needs user authorization")
+        task_id = core.task_snapshots(self.home)[0]["task_id"]
+        resolved = core.resolve_task(self.ctx, task_id, by="guoyu", note="closed while switching routes")
+        self.assertEqual("closed while switching routes", resolved["resolution_note"])
+        task = core.task_snapshots(self.home)[0]
+        self.assertEqual(("resolved", "guoyu", "closed while switching routes"),
+                         (task["resolution"], task["resolved_by"], task["resolution_note"]))
+        core.authorize_task(self.ctx, task_id, {"actions": ["build"]}, expected_generation=0)
+        task = core.task_snapshots(self.home)[0]
+        self.assertEqual(("open", None, None), (task["resolution"], task["resolved_by"], task["resolution_note"]))
+        self.assertEqual(500, len(core.resolve_task(self.ctx, task_id, note="x" * 600)["resolution_note"]))
+        self.assertEqual("x" * 500, core.task_snapshots(self.home)[0]["resolution_note"])
+        self.assertIsNone(core.resolve_task(self.ctx, task_id)["resolution_note"])
+        self.assertIsNone(core.task_snapshots(self.home)[0]["resolution_note"])
+
+    def test_an_older_ledger_gains_the_note_column(self):
+        core.accept_request(self.ctx, self.rec)
+        core.respond_request(self.ctx, self.mid, "blocked", "reply permission is disabled")
+        task_id = core.task_snapshots(self.home)[0]["task_id"]
+        with contextlib.closing(sqlite3.connect(str(self.home / "requests" / "ledger.sqlite3"))) as db:
+            columns = [row[1] for row in db.execute("PRAGMA table_info(tasks)") if row[1] != "resolution_note"]
+            db.executescript("ALTER TABLE tasks RENAME TO tasks_with_note; "
+                             "CREATE TABLE tasks AS SELECT %s FROM tasks_with_note; DROP TABLE tasks_with_note;"
+                             % ",".join(columns))
+            self.assertNotIn("resolution_note", [row[1] for row in db.execute("PRAGMA table_info(tasks)")])
+        self.assertIsNone(core.task_snapshots(self.home)[0]["resolution_note"])
+        core.resolve_task(self.ctx, task_id, note="kept after the upgrade")
+        self.assertEqual("kept after the upgrade", core.task_snapshots(self.home)[0]["resolution_note"])
 
     def test_client_ref_reuses_task_and_rejects_different_content(self):
         first = dict(self.env)

@@ -154,8 +154,10 @@ persisting the handoff; never create two lifecycle owners or automatically resta
 --state running` for progress, and explicit `failed`, `rejected` or `blocked` for those outcomes.
 The final result, `ack`, or chat archival closes this attempt only; it does not resolve an associated task.
 Use `sh Y --home DIR request list --open --json` to find unresolved tasks and `request resolve TASK_ID`
-only after the trusted owner has made the disposition. A later authorization starts a new attempt and never
-changes an old blocked request back to running.
+only after the trusted owner has made the disposition. `--note TEXT` keeps a short reason (up to 500
+characters) with the task, shown as `resolution_note`. A resolved task's requests no longer count as waiting or
+overdue in `doctor`. A later authorization starts a new attempt, clears the note, and never changes an old
+blocked request back to running.
 Use `request respond ID TEXT --state completed --file PATH` or `reply ID TEXT --file PATH` when an
 authorized final result includes an attachment; do not override its original recipient or agent route.
 

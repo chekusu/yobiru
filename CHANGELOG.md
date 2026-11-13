@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.29 (2026-11-13)
+
+Clients only; the gateway is unchanged. The request ledger gains one column by itself when a 0.7.29 client or
+receiver first opens it.
+
+- **`request resolve --note` keeps its note.** 0.7.27 accepted the note and printed it once, but never stored it,
+  so it could not be seen again. The note (up to 500 characters) is now saved with the task and shown as
+  `resolution_note` in `request list` and `request status`. A later authorization that reopens the task clears it.
+- **`doctor` no longer counts requests whose task the owner resolved.** Resolving a task leaves its request's own
+  outcome (for example `timed_out`) as it is, so `doctor` kept listing those requests as awaiting a result and past
+  the deadline. Outgoing waiting, unknown-submission and overdue counts, and the incoming timed-out count, now leave
+  out requests whose task is resolved. Found when Grok Bot closed 14 expired requests after moving to its official
+  Tailscale plugin.
+
 ## 0.7.28 (2026-11-13)
 
 Gateway only; clients need no update. No schema change.
