@@ -94,6 +94,7 @@ LIMIT_DEFAULTS = {
     "read_timeout_seconds": 10,                 # total time to send request line, headers and body
     "max_concurrent_requests": 32,              # further connections get 503 at once
     "max_waiting_connectors": 1000,             # connector polls held for a change, per process; more answer at once
+    "process_memory_mb": 512,                   # a request process holding more private memory is replaced; 0: never
     "enroll_per_hour": 60,                      # new caller identities on this gateway (Sybil backstop)
     "enroll_per_hour_per_ip": 10,
     "max_actors": 10000,
@@ -186,8 +187,8 @@ LIMIT_DEFAULTS = {
     "delivery_evidence_ttl_seconds": 604800,    # older evidence is stale
     "quiet_wake_seconds": 300,                  # unused credential before a wake, for quiet-wake correlation
 }
-# Limits that may also be 0: no settle delay (a test gateway), private hosts explicitly off.
-ZERO_LIMITS = frozenset(("hosted_wake_settle_seconds", "hosted_wake_private_hosts"))
+# Limits that may also be 0: no settle delay (a test gateway), private hosts explicitly off, processes never replaced.
+ZERO_LIMITS = frozenset(("hosted_wake_settle_seconds", "hosted_wake_private_hosts", "process_memory_mb"))
 
 RESERVED_HANDLES = {
     "about", "account", "actor", "actors", "admin", "administrator", "api", "bot", "bots", "capability",
@@ -6736,6 +6737,7 @@ class BoundedServer(C.NumericHTTPServer):
         self._slots = threading.BoundedSemaphore(slots)
         self._waiting = threading.BoundedSemaphore(waiting) if waiting else None
         self.shared, self._slot = False, False
+        self._running, self._idle = 0, threading.Condition()   # request threads, held connector polls among them
         C.NumericHTTPServer.__init__(self, address, handler)
 
     # A waiting connector poll gives its request slot back while it sleeps and takes one again to answer.
@@ -6777,15 +6779,40 @@ class BoundedServer(C.NumericHTTPServer):
                 pass
             self.shutdown_request(request)
             return
+        with self._idle:
+            self._running += 1
         t = threading.Thread(target=self._run, args=(request, client_address))
         t.daemon = True
-        t.start()
+        try:
+            t.start()
+        except BaseException:
+            self._finished()
+            raise
 
     def _run(self, request, client_address):
         try:
             self.process_request_thread(request, client_address)
         finally:
             self._slots.release()
+            self._finished()
+
+    def _finished(self):
+        with self._idle:
+            self._running -= 1
+            if not self._running:
+                self._idle.notify_all()
+
+    def drain(self, timeout):
+        """Once serve_forever has returned: wait up to `timeout` seconds for the requests this process still runs,
+        held connector polls among them, to finish. -> whether they all did."""
+        end = time.monotonic() + timeout
+        with self._idle:
+            while self._running:
+                left = end - time.monotonic()
+                if left <= 0:
+                    return False
+                self._idle.wait(left)
+        return True
 
 
 BLOB_SWEEP_SECONDS = 600
@@ -6836,23 +6863,46 @@ def sweep_forever(store, stopping=None):
 
 
 RESTARTS_PER_MINUTE = 10
+MEMORY_CHECK_SECONDS = 30       # how often the supervisor reads its request processes' memory
+DRAIN_SECONDS = 60              # a replaced process finishes its requests: a held poll waits at most 30 s
+DRAIN_GRACE_SECONDS = 15        # then the supervisor ends it anyway
+REAP_SECONDS = 0.2              # while it watches memory, the supervisor looks for exited children this often
 
 
 def exit_text(status):
     return "signal %d" % os.WTERMSIG(status) if os.WIFSIGNALED(status) else "status %d" % os.WEXITSTATUS(status)
 
 
-def supervise(srv, store, count):
+def private_memory(pid):
+    """Resident private memory of a process in bytes (RssAnon: its heap, thread arenas and caches, not the code it
+    shares), or None without /proc (macOS) or once the process is gone."""
+    try:
+        with open("/proc/%d/status" % pid) as f:
+            for line in f:
+                if line.startswith("RssAnon:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def supervise(srv, store, count, memory_limit=0):
     """`count` request processes accept connections from the one listening socket and one more runs the
     maintenance sweeps. This process only starts them, replaces one that exits and stops them all on SIGTERM or
-    SIGINT. It never runs a thread, so forking stays safe, and each child opens its own database connections."""
+    SIGINT. It never runs a thread, so forking stays safe, and each child opens its own database connections.
+    With `memory_limit` (bytes), a request process holding more private memory than that is replaced, one at a
+    time: a new one starts first, then the old one stops accepting (SIGUSR1), finishes the requests it holds and
+    exits. The others go on accepting from the same socket meanwhile, so no connection is refused or cut."""
     srv.shared = True
     srv.socket.setblocking(False)       # a process that loses the race for a connection goes back to waiting
-    children, stopping, recent = {}, [], []
+    children, born, stopping, recent, draining = {}, {}, [], [], {}
     stop_signals = {signal.SIGTERM, signal.SIGINT}
+    held = stop_signals | {signal.SIGUSR1}
+    if memory_limit and private_memory(os.getpid()) is None:
+        memory_limit = 0                # no /proc: memory is not watched
 
     def spawn(role):
-        signal.pthread_sigmask(signal.SIG_BLOCK, stop_signals)
+        signal.pthread_sigmask(signal.SIG_BLOCK, held)
         try:
             pid = os.fork()
             if pid == 0:
@@ -6860,24 +6910,31 @@ def supervise(srv, store, count):
                 try:
                     for sig in stop_signals:
                         signal.signal(sig, signal.SIG_DFL)
-                    signal.pthread_sigmask(signal.SIG_UNBLOCK, stop_signals)
                     if role == "maintenance":
                         def stop_maintenance(signum, frame):
                             raise SystemExit(0)
                         for sig in stop_signals:
                             signal.signal(sig, stop_maintenance)
+                        signal.signal(signal.SIGUSR1, signal.SIG_IGN)
+                        signal.pthread_sigmask(signal.SIG_UNBLOCK, held)
                         sweep_forever(store)
                     else:
+                        def finish(signum, frame):  # serve_forever returns once another thread asks it to
+                            threading.Thread(target=srv.shutdown, daemon=True).start()
+                        signal.signal(signal.SIGUSR1, finish)
+                        signal.pthread_sigmask(signal.SIG_UNBLOCK, held)
                         srv.serve_forever()
+                        srv.drain(DRAIN_SECONDS)
+                        code = 0
                 except SystemExit:
                     code = 0
                 except BaseException as e:
                     log("%s process failed: %s" % (role, type(e).__name__))
                 finally:
                     os._exit(code)
-            children[pid] = role
+            children[pid], born[pid] = role, time.monotonic()
         finally:
-            signal.pthread_sigmask(signal.SIG_UNBLOCK, stop_signals)
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, held)
 
     def stop(signum, frame):
         stopping.append(signum)
@@ -6887,19 +6944,59 @@ def supervise(srv, store, count):
             except OSError:
                 pass
 
+    def replace_oldest_over():
+        over = []
+        for pid, role in children.items():
+            used = private_memory(pid) if role == "request" else None
+            if used is not None and used > memory_limit:
+                over.append((born[pid], pid, used))
+        if not over:
+            return
+        # The oldest goes first, not the one holding the most: a process forked just now starts with what the
+        # supervising process holds by then and can read a little heavier, and replacing it again and again
+        # would leave the old ones running for ever.
+        _, pid, used = min(over)
+        log("request process %d holds %d MB, over %d MB: starting another; this one finishes its requests and stops"
+            % (pid, used >> 20, memory_limit >> 20))
+        spawn("request")
+        draining[pid] = time.monotonic() + DRAIN_SECONDS + DRAIN_GRACE_SECONDS
+        try:
+            os.kill(pid, signal.SIGUSR1)
+        except OSError:
+            pass
+
     for sig in stop_signals:
         signal.signal(sig, stop)
     spawn("maintenance")
     for _ in range(count):
         spawn("request")
     failed = False
+    next_check = time.monotonic() + MEMORY_CHECK_SECONDS
     while children:
         try:
-            pid, status = os.wait()
+            pid, status = os.waitpid(-1, os.WNOHANG if memory_limit else 0)
         except ChildProcessError:
             break
+        if pid == 0:                    # nothing exited: look at memory now and then
+            now = time.monotonic()
+            for old, deadline in list(draining.items()):
+                if now > deadline:
+                    try:
+                        os.kill(old, signal.SIGKILL)
+                    except OSError:
+                        pass
+            if now >= next_check and not draining and not stopping:
+                next_check = now + MEMORY_CHECK_SECONDS
+                replace_oldest_over()
+            time.sleep(REAP_SECONDS)
+            continue
         role = children.pop(pid, None)
+        born.pop(pid, None)
+        replaced = draining.pop(pid, None) is not None
         if role is None or stopping:
+            continue
+        if replaced:
+            log("request process %d recycled (%s)" % (pid, exit_text(status)))
             continue
         now = time.monotonic()
         recent[:] = [t for t in recent if now - t < 60] + [now]
@@ -6963,11 +7060,15 @@ def hosted_wake_delivery(home, limits, route, body, result):
     timeout = limits["hosted_wake_timeout_seconds"]
     if hasattr(signal, "setitimer"):
         signal.signal(signal.SIGALRM, signal.SIG_DFL)
+        # A spawned process inherits the signal mask: started under something that blocks SIGALRM, the alarm would
+        # never arrive and a stuck resolver would outlive its deadline.
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
         signal.setitimer(signal.ITIMER_REAL, timeout)
-    else:
-        watchdog = threading.Timer(timeout, os._exit, args=(1,))
-        watchdog.daemon = True
-        watchdog.start()
+    # A thread ends it at the same deadline too. The alarm still works while a stuck call holds the interpreter;
+    # the thread works where an expired alarm does not end the process, as seen on a macOS CI runner.
+    watchdog = threading.Timer(timeout, os._exit, args=(1,))
+    watchdog.daemon = True
+    watchdog.start()
     try:
         url = open_route(home, route["bot_id"], route["url_sealed"])
         secret = open_route(home, route["bot_id"], route["secret_sealed"])
@@ -7614,7 +7715,7 @@ def cmd_serve(home, a):
     print(json.dumps({"listening": "http://%s:%d" % (host, actual), "service": C.SERVICE}), flush=True)
     log("%s serving on %s:%d home=%s processes=%d" % (C.SERVICE, bind, actual, home, processes))
     if processes > 1:
-        return supervise(srv, store, processes)
+        return supervise(srv, store, processes, cfg["limits"]["process_memory_mb"] << 20)
     stopping = threading.Event()
     sweeper = threading.Thread(target=sweep_forever, args=(store, stopping), daemon=True)
     sweeper.start()

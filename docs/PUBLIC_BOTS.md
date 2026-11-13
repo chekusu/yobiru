@@ -1014,6 +1014,15 @@ poll among them) run in parallel without the write lock; writes still go one at 
 Needs fork (Linux, macOS); an older gateway refuses the `processes` key, so add it after upgrading.
 `tools/bench_gateway.py` in the source tree measures a gateway on your machine with synthetic bots and history.
 
+A request process whose private memory passes `limits.process_memory_mb` (512 by default; 0 turns this off) is
+replaced without refusing or cutting a request. Every 30 seconds the supervising process reads each request
+process's resident private memory (`RssAnon` in `/proc`) and, for the oldest one over the limit, starts a new
+request process first and then tells the old one to stop accepting. The old one finishes the requests it holds,
+held connector polls included (at most a minute), and exits; the others keep accepting from the same port meanwhile.
+One process is replaced at a time, the log says `request process N recycled`, and a replacement does not count
+towards the restarts that stop a gateway whose processes keep crashing. Memory is read from `/proc`, so this works
+on Linux only; on macOS nothing is replaced. A single process (`processes` 1) is never replaced.
+
 ### Connectors that wait
 
 Each connector listing carries a `cursor`. A poll that sends it back, `GET /v1/connector/jobs?wait=N&cursor=C` (N

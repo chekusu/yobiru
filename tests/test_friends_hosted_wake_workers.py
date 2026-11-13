@@ -6,6 +6,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -17,12 +18,50 @@ from test_gateway_concurrency import alive, children
 import bot_gateway as G
 
 
-def hung_dns_delivery(home, limits, route, body, result):
-    """Run the real transport with an OS resolver that never returns during this test."""
+def hung_dns_delivery(home, limits, route, body, result, alarm_ends_it=True):
+    """Run the real transport with an OS resolver that never returns during this test. Leaves a trace in the gateway
+    home (when the worker started, and its alarm and signal state once stuck) for a failure message."""
+    trace = Path(home) / "hung-dns.trace"
+
+    def note(text):
+        with open(trace, "a") as f:
+            f.write("%.3f %s\n" % (time.time(), text))
+
+    def state():
+        blocked = signal.pthread_sigmask(signal.SIG_BLOCK, []) if hasattr(signal, "pthread_sigmask") else "n/a"
+        return "alarm %r, SIGALRM handler %r, blocked %r, threads %d" % (
+            signal.getitimer(signal.ITIMER_REAL), signal.getsignal(signal.SIGALRM), sorted(blocked),
+            threading.active_count())
+
     def resolve(*args, **kwargs):
+        note("resolver stuck: " + state())
         time.sleep(60)
-    with mock.patch.object(G.C.socket, "getaddrinfo", side_effect=resolve):
+
+    def watch(main):
+        # Where the worker is, if it is still here after its deadline should have ended it.
+        time.sleep(2)
+        frame = sys._current_frames().get(main)
+        where = "".join(traceback.format_stack(frame)[-6:]) if frame else "(no main thread)"
+        note("still alive after 2 s: %s; main thread at:\n%s" % (state(), where))
+
+    arm = signal.setitimer
+
+    def armed(*args):
+        out = arm(*args)
+        if not alarm_ends_it:
+            signal.signal(signal.SIGALRM, signal.SIG_IGN)
+        note("alarm set to %r: %s" % (args[1:], state()))
+        return out
+    note("worker %d started: %s" % (os.getpid(), state()))
+    threading.Thread(target=watch, args=(threading.get_ident(),), daemon=True).start()
+    with mock.patch.object(G.C.socket, "getaddrinfo", side_effect=resolve), \
+            mock.patch.object(G.signal, "setitimer", armed):
         G.hosted_wake_delivery(home, dict(limits, hosted_wake_private_hosts=0), route, body, result)
+
+
+def hung_dns_alarm_unheeded_delivery(home, limits, route, body, result):
+    """As above, on a system where the expired alarm does not end the process (seen on a macOS CI runner)."""
+    hung_dns_delivery(home, limits, route, body, result, alarm_ends_it=False)
 
 
 class HostedWakeWorkerTests(unittest.TestCase):
@@ -123,9 +162,26 @@ class HostedWakeWorkerTests(unittest.TestCase):
         self.assertEqual(2, len(self.slow.requests))
 
     def test_hung_dns_is_bounded_and_releases_a_slot_without_replay(self):
+        self.hung_dns_is_bounded()
+
+    @unittest.skipUnless(hasattr(signal, "pthread_sigmask"), "needs signal masks")
+    def test_hung_dns_is_bounded_when_the_gateway_was_started_with_alarms_blocked(self):
+        # A spawned worker inherits its parent's signal mask; a CI runner (or a supervisor) may start the gateway
+        # with SIGALRM blocked. The worker's own deadline must still end it.
+        old = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGALRM})
+        try:
+            self.hung_dns_is_bounded()
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, old)
+
+    def test_hung_dns_is_bounded_where_an_expired_alarm_does_not_end_the_worker(self):
+        self.hung_dns_is_bounded(hung_dns_alarm_unheeded_delivery)
+
+    def hung_dns_is_bounded(self, delivery=hung_dns_delivery):
         self.store.limits["hosted_wake_timeout_seconds"] = 1
         with mock.patch.object(G, "HOSTED_WAKE_WORKERS", 1):
-            with mock.patch.object(G, "hosted_wake_delivery", hung_dns_delivery):
+            with mock.patch.object(G, "hosted_wake_delivery", delivery):
+                spawned = time.time()
                 self.pump()
             pool = self.store.hosted_wake_workers
             self.assertEqual([self.a], list(pool.active))
@@ -135,7 +191,12 @@ class HostedWakeWorkerTests(unittest.TestCase):
                 self.assertEqual(1, len(pool.active))
             # The child has its own deadline even if its maintenance parent stops collecting.
             process.join(3)
-            self.assertFalse(process.is_alive(), "resolver outlived the delivery deadline")
+            if process.is_alive():
+                trace = self.gw.home / "hung-dns.trace"
+                notes = trace.read_text() if trace.exists() else "(the worker left no trace)\n"
+                process.kill()
+                self.fail("resolver outlived the delivery deadline: spawned at %.3f, %.1f s ago; the worker's trace:\n%s"
+                          % (spawned, time.time() - spawned, notes))
             self.assertTrue(wait_until(lambda: (self.pump(), len(self.fast.requests) == 1)[1], timeout=4))
             for _ in range(3):
                 self.pump()
