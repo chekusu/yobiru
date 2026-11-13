@@ -48,6 +48,7 @@ ERROR_PATTERNS = (
     ("internal_error", re.compile(r"internal error")),
     ("storage_error", re.compile(r"storage error")),
     ("aborted", re.compile(r"request aborted")),
+    ("recycled", re.compile(r"process \d+ recycled")),     # replaced past limits.process_memory_mb: counted only
     ("process_exit", re.compile(r"process \d+ exited|keep exiting|process failed")),
     ("maintenance", re.compile(r"maintenance failed|change watch failed|blob delete failed|hosted wakes failed")),
     ("mail", re.compile(r"mail relay failed|mail relay: sent \d+, failed [1-9]")),
@@ -344,7 +345,7 @@ def count_journal(lines):
             if pattern.search(msg):
                 key = "%s:%s" % (unit, name)
                 events[key] = events.get(key, 0) + 1
-                if name not in ("start", "aborted"):  # aborted = a client hung up (long-polls): counted only
+                if name not in ("start", "aborted", "recycled"):  # aborted = a client hung up (long-polls)
                     samples.append(scrub(msg))
                 break
     return {"requests": req, "routes": routes, "errors_5xx": errors5, "events": events, "samples": samples[-5:]}
