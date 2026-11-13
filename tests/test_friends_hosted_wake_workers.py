@@ -18,7 +18,7 @@ from test_gateway_concurrency import alive, children
 import bot_gateway as G
 
 
-def hung_dns_delivery(home, limits, route, body, result):
+def hung_dns_delivery(home, limits, route, body, result, alarm_ends_it=True):
     """Run the real transport with an OS resolver that never returns during this test. Leaves a trace in the gateway
     home (when the worker started, and its alarm and signal state once stuck) for a failure message."""
     trace = Path(home) / "hung-dns.trace"
@@ -48,6 +48,8 @@ def hung_dns_delivery(home, limits, route, body, result):
 
     def armed(*args):
         out = arm(*args)
+        if not alarm_ends_it:
+            signal.signal(signal.SIGALRM, signal.SIG_IGN)
         note("alarm set to %r: %s" % (args[1:], state()))
         return out
     note("worker %d started: %s" % (os.getpid(), state()))
@@ -55,6 +57,11 @@ def hung_dns_delivery(home, limits, route, body, result):
     with mock.patch.object(G.C.socket, "getaddrinfo", side_effect=resolve), \
             mock.patch.object(G.signal, "setitimer", armed):
         G.hosted_wake_delivery(home, dict(limits, hosted_wake_private_hosts=0), route, body, result)
+
+
+def hung_dns_alarm_unheeded_delivery(home, limits, route, body, result):
+    """As above, on a system where the expired alarm does not end the process (seen on a macOS CI runner)."""
+    hung_dns_delivery(home, limits, route, body, result, alarm_ends_it=False)
 
 
 class HostedWakeWorkerTests(unittest.TestCase):
@@ -167,10 +174,13 @@ class HostedWakeWorkerTests(unittest.TestCase):
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, old)
 
-    def hung_dns_is_bounded(self):
+    def test_hung_dns_is_bounded_where_an_expired_alarm_does_not_end_the_worker(self):
+        self.hung_dns_is_bounded(hung_dns_alarm_unheeded_delivery)
+
+    def hung_dns_is_bounded(self, delivery=hung_dns_delivery):
         self.store.limits["hosted_wake_timeout_seconds"] = 1
         with mock.patch.object(G, "HOSTED_WAKE_WORKERS", 1):
-            with mock.patch.object(G, "hosted_wake_delivery", hung_dns_delivery):
+            with mock.patch.object(G, "hosted_wake_delivery", delivery):
                 spawned = time.time()
                 self.pump()
             pool = self.store.hosted_wake_workers

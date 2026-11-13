@@ -7064,10 +7064,11 @@ def hosted_wake_delivery(home, limits, route, body, result):
         # never arrive and a stuck resolver would outlive its deadline.
         signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
         signal.setitimer(signal.ITIMER_REAL, timeout)
-    else:
-        watchdog = threading.Timer(timeout, os._exit, args=(1,))
-        watchdog.daemon = True
-        watchdog.start()
+    # A thread ends it at the same deadline too. The alarm still works while a stuck call holds the interpreter;
+    # the thread works where an expired alarm does not end the process, as seen on a macOS CI runner.
+    watchdog = threading.Timer(timeout, os._exit, args=(1,))
+    watchdog.daemon = True
+    watchdog.start()
     try:
         url = open_route(home, route["bot_id"], route["url_sealed"])
         secret = open_route(home, route["bot_id"], route["secret_sealed"])
