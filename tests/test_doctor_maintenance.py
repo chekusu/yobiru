@@ -168,6 +168,26 @@ class BacklogCheckTests(unittest.TestCase):
         partial = checks({"request_backlog": backlog, "home": str(self.home)})["requests"]
         self.assertIn("(partial)", partial["detail"])
 
+    def test_a_request_the_owner_resolved_no_longer_counts_as_waiting_or_overdue(self):
+        env = {"v": 1, "id": "5555666677778888", "from": A, "to": B,
+               "ts": core.iso(core.now_utc() - dt.timedelta(hours=2)), "kind": "request", "text": "x",
+               "request": {"timeout_seconds": 900, "reply_port": 7766}}
+        core.save_outgoing_request(self.ctx, env, B, 7766)
+        with core.request_db(self.ctx) as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("UPDATE requests SET state='timed_out' WHERE direction='outgoing' AND id=?", (env["id"],))
+            core.task_sync(db, "outgoing", env["id"], "timed_out")
+        out = core.request_backlog(self.home)["outgoing"]
+        self.assertEqual((1, 1), (out["awaiting_result"], out["overdue"]))
+        self.assertIn("1 past the deadline", self.found()["detail"])
+        core.resolve_task(self.ctx, core.task_snapshots(self.home)[0]["task_id"], note="expired before the switch")
+        out = core.request_backlog(self.home)["outgoing"]
+        self.assertEqual((0, 0, 0), (out["awaiting_result"], out["overdue"], out["submission_unknown"]))
+        self.assertNotIn("outgoing", self.found()["detail"])
+        with contextlib.closing(sqlite3.connect(str(self.home / "requests" / "ledger.sqlite3"))) as db:
+            self.assertEqual(("timed_out",), db.execute("SELECT state FROM requests WHERE direction='outgoing' "
+                                                       "AND id=?", (env["id"],)).fetchone())
+
     def test_an_unreadable_ledger_is_unknown_not_empty(self):
         (self.home / "requests").mkdir()
         (self.home / "requests" / "ledger.sqlite3").write_bytes(b"not a database" * 50)
