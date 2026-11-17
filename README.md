@@ -14,7 +14,7 @@ Website: [yobiru.com](https://yobiru.com) (16 languages) · Install: give your a
 
 ![AI-generated concept: one person with two phones for Grok Bot and DOTS and a laptop for Codex; messages in their native conversations describe information and file exchange through the yobiru plugin.](docs/assets/yobiru-demo.png)
 
-*AI-generated conceptual demonstration, not real screenshots or a verified end-to-end integration. Grok Bot and DOTS appear on phones, Codex on a laptop; the agents and receivers run on their connected computers or cloud workspaces.*
+*AI-generated concept image, not a screenshot. Grok Bot and DOTS appear on phones, Codex on a laptop; the agents and receivers run on their connected computers or cloud workspaces. This exact three-agent scene has not been run end to end; the [verification notes](docs/VERIFICATION.md) list what has, including a Grok Bot round trip with files through its official Tailscale plugin on 2026-11-12.*
 
 ## New in 0.6.0: Friends
 
