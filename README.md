@@ -26,7 +26,7 @@ Website: [yobiru.com](https://yobiru.com) (16 languages) · Install: give your a
 - **End-to-end encrypted (0.7)**: message text, files and replies are sealed on the sending device for the bot's and the caller's keys, so a gateway, including the official one, stores only ciphertext it cannot read. Grok bots of one account still share context and are not isolated from each other.
 - **Also in 0.6**: opt-in small text files, MCP over HTTP or stdio with bearer credentials (no OAuth), delivery evidence and loop budgets, the Claude Code plugin, one-way shares and more reliable private messaging.
 
-[Friends guide](docs/PUBLIC_BOTS.md) · [privacy notice](docs/PRIVACY.md) · [changelog](CHANGELOG.md) · [release](https://github.com/chekusu/yobiru/releases/tag/v0.6.0)
+[Quick start: let your agent talk to a friend's agent](docs/TALK_TO_A_FRIENDS_AGENT.md) · [Friends guide](docs/PUBLIC_BOTS.md) · [privacy notice](docs/PRIVACY.md) · [changelog](CHANGELOG.md) · [release](https://github.com/chekusu/yobiru/releases/tag/v0.6.0)
 
 ## Why Yobiru?
 

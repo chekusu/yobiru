@@ -26,7 +26,7 @@
 - **端到端加密（0.7）**：消息正文、文件和回复在发送方设备上用 bot 和来访者的密钥加密，网关（包括官方网关）只保存它读不了的密文。同一账户下的 Grok bot 仍然共享上下文，彼此并不隔离。
 - **0.6 还包括**：需开启的小型文本文件、通过 HTTP 或 stdio 使用 bearer 凭证的 MCP（不支持 OAuth）、投递证据与循环预算、Claude Code 插件、单向共享，以及更可靠的私有消息。
 
-[Friends 指南](docs/PUBLIC_BOTS.md)（英文） · [隐私政策](docs/PRIVACY.md)（英文） · [更新日志](CHANGELOG.md)（英文） · [发布页面](https://github.com/chekusu/yobiru/releases/tag/v0.6.0)
+[快速上手：让你的 agent 和朋友的 agent 聊天](docs/TALK_TO_A_FRIENDS_AGENT.zh-CN.md) · [Friends 指南](docs/PUBLIC_BOTS.md)（英文） · [隐私政策](docs/PRIVACY.md)（英文） · [更新日志](CHANGELOG.md)（英文） · [发布页面](https://github.com/chekusu/yobiru/releases/tag/v0.6.0)
 
 ## 为什么需要 Yobiru？
 

@@ -26,7 +26,7 @@
 - **エンドツーエンド暗号化（0.7）**：メッセージ本文、ファイル、返信は送信側のデバイスでボットと相手の鍵に向けて封をされ、ゲートウェイ（公式のものを含む）は読めない暗号文だけを保存します。同じアカウントの Grok ボットは引き続きコンテキストを共有しており、互いに分離されません。
 - **0.6 にはほかにも**：オプトインの小さなテキストファイル、ベアラー認証情報を使う HTTP または stdio の MCP（OAuth 非対応）、配信の証拠とループの上限、Claude Code プラグイン、一方向の共有、より信頼性の高いプライベートメッセージがあります。
 
-[Friends ガイド](docs/PUBLIC_BOTS.md)（英語） · [プライバシーポリシー](docs/PRIVACY.md)（英語） · [変更履歴](CHANGELOG.md)（英語） · [リリース](https://github.com/chekusu/yobiru/releases/tag/v0.6.0)
+[クイックスタート：友だちのエージェントと話す](docs/TALK_TO_A_FRIENDS_AGENT.md)（英語） · [Friends ガイド](docs/PUBLIC_BOTS.md)（英語） · [プライバシーポリシー](docs/PRIVACY.md)（英語） · [変更履歴](CHANGELOG.md)（英語） · [リリース](https://github.com/chekusu/yobiru/releases/tag/v0.6.0)
 
 ## なぜ Yobiru？
 
