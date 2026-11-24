@@ -1651,6 +1651,10 @@ def revoke_task_authorization(ctx, authorization_id, expected_generation=None, r
         stamp = iso(now_utc())
         db.execute("UPDATE task_authorizations SET status='revoked', revoked_at=?, revoked_by=? "
                    "WHERE authorization_id=? AND status IN ('active','consumed')", (stamp, revoked_by, authorization_id))
+        db.execute("UPDATE task_attempts SET state='cancelled', final_at=?, state_version=state_version+1 "
+                   "WHERE attempt_id=? AND authorization_id=? AND kind='internal' "
+                   "AND state IN ('pending','received','running','cancel_requested')",
+                   (stamp, task["current_attempt_id"], authorization_id))
         db.execute("UPDATE tasks SET generation=?, current_authorization_id=NULL, attention='needs_attention', updated_at=? WHERE task_id=? AND generation=?",
                    (int(task["generation"]) + 1, stamp, task["task_id"], int(task["generation"])))
         if db.execute("SELECT changes()").fetchone()[0] != 1:
@@ -1855,8 +1859,10 @@ def resolve_task(ctx, task_id, by=None, note=None, expected_generation=None):
             _generation_error(db, task_id, "task generation mismatch")
         current_id = task["current_attempt_id"] if "current_attempt_id" in task.keys() else None
         if current_id:
-            current = db.execute("SELECT state FROM task_attempts WHERE attempt_id=?", (current_id,)).fetchone()
-            if current and current["state"] in ("pending", "received", "running", "cancel_requested"):
+            current = db.execute("SELECT state, kind, generation FROM task_attempts WHERE attempt_id=?", (current_id,)).fetchone()
+            # Older ledgers may still project an internal attempt from a revoked generation.
+            if (current and current["state"] in ("pending", "received", "running", "cancel_requested")
+                    and (current["kind"] != "internal" or current["generation"] == task["generation"])):
                 raise ValueError("cannot resolve an active attempt")
         stamp = iso(now_utc())
         note = note[:500] if note else None
