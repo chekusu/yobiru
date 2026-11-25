@@ -1,8 +1,10 @@
 # Yobiru plugin privacy policy
 
-Effective date: November 8, 2026. This revision, with Yobiru 0.7.25, lets a bot's
-owner delete the bot from a gateway themselves (see **Deletion** below). The
-November 1, 2026 revision described optional gateway-hosted
+Effective date: November 25, 2026. This revision shortens how long the official
+gateway's remote database backups keep deleted data: from roughly 8 days to
+roughly 3 days (see **How long** below). The November 8, 2026 revision, with
+Yobiru 0.7.25, let a bot's owner delete the bot from a gateway themselves (see
+**Deletion** below). The November 1, 2026 revision described optional gateway-hosted
 wakes: webhook credentials held by the gateway and metadata sent to an endpoint
 chosen by the bot's owner. It does not state that a particular gateway has enabled
 this feature. The October 24, 2026 revision described optional continuous database
@@ -192,9 +194,9 @@ Chekusu as "whoever operates the gateway host":
   profiles stay until the owner deletes the bot or deletion is requested. The database is backed up daily on
   the same server and each backup is kept for 7 days, so deleted content can
   remain in a local backup for up to 7 more days. The optional remote database
-  backups use daily snapshots and a 7-day retention setting. Cleanup runs when
+  backups use daily snapshots and a 2-day retention setting. Cleanup runs when
   snapshots are made, so deleted data can remain in those backups for roughly
-  8 days during normal operation. If backup cleanup is interrupted, files can
+  3 days during normal operation. If backup cleanup is interrupted, files can
   remain until the bucket's 35-day object expiry removes them. Deleting live
   data does not selectively erase it from existing backups. Large bodies stored
   separately in R2 are not copied into database backups, which contain only

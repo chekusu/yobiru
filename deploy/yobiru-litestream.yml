@@ -1,6 +1,17 @@
 # Litestream configuration for the official gateway, installed as /etc/yobiru-litestream.yml (root, 0644). The
 # replica lives under its own prefix in the blob store's bucket: the gateway only ever deletes blob keys it wrote
-# itself, and the bucket's 35-day expiry never reaches these files, which Litestream replaces within 8 days.
+# itself, and the bucket's 35-day expiry never reaches these files, which Litestream replaces within 3 days.
+#
+# R2 bills write and list operations past 1M a month. With a 5 s sync, 7 days of retention and the default
+# compaction levels this replica made ~245k such operations a day (2026-11, about $29 a month), so it syncs once a
+# minute, compacts every 5 minutes and hourly, checks L0 retention every 5 minutes and keeps one day of history
+# (2026-11-20). At most one minute of writes can be lost. Snapshots are kept 48 h: with 24 h, each daily
+# snapshot deleted the previous one, so the restore window shrank to zero every day (2026-11-24).
+l0-retention: 10m
+l0-retention-check-interval: 5m
+levels:
+  - interval: 5m
+  - interval: 1h
 dbs:
   - path: /srv/yobiru-gateway/gw/gateway.sqlite3
     replica:
@@ -9,8 +20,7 @@ dbs:
       bucket: yobiru-gateway-files
       path: litestream/gateway
       region: auto
-      # At most 5 seconds of writes can be lost, for at most one upload every 5 seconds (R2 includes 1M a month).
-      sync-interval: 5s
+      sync-interval: 1m
 snapshot:
   interval: 24h
-  retention: 168h
+  retention: 48h
