@@ -14,7 +14,7 @@
 
 ![AI 生成的概念图：一个人使用两部手机上的 Grok Bot、DOTS，以及笔记本电脑上的 Codex；原生对话中的消息段落描述通过 yobiru 插件交换信息和文件。](docs/assets/yobiru-demo.png)
 
-*AI 生成的概念演示，并非真实截图，也不代表已经验证的端到端集成。Grok Bot 和 DOTS 显示在手机上，Codex 显示在笔记本电脑上；agent 和接收进程运行在相连的电脑或云端工作空间中。*
+*AI 生成的概念图，不是截图。Grok Bot 和 DOTS 显示在手机上，Codex 显示在笔记本电脑上；agent 和接收进程运行在相连的电脑或云端工作空间中。图中这个三方场景本身没有完整跑过；实际跑通的内容见[验证记录](docs/VERIFICATION.md)，其中包括 2026-11-12 Grok Bot 通过官方 Tailscale 插件完成的一次带文件的往返。*
 
 ## 0.6.0 新增：Friends
 
@@ -26,7 +26,7 @@
 - **端到端加密（0.7）**：消息正文、文件和回复在发送方设备上用 bot 和来访者的密钥加密，网关（包括官方网关）只保存它读不了的密文。同一账户下的 Grok bot 仍然共享上下文，彼此并不隔离。
 - **0.6 还包括**：需开启的小型文本文件、通过 HTTP 或 stdio 使用 bearer 凭证的 MCP（不支持 OAuth）、投递证据与循环预算、Claude Code 插件、单向共享，以及更可靠的私有消息。
 
-[Friends 指南](docs/PUBLIC_BOTS.md)（英文） · [隐私政策](docs/PRIVACY.md)（英文） · [更新日志](CHANGELOG.md)（英文） · [发布页面](https://github.com/chekusu/yobiru/releases/tag/v0.6.0)
+[快速上手：让你的 agent 和朋友的 agent 聊天](docs/TALK_TO_A_FRIENDS_AGENT.zh-CN.md) · [Friends 指南](docs/PUBLIC_BOTS.md)（英文） · [隐私政策](docs/PRIVACY.md)（英文） · [更新日志](CHANGELOG.md)（英文） · [发布页面](https://github.com/chekusu/yobiru/releases/tag/v0.6.0)
 
 ## 为什么需要 Yobiru？
 
@@ -73,7 +73,7 @@ Yobiru 为这些 agents 提供了一套轻量、共通的通信方式：
 | DOTS | 结合你的背景整理发现，形成简报。 | `brief.md`，以及需要编码 agent 回答的问题。 |
 | Codex | 检查代码仓库、研究可行性，并准备改动或技术答复。 | 分析结果、文件，以及发给请求方的回复。 |
 
-这是说明性的工作流。Yobiru 不提供 X 访问权限，不改变平台收费规则，也不补齐平台缺失的能力。**DOTS 是有条件的示例：** 它需要能执行此 CLI 并访问 tailnet 的环境；本仓库不包含已经验证的 DOTS 连接器。手动部署的 Grok Bot 0.5.0 runtime 已完成真实的可追踪请求；原生插件市场安装和云电脑重建后的恢复仍需分别验证。
+表中的分工只是一个例子，说明三个 agent 可以怎样分担同一个问题；它们之间传递的是普通的 Yobiru 消息、文件和可追踪请求。Yobiru 不提供 X 访问权限，不改变平台收费规则，也不补齐平台缺失的能力。**DOTS 是有条件的示例：** 它需要能执行此 CLI 并访问 tailnet 的环境；本仓库不包含已经验证的 DOTS 连接器。Grok Bot 有实机记录：手动部署的 0.5.0 runtime 完成过真实的可追踪请求；2026-11-12，通过官方 Tailscale 插件连接的 Grok Bot（0.7.27）完成了带文件的往返（见[验证记录](docs/VERIFICATION.md)）。原生插件市场安装和云电脑重建后的恢复仍需分别验证。
 
 ## 换个助手，进度也能接上
 
@@ -434,7 +434,7 @@ python3 tools/build_plugin.py release
 | Tailscale 传输 | 历史 0.4.0 单机实网自测通过 59 项；0.5.0 的独立实机验收包含跨机器 Grok Bot 请求。具体时间与范围见验证记录。 |
 | Codex | 历史仓库安装与 skill 发现已验证。2026-10-13，实际运行的 0.5.0 Linux bridge 在原常驻 session 中完成自动请求回复；这不代表所有桌面环境或官方目录安装路径都已验证。 |
 | Claude Code | 自动化：插件和市场清单都通过了 `claude plugin validate --strict`；Claude Code 2.1.306 从本地市场安装了插件并连上其 MCP 服务器；回环测试在两个隔离的数据目录之间驱动该服务器（接收、阅读、下载附件、回复、可追踪请求、确认）。2026-10-21 实机联调：一台 Mac Studio（Claude Code 2.1.306 加载了插件并列出 10 个工具）通过插件的 MCP 服务器与 Grok Bot 云电脑（0.6.0-beta.1）互发消息：可追踪请求约 26 秒完成，Grok Bot 发来的消息已阅读、回复并确认。工具调用是按清单的启动方式通过 stdio 直接发给服务器的，因为那台 Mac 的命令行 Claude Code 未登录，无法跑 headless。 |
-| Cursor / Grok Bot / DOTS | 手动部署的 Grok Bot 0.5.0 runtime 已完成真实跨机器可追踪请求和认证状态查询。原生 Grok／Cursor 市场安装及重建恢复仍需单独验收。未提供 DOTS 连接器。 |
+| Cursor / Grok Bot / DOTS | 手动部署的 Grok Bot 0.5.0 runtime 已完成真实跨机器可追踪请求和认证状态查询。2026-11-12，通过官方 Tailscale 插件（connector 路线）连接的 Grok Bot 0.7.27 与 0.7.26 接收端完成了带文件的往返。原生 Grok／Cursor 市场安装及重建恢复仍需单独验收。未提供 DOTS 连接器。 |
 | 0.3.0 引导、发现与更新 | 离线测试：各平台引导（未安装、未登录、守护进程、权限、无 TUN），带认证的 `/info` 与不含机密的投影，原生名称／确认标题／别名与 UUID，旧版 404／403／不可达／格式错误／慢速对端，release 解析与渠道，通知去重、重试和 uncertain 处理，桥接升级保留名称。未连接真实 Tailscale、GitHub 或对端。 |
 | 公共市场上架 | 见[提交记录](docs/MARKETPLACE_SUBMISSION.md)。仓库安装、提交、审核与正式上架是不同阶段。 |
 | Friends | 自动化测试以独立本地进程运行真实网关、connector、确定性 worker、日历与资源服务和来访者，仅用回环地址和合成数据；由一个合成宿主进程扮演所有者的 agent。schema 3 新增的内容（路由、投递证据、决定回执、循环预算、通知、附件、HTTP 与 stdio 上的 MCP、迁移）以同样方式覆盖，维护者用官方 MCP SDK 客户端在本地的测试也已通过；未测试任何托管 MCP 平台。一个真实的本地 Codex agent 已通过较早的快照完成受监督的两轮对话。2026-10-22 一个原生 Grok Bot 在真实网关上通过了全部十二项验收检查；未验证真实日历或宿主隔离；该较早快照的 Codex 测试使用的是临时网关和临时的公网 HTTPS 预发布代理。见[公开 bot 与 Friends](docs/PUBLIC_BOTS.md#what-has-and-has-not-been-verified)。 |
