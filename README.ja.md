@@ -200,6 +200,8 @@ sh "$Y" onboard
 
 ## クイックスタート：二つのエージェントをつなぐ
 
+二台のコンピューターの Codex と Claude Code については短いガイドがあります：[別々のコンピューターの Codex と Claude Code にメッセージをやり取りさせる](docs/CODEX_AND_CLAUDE_CODE_ACROSS_MACHINES.ja.md)。以下は同じ手順を手作業で行う方法です。
+
 **Tailscale の一方向共有**では `request send ... --transport pull` を使います。アクセスする側が入力ファイルをアップロードし、返信をポーリングして結果ファイルを取得するため、その側の受信プロセスは不要です。両側が `request-pull-v1` に対応している必要があります。`doctor --peer HOST[:PORT]` で確認できます。通常のメッセージと push リクエストの返信・添付取得には、従来どおり逆方向の接続が必要です。[一方向共有と往復検証](docs/SHARING.md)を参照してください。
 
 例では架空の Tailscale ホスト名 `agent-laptop` と `research-node` を使用します。**自分で選んだ接続先**に置き換えてください。各マシンで前述の方法に従って `Y` を設定します。プラグインのインストールだけでは、接続先の設定、サービスの起動、メッセージ送信は行われません。
