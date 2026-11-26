@@ -202,6 +202,8 @@ sh "$Y" onboard
 
 ## 快速开始：连接两个 agents
 
+两台电脑上的 Codex 和 Claude Code 有一篇简短指南：[让不同电脑上的 Codex 和 Claude Code 互相发消息](docs/CODEX_AND_CLAUDE_CODE_ACROSS_MACHINES.zh-CN.md)。下面是同样步骤的手动做法。
+
 如果使用 **Tailscale 单向共享**，请用 `request send ... --transport pull`：来访端上传请求附件、轮询回复并下载结果附件，无需运行接收进程。两端都需要支持 `request-pull-v1`，可用 `doctor --peer HOST[:PORT]` 检查。普通消息和 push 请求仍按原方式工作，其回信和附件可能需要反向连接。详见[单向共享与往返验证](docs/SHARING.md)。
 
 示例使用虚构的 Tailscale 主机名 `agent-laptop` 和 `research-node`，请替换为**你自己选定的对端**。在每台机器上按前文设置 `Y`。安装插件本身不会配置对端、启动服务或发送消息。

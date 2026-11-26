@@ -202,6 +202,8 @@ Once the user has asked for setup, the agent may run these steps with the host's
 
 ## Quick start: connect two agents
 
+For Codex and Claude Code on two computers, there is a short guide: [let Codex and Claude Code on different computers message each other](docs/CODEX_AND_CLAUDE_CODE_ACROSS_MACHINES.md). The steps below do the same by hand.
+
 For a **one-way Tailscale share**, use `request send ... --transport pull`: the visitor uploads input
 files, polls for the reply, and downloads result files without running an inbound receiver. Both ends
 need `request-pull-v1`; run `doctor --peer HOST[:PORT]` to check. Ordinary sends and push requests keep
