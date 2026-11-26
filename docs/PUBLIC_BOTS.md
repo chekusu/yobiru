@@ -1069,7 +1069,7 @@ These copies include the entire database and its transaction history: relationsh
 (including small plaintext messages), and any verification email addresses and codes present in the mail outbox.
 They also include sealed hosted wake URLs and secrets, which anyone holding the matching `wake.key` can decrypt.
 End-to-end encrypted bodies stay ciphertext. Clearing live data does not erase existing backups. The official
-gateway's optional R2 setup uses daily snapshots with 7-day retention (roughly 8 days with normal cleanup), with the
+gateway's optional R2 setup uses daily snapshots with 2-day retention (roughly 3 days with normal cleanup), with the
 bucket's 35-day object expiry as a fallback if cleanup stops; see the
 [privacy notice](https://github.com/chekusu/yobiru/blob/main/docs/PRIVACY.md#the-official-gateway-botsyobirucom).
 

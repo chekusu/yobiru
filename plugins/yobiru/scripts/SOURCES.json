@@ -52,7 +52,7 @@
     },
     "docs/PUBLIC_BOTS.md": {
       "source": "docs/PUBLIC_BOTS.md",
-      "sha256": "cc3d5b2b544548bfc9fb441c37789c2a8f9e19987d1781c77ff54bb5ef7cffd6"
+      "sha256": "f13021136f340fbb76ec96fd450ac0b35d8d2995114dd7610a9e5bc3b375d821"
     },
     "scripts/public_bots/bot_agents.py": {
       "source": "public_bots/bot_agents.py",
