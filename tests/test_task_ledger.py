@@ -125,6 +125,20 @@ class TaskLedgerTests(unittest.TestCase):
             core.create_task_attempt(self.ctx, task_id, auth["authorization_id"], expected_generation=2,
                                      operation_key="test-2", operation_digest="d")
 
+    def test_revocation_cancels_the_attempt_and_allows_closure(self):
+        core.accept_request(self.ctx, self.rec)
+        task_id = core.task_snapshots(self.home)[0]["task_id"]
+        auth = core.authorize_task(self.ctx, task_id, {"actions": ["test"]})
+        attempt = core.create_task_attempt(self.ctx, task_id, auth["authorization_id"], action="test")
+        core.transition_task_attempt(self.ctx, attempt["attempt_id"], "running")
+        core.revoke_task_authorization(self.ctx, auth["authorization_id"])
+        self.assertEqual("cancelled", core.task_snapshots(self.home)[0]["latest_state"])
+        self.assertEqual("resolved", core.resolve_task(self.ctx, task_id)["resolution"])
+        # A pre-upgrade ledger retained its stale pending attempt.
+        with core.request_db(self.ctx) as db:
+            db.execute("UPDATE task_attempts SET state='pending' WHERE attempt_id=?", (attempt["attempt_id"],))
+        self.assertEqual("resolved", core.resolve_task(self.ctx, task_id)["resolution"])
+
     def test_late_old_request_event_does_not_overwrite_new_attempt(self):
         core.accept_request(self.ctx, self.rec)
         task_id = core.task_snapshots(self.home)[0]["task_id"]
