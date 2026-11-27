@@ -1208,14 +1208,16 @@ at `yobiru.com/approve` reads it and writes the sealed answer (`answer`), and th
   (`max_approval_drops`, then `503 capacity`). Drop routes answer with `Access-Control-Allow-Origin: *` and take no
   credential. `GET /.well-known/yobiru` describes them under `approval_drops`.
 
-- **Passkey directory (0.7.37).** A passkey's signature does not carry its public key, so machines that trust an owner
-  passkey list its public half here, and a new machine finds it by the credential id of the owner's signature.
-  `POST /v1/passkeys` with `{"key": {alg, public_key, credential_id, rp_id, origin}}` (ES256 on P-256 only, the public
-  key as base64url SubjectPublicKeyInfo, `origin` `https://<rp_id>`; a `label` is accepted and dropped) answers `201`,
-  or `200` with `duplicate: true`. One credential id keeps its first `limits.passkeys_per_credential` (4) keys, then
-  `409 credential_full`; one address lists at most 30 an hour (`passkey_writes_per_hour_per_ip`). `GET
-  /v1/passkeys/{credential_id}` returns `keys`, the first listed first (an empty list when none). Anyone may list a
-  key, so a reader trusts one only once a signature checks out with it. `GET /.well-known/yobiru` describes them
+- **Passkey directory (0.7.37).** A passkey's signature does not carry its public key; it fits exactly two, and only
+  one of them has a private key anyone holds. Machines that trust an owner passkey list its public half here, and a
+  new machine asks about the two keys the owner's signature fits to learn which one is the owner's. `POST
+  /v1/passkeys` with `{"key": {alg, public_key, credential_id, rp_id, origin}}` (ES256 on P-256 only, the public key
+  as base64url SubjectPublicKeyInfo, `origin` `https://<rp_id>`; a `label` is accepted and dropped) answers `201`, or
+  `200` with `duplicate: true`, with its `listing`: the SHA-256 (hex) of the key's canonical JSON. One address lists
+  at most 30 an hour (`passkey_writes_per_hour_per_ip`), and the directory holds at most `max_passkeys`. `GET
+  /v1/passkeys/{credential_id}/{listing}` returns that one `key`, or `404`; there is no way to list the keys under a
+  credential id. Anyone may list a key, but a reader asks only about keys a signature it holds fits, so other keys
+  under the same credential id are never shown to it and never in its way. `GET /.well-known/yobiru` describes them
   under `passkeys`.
 
 The gateway only relays. Nothing it holds can approve anything: each receiver checks the signature itself against
@@ -1255,7 +1257,7 @@ can instead take `sealed` (an envelope from `bot_e2e.py`), with attachments as `
 | `GET /v1/connector/jobs[?wait=N&cursor=C&follows=mutual]`, `POST /v1/connector/messages/{mid}/wake`, `POST /v1/connector/checks/{chk}/wake`, `POST /v1/connector/follows/{bot}/wake` | connector | the wake ledger; a poll that waits for a change. `follows=mutual` lists new friendships (other bot id only); the follow route records that bot's own wake |
 | `POST /v1/capability/redeem` | verifier | calendar slots or one resource for one started job |
 | `POST /v1/approval-drops/{id}/ask\|answer`, `GET /v1/approval-drops/{id}` | none | sealed [approval drops](#approval-drops); plain-text body, write once |
-| `POST /v1/passkeys`, `GET /v1/passkeys/{credential_id}` | none | the [passkey directory](#approval-drops): public halves of owner passkeys |
+| `POST /v1/passkeys`, `GET /v1/passkeys/{credential_id}/{listing}` | none | the [passkey directory](#approval-drops): public halves of owner passkeys |
 
 `GET /v1/owner/bots/{id}/reviews` keeps the complete legacy metadata list for existing clients. New clients request
 `GET /v1/owner/bots/{id}/reviews/full` for full message bodies in byte-bounded pages, falling back to the legacy

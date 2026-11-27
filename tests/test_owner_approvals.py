@@ -330,6 +330,26 @@ class KeyStoreTests(unittest.TestCase):
         self.assertEqual(core.owner_key_record({f: info["owner_keys"][0][f] for f in core.OWNER_KEY_FIELDS})["id"],
                          rec["id"])
 
+    def test_a_signature_fits_two_public_keys_one_of_them_the_owners(self):
+        """0.7.37: a WebAuthn signature does not carry its public key, but it fits exactly two; the claim asks the
+        directory about those two only. The other one checks this one signature and nothing else."""
+        claim = self.key_intent(core.KEY_CLAIM_TYPE, {})
+        signed, again = self.first.approve(claim), self.first.approve(dict(claim, nonce=core.b64u(b"n" * 16)))
+        fits = core.approval_key_candidates(signed)
+        owner = core.owner_key_record(self.first.key())
+        self.assertEqual(len(fits), 2)
+        self.assertIn(owner["public_key"], [k["public_key"] for k in fits])
+        self.assertEqual({k["credential_id"] for k in fits} | {k["rp_id"] for k in fits},
+                         {owner["credential_id"], "yobiru.com"})
+        twin = next(k for k in fits if k["public_key"] != owner["public_key"])
+        raw = lambda blob: core.approval_challenge(core.unb64u(blob["intent"], core.INTENT_MAX_BYTES * 2))
+        core.webauthn_verify(twin, raw(signed), signed)                      # fits the signature it came from ...
+        with self.assertRaisesRegex(core.ApprovalError, "does not verify"):
+            core.webauthn_verify(twin, raw(again), again)                    # ... and no other
+        core.webauthn_verify(owner, raw(again), again)
+        self.assertEqual(core.owner_key_listing(owner), core.owner_key_listing(dict(owner, label="phone")))
+        self.assertEqual(core.approval_key_candidates(dict(signed, signature=core.b64u(b"\x30\x00"))), [])
+
     def test_first_key_claimed_with_its_own_signature(self):
         """0.7.37: the owner signs a claim naming this machine with a passkey they already have; the claim names no
         key, so the receiver checks it against the public half it found by credential id. Only a signature by that

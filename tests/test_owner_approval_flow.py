@@ -232,25 +232,26 @@ class ApprovalFlowTests(unittest.TestCase):
     def test_passkey_directory_routes(self):
         phone = self.phone.key()
         listed = {f: phone[f] for f in ("alg", "public_key", "credential_id", "rp_id", "origin")}
+        name = core.owner_key_listing(listed)
         post = lambda key: C.api_call(self.gw.url, "POST", "/v1/passkeys", {"key": key})
-        get = lambda cid: C.api_call(self.gw.url, "GET", "/v1/passkeys/" + cid)
-        self.assertEqual(get(phone["credential_id"]), (200, {"ok": True, "credential_id": phone["credential_id"],
-                                                              "keys": []}))
-        self.assertEqual(post(phone)[0], 201)                     # a label is accepted and dropped
-        self.assertEqual(post(listed), (200, {"ok": True, "duplicate": True}))
-        self.assertEqual(get(phone["credential_id"])[1]["keys"], [listed])
+        get = lambda cid, listing: C.api_call(self.gw.url, "GET", "/v1/passkeys/%s/%s" % (cid, listing))
+        self.assertEqual(get(phone["credential_id"], name)[0], 404)
+        self.assertEqual(post(phone), (201, {"ok": True, "duplicate": False, "listing": name}))  # label dropped
+        self.assertEqual(post(listed), (200, {"ok": True, "duplicate": True, "listing": name}))
+        self.assertEqual(get(phone["credential_id"], name), (200, {"ok": True, "key": listed}))
         for bad in (dict(listed, alg="RS256"), dict(listed, public_key=b64u(b"\x30" * 91)),
                     dict(listed, origin="https://evil.example"), dict(listed, credential_id="short"),
                     dict(listed, extra=1), {"public_key": listed["public_key"]}):
             self.assertEqual(post(bad)[0], 400, bad)
-        # one credential id keeps its first few keys; the rest are refused, and readers check each signature anyway
-        for _ in range(3):
-            other = SoftPasskey().key()
-            self.assertEqual(post(dict(other, credential_id=phone["credential_id"]))[0], 201)
-        self.assertEqual(post(dict(SoftPasskey().key(), credential_id=phone["credential_id"]))[0], 409)
-        self.assertEqual(get(phone["credential_id"])[1]["keys"][0], listed, "the first one listed comes first")
+        # Others may list any number of keys under the same credential id: a reader asks for exact keys only, so they
+        # are neither shown nor in the way, and there is no list to read.
+        for _ in range(6):
+            self.assertEqual(post(dict(SoftPasskey().key(), credential_id=phone["credential_id"]))[0], 201)
+        self.assertEqual(get(phone["credential_id"], name), (200, {"ok": True, "key": listed}))
+        self.assertEqual(C.api_call(self.gw.url, "GET", "/v1/passkeys/" + phone["credential_id"])[0], 404)
+        self.assertEqual(get(SoftPasskey().key()["credential_id"], name)[0], 404)
         self.assertEqual(C.api_call(self.gw.url, "GET", "/.well-known/yobiru")[1]["passkeys"]["read"],
-                         "GET /v1/passkeys/{credential_id}")
+                         "GET /v1/passkeys/{credential_id}/{listing}")
 
     def test_a_new_machine_uses_the_passkey_the_owner_already_has(self):
         """The fix for "it keeps looking for the passkey on other computers": the first machine lists the passkey's
@@ -273,15 +274,17 @@ class ApprovalFlowTests(unittest.TestCase):
 
     def test_a_claim_pins_only_a_passkey_whose_signature_checks_out(self):
         third = self.new_home()
-        # Someone lists their own key under the phone's credential id first; the phone itself is not listed yet.
-        fake = dict(SoftPasskey().key(), credential_id=self.phone.key()["credential_id"])
-        self.assertEqual(C.api_call(self.gw.url, "POST", "/v1/passkeys", {"key": fake})[0], 201)
+        # Someone lists keys of their own under the phone's credential id first, more than one credential used to
+        # keep; the phone itself is not listed yet. None of them is pinned, and none keeps the phone out.
+        for _ in range(5):
+            fake = dict(SoftPasskey().key(), credential_id=self.phone.key()["credential_id"])
+            self.assertEqual(C.api_call(self.gw.url, "POST", "/v1/passkeys", {"key": fake})[0], 201)
         code, started = self.run_in(third, "setup")
         page = Page(started["link"])
         self.assertEqual(page.claim(self.phone), 201)
         code, refused = self.run_in(third, "wait", started["ref"], "--timeout", "5")
         self.assertEqual(code, 2)
-        self.assertIn("did not check out", refused["error"])
+        self.assertIn("not listed yet", refused["error"])
         self.assertEqual(core.load_owner_keys(third), [])
         # Once a machine that trusts the phone lists it, the same answer pins the phone (and only the phone).
         self.setup_phone()
@@ -299,8 +302,9 @@ class ApprovalFlowTests(unittest.TestCase):
         code, done = self.run_in(fourth, "wait", started["ref"], "--timeout", "5")
         self.assertEqual((code, done["state"]), (0, "key_added"), done)
         # ... and now it is listed for the next machine
-        listed = C.api_call(self.gw.url, "GET", "/v1/passkeys/" + tablet.key()["credential_id"])[1]["keys"]
-        self.assertEqual([k["public_key"] for k in listed], [tablet.key()["public_key"]])
+        name = core.owner_key_listing(core.owner_key_record(tablet.key()))
+        listed = C.api_call(self.gw.url, "GET", "/v1/passkeys/%s/%s" % (tablet.key()["credential_id"], name))
+        self.assertEqual((listed[0], listed[1]["key"]["public_key"]), (200, tablet.key()["public_key"]))
         # A claim answered by another recipient's link is refused: the request names this machine.
         fifth = self.new_home()
         code, started = self.run_in(fifth, "setup")

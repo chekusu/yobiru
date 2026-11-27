@@ -28,10 +28,10 @@ Only the very first time, when you have no Yobiru passkey yet, tap **Create one*
 An agent that needs your approval and finds no passkey set up runs the same setup by itself and sends you the link,
 so a new agent (Grok Bot, Muse, another Claude Code) only ever asks you for that one confirmation.
 
-How it works (0.7.37): a passkey's signature does not carry its public key, so every computer that trusts your
-passkey lists its public half on the Yobiru gateway (`bots.yobiru.com`), under the passkey's id. The new computer
-looks it up there and checks your signature with it before trusting it, so a listing that is not your passkey's
-cannot be trusted. Each computer still keeps its own list of passkeys it trusts, and the private key never leaves
+How it works (0.7.37): a passkey's signature does not carry its public key. It fits exactly two, and only one of them
+belongs to a passkey anyone has. Every computer that trusts your passkey lists its public half on the Yobiru gateway
+(`bots.yobiru.com`), so the new computer works out the two keys from your signature and asks the gateway which of
+them is listed. Your signature checks out with that key, and keys anyone else lists cannot get in the way. Each computer still keeps its own list of passkeys it trusts, and the private key never leaves
 your device.
 
 You can also give an agent your **owner key text** from a computer that trusts it (`yobiru approval keys` there):

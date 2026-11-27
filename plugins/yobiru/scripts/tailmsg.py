@@ -2060,19 +2060,48 @@ def p256_verify(point, message, sig):
         return False
     z = int.from_bytes(hashlib.sha256(message).digest(), "big")
     w = pow(s, -1, _P256_N)
-    u1, u2 = z * w % _P256_N, r * w % _P256_N
-    g, q = (_P256_G[0], _P256_G[1], 1), (point[0], point[1], 1)
-    gq, acc = _p256_add(g, q), (0, 1, 0)
-    for bit in range(max(u1.bit_length(), u2.bit_length()) - 1, -1, -1):
-        acc = _p256_double(acc)
-        b1, b2 = (u1 >> bit) & 1, (u2 >> bit) & 1
-        if b1 or b2:
-            acc = _p256_add(acc, gq if b1 and b2 else (g if b1 else q))
-    x, _, zz = acc
+    x, _, zz = _p256_sum(z * w % _P256_N, _P256_G, r * w % _P256_N, point)
     if not zz:
         return False
     inv = pow(zz, -1, _P256_P)
     return x * inv * inv % _P256_P % _P256_N == r
+
+
+def _p256_sum(u1, a, u2, b):
+    """u1*a + u2*b for affine points a and b, as a Jacobian point (Shamir's trick)."""
+    pa, pb = (a[0], a[1], 1), (b[0], b[1], 1)
+    ab, acc = _p256_add(pa, pb), (0, 1, 0)
+    for bit in range(max(u1.bit_length(), u2.bit_length()) - 1, -1, -1):
+        acc = _p256_double(acc)
+        b1, b2 = (u1 >> bit) & 1, (u2 >> bit) & 1
+        if b1 or b2:
+            acc = _p256_add(acc, ab if b1 and b2 else (pa if b1 else pb))
+    return acc
+
+
+def p256_recover(message, sig):
+    """The public keys (x, y) for which `sig` (DER) is a valid ECDSA P-256 signature over `message`: two, as a rule
+    (the other two, for r + n < p, have a chance of about 2**-128 and are left out). A WebAuthn signature does not
+    carry its public key; this narrows it down to two, and only one of them has a private key anyone holds."""
+    r, s = der_signature(sig)
+    if not (1 <= r < _P256_N and 1 <= s < _P256_N):
+        return []
+    alpha = (r * r * r - 3 * r + _P256_B) % _P256_P
+    beta = pow(alpha, (_P256_P + 1) // 4, _P256_P)          # p = 3 (mod 4)
+    if beta * beta % _P256_P != alpha:
+        return []
+    z = int.from_bytes(hashlib.sha256(message).digest(), "big")
+    rinv = pow(r, -1, _P256_N)
+    found = []
+    for y in (beta, _P256_P - beta):
+        x3, y3, z3 = _p256_sum(-z * rinv % _P256_N, _P256_G, s * rinv % _P256_N, (r, y))
+        if not z3:
+            continue
+        inv = pow(z3, -1, _P256_P)
+        point = (x3 * inv * inv % _P256_P, y3 * inv * inv * inv % _P256_P)
+        if p256_verify(point, message, sig) and point not in found:
+            found.append(point)
+    return found
 
 
 def owner_key_fingerprint(spki):
@@ -2353,6 +2382,27 @@ def webauthn_verify(key, challenge, blob):
     point = p256_point(unb64u(key["public_key"], 256))
     if not p256_verify(point, auth + hashlib.sha256(client_data).digest(), unb64u(blob["signature"], 128)):
         raise ApprovalError("the signature does not verify")
+
+
+def approval_key_candidates(blob, rp_id=OWNER_RP_ID):
+    """The owner key records (at most two) whose public key the approval's signature fits, for a passkey on `rp_id`.
+    Which one is the owner's takes a listing (the relay's passkey directory, or a machine that trusts it): the other
+    fits only this one signature, and no one holds its private key."""
+    try:
+        client_data = unb64u(blob["client_data_json"], 4096)
+        message = unb64u(blob["authenticator_data"], 1024) + hashlib.sha256(client_data).digest()
+        points = p256_recover(message, unb64u(blob["signature"], 128))
+    except (ApprovalError, KeyError, TypeError):
+        return []
+    return [owner_key_record({"public_key": b64u(SPKI_P256_PREFIX + b"\x04" + x.to_bytes(32, "big") +
+                                                 y.to_bytes(32, "big")),
+                              "credential_id": blob["credential_id"], "rp_id": rp_id}) for x, y in points]
+
+
+def owner_key_listing(rec):
+    """The passkey directory's name for a public key: SHA-256 (hex) of the canonical JSON of its five public fields."""
+    return hashlib.sha256(json_canonical({f: rec[f] for f in ("alg", "public_key", "credential_id", "rp_id", "origin")})
+                          .encode("ascii")).hexdigest()
 
 
 def verify_approval(blob, keys, kinds=(APPROVAL_TYPE,), now=None):

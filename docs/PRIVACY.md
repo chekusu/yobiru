@@ -271,8 +271,9 @@ any request. A drop involves no Friends account and is not tied to one.
 Since 0.7.37 a computer or bot that trusts an owner passkey also lists that passkey's public half in the gateway's
 passkey directory: the public key, the passkey's credential id, and the site it belongs to (`yobiru.com`). No name,
 computer, bot or account is stored with it, and nothing in it can sign anything. The gateway keeps it without an
-expiry, because the owner may set up another computer at any time, and gives it to anyone who asks for that
-credential id; a new computer uses it only to check a signature the owner just made.
+expiry, because the owner may set up another computer at any time. It never lists what it holds: it answers only
+whether one exact public key is listed under a credential id, which is how a new computer tells which of the two
+keys the owner's fresh signature fits is the owner's.
 
 Since 0.7.31 the agent answering for a Friends bot can ask its owner to sign one message the bot received. That
 drop holds the message's text as the agent opened it, the bot, the sender's bot or caller id and handle, and the

@@ -191,9 +191,8 @@ LIMIT_DEFAULTS = {
     "approval_drop_ttl_seconds": 86400,
     "approval_drops_per_hour_per_ip": 30,       # writes per slot kind (ask, answer) from one address
     "max_approval_drops": 5000,
-    # passkey directory: the public half of owners' passkeys, by credential id, so a new agent can check the
-    # signature of a passkey the owner already has (a WebAuthn signature does not carry its public key)
-    "passkeys_per_credential": 4,               # different public keys kept under one credential id (first ones)
+    # passkey directory: the public half of owners' passkeys, so a new agent can tell which of the two public keys a
+    # signature fits is the owner's (a WebAuthn signature does not carry its public key)
     "passkey_writes_per_hour_per_ip": 30,
     "max_passkeys": 100000,
 }
@@ -461,11 +460,11 @@ INBOX_TABLES = (
     # which never reaches the gateway; the id is a hash of that secret. Gone a day after the ask.
     "CREATE TABLE IF NOT EXISTS approval_drops (id TEXT PRIMARY KEY, ask TEXT NOT NULL, answer TEXT, "
     "created_ts INTEGER NOT NULL, answered_ts INTEGER, expires_ts INTEGER NOT NULL)",
-    # Passkey directory (0.7.37): the public half of an owner's passkey under its credential id (canonical JSON of
-    # PASSKEY_FIELDS, no label). Anyone may add one; whoever reads it checks a signature with it, so a wrong key
-    # only fails to verify. An older gateway never reads it.
-    "CREATE TABLE IF NOT EXISTS owner_passkeys (credential_id TEXT NOT NULL, key TEXT NOT NULL, "
-    "created_ts INTEGER NOT NULL, PRIMARY KEY (credential_id, key))",
+    # Passkey directory (0.7.37): the public half of an owner's passkey (canonical JSON of PASSKEY_FIELDS, no label),
+    # looked up by credential id and the SHA-256 of that JSON (`listing`), never listed in bulk. Anyone may add one;
+    # a reader asks only for the two keys a signature it holds fits, so a key someone else listed changes nothing.
+    "CREATE TABLE IF NOT EXISTS owner_passkeys (credential_id TEXT NOT NULL, listing TEXT NOT NULL, "
+    "key TEXT NOT NULL, created_ts INTEGER NOT NULL, PRIMARY KEY (credential_id, listing))",
 )
 # note: the owner's words for their agent, sent with each wake. failures/failing_since_ts/next_ts: consecutive
 # failed calls and when the next may go. disabled_ts: turned off after failing too long (a new PUT or an accepted
@@ -3018,11 +3017,12 @@ class Api(object):
                                         "max_bytes": self.limits["approval_drop_bytes"],
                                         "ttl_seconds": self.limits["approval_drop_ttl_seconds"],
                                         "sealed": "ChaCha20-Poly1305; the gateway never has the key"},
-                     # The public half of owners' passkeys by credential id, for checking a signature by a passkey
-                     # the owner already has (see APPROVALS.md).
+                     # The public half of owners' passkeys, for telling which key a signature by a passkey the
+                     # owner already has was made with (see APPROVALS.md).
                      "passkeys": {"write": "POST /v1/passkeys (body: {key: {alg, public_key, credential_id, rp_id, "
                                            "origin}})",
-                                  "read": "GET /v1/passkeys/{credential_id}"},
+                                  "read": "GET /v1/passkeys/{credential_id}/{listing}",
+                                  "listing": "SHA-256 (hex) of the key's canonical JSON"},
                      "identity": {"verified_person": False}}
 
     def drop_write(self, db, r):
@@ -3066,22 +3066,25 @@ class Api(object):
         fields(r.body, ("key",), ("key",))
         key = passkey_field(r.body["key"])
         cid, text = key["credential_id"], canonical(key)
-        if db.execute("SELECT 1 FROM owner_passkeys WHERE credential_id=? AND key=?", (cid, text)).fetchone():
-            return 200, {"ok": True, "duplicate": True}
+        listing = hashlib.sha256(text.encode("ascii")).hexdigest()
+        if db.execute("SELECT 1 FROM owner_passkeys WHERE credential_id=? AND listing=?", (cid, listing)).fetchone():
+            return 200, {"ok": True, "duplicate": True, "listing": listing}
         if not take(db, "passkey:%s" % r.client_ip, L["passkey_writes_per_hour_per_ip"], 3600, now):
             return 429, {"ok": False, "error": "rate_limited", "detail": "too many passkeys from this address"}
-        if db.execute("SELECT COUNT(*) FROM owner_passkeys WHERE credential_id=?", (cid,)).fetchone()[0] >= \
-                L["passkeys_per_credential"]:
-            raise Fail(409, "credential_full", "this credential id already has its keys")
         if db.execute("SELECT COUNT(*) FROM owner_passkeys").fetchone()[0] >= L["max_passkeys"]:
             raise Fail(503, "capacity")
-        db.execute("INSERT INTO owner_passkeys(credential_id, key, created_ts) VALUES(?,?,?)", (cid, text, int(now)))
-        return 201, {"ok": True, "duplicate": False}
+        db.execute("INSERT INTO owner_passkeys(credential_id, listing, key, created_ts) VALUES(?,?,?,?)",
+                   (cid, listing, text, int(now)))
+        return 201, {"ok": True, "duplicate": False, "listing": listing}
 
     def passkey_read(self, db, r):
-        rows = db.execute("SELECT key FROM owner_passkeys WHERE credential_id=? ORDER BY created_ts, rowid LIMIT ?",
-                          (r.params["cid"], self.limits["passkeys_per_credential"])).fetchall()
-        return 200, {"ok": True, "credential_id": r.params["cid"], "keys": [json.loads(row["key"]) for row in rows]}
+        """Whether one exact public key is listed under a credential id. Never a list: a reader asks for the keys a
+        signature it holds fits, so keys others listed under the same id are neither shown nor in the way."""
+        row = db.execute("SELECT key FROM owner_passkeys WHERE credential_id=? AND listing=?",
+                         (r.params["cid"], r.params["listing"])).fetchone()
+        if row is None:
+            raise Fail(404, "not_found", "this key is not listed under this credential id")
+        return 200, {"ok": True, "key": json.loads(row["key"])}
 
     def drop_read(self, db, r):
         """Both slots of an open drop (null until written). Read-only: an agent polls it for the answer."""
@@ -6001,7 +6004,7 @@ ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
     ("POST", r"/v1/approval-drops/(?P<did>[A-Za-z0-9_-]{32})/(?P<slot>ask|answer)", "drop_write", None),
     ("GET", r"/v1/approval-drops/(?P<did>[A-Za-z0-9_-]{32})", "drop_read", None),
     ("POST", r"/v1/passkeys", "passkey_write", None),
-    ("GET", r"/v1/passkeys/(?P<cid>[A-Za-z0-9_-]{22,1366})", "passkey_read", None),
+    ("GET", r"/v1/passkeys/(?P<cid>[A-Za-z0-9_-]{22,1366})/(?P<listing>[0-9a-f]{64})", "passkey_read", None),
     ("GET", r"/@(?P<ref>[^/]{1,64})", "share_card", None),
     ("POST", r"/v1/actors", "enroll", None),
     ("POST", r"/v1/enroll", "enroll_bot", None),

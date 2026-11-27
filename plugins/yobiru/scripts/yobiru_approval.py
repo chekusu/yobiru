@@ -47,7 +47,6 @@ DISCOVERY_MAX = 64                           # machines asked at most
 UPGRADE_NOTE = "does not share its owner keys yet"     # marks a receiver to upgrade in discovery notes
 MODES = ("sign", "register", "add-key", "claim")
 PUBLISHED_FILE = "published_keys.json"       # under approvals/: {relay: [key ids listed in its passkey directory]}
-CREDENTIAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{22,1366}\Z")
 DROP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{32}\Z")
 
 
@@ -189,28 +188,17 @@ def open_drop(home, relay, mode, ask, expires_at, purpose):
 
 
 # ---------------------------------------------------------------- passkey directory
-def directory_keys(relay, credential_id):
-    """The public halves the relay's passkey directory lists for one credential id ([] when none, or on a relay
-    without a directory). Whoever listed them, a key only counts once a signature checks out with it."""
-    if not isinstance(credential_id, str) or not CREDENTIAL_ID_RE.fullmatch(credential_id):
-        return []
+def directory_lists(relay, rec):
+    """True when the relay's passkey directory lists exactly this public key under its credential id (False when not,
+    or on a relay without a directory). It is asked only for the keys a signature in hand fits."""
     try:
-        status, obj = drop_call(relay, "GET", "/v1/passkeys/" + credential_id)
+        status, obj = drop_call(relay, "GET", "/v1/passkeys/%s/%s" % (rec["credential_id"],
+                                                                      _tm.owner_key_listing(rec)))
     except Fail:
-        return []
-    if status != 200 or not isinstance(obj, dict) or not isinstance(obj.get("keys"), list):
-        return []
-    recs = []
-    for k in obj["keys"][:_tm.OWNER_KEYS_MAX]:
-        if not isinstance(k, dict):
-            continue
-        try:
-            rec = _tm.owner_key_record({f: k[f] for f in _tm.OWNER_KEY_FIELDS - {"label"} if f in k})
-        except _tm.ApprovalError:
-            continue
-        if rec["credential_id"] == credential_id and rec["id"] not in [r["id"] for r in recs]:
-            recs.append(rec)
-    return recs
+        return False
+    if status != 200 or not isinstance(obj, dict) or not isinstance(obj.get("key"), dict):
+        return False
+    return obj["key"] == {f: rec[f] for f in ("alg", "public_key", "credential_id", "rp_id", "origin")}
 
 
 def publish_keys(home, relay):
@@ -919,21 +907,27 @@ def finish_claim(home, rec, answer, ask):
         if known is not None:
             return {"ok": True, "state": "key_already_trusted", "ref": rec["id"], "key": _tm.owner_key_view(known),
                     "keys": len(pinned)}
-        candidates = directory_keys(rec["relay"], cid) or tailnet_keys(home, cid)
-        if not candidates:
+        # The signature fits two public keys; the owner's is the one a machine that trusts it listed (on the relay,
+        # or in a 0.7.35+ receiver's /info). The other fits only this signature, and no one holds its private key.
+        fits = _tm.approval_key_candidates(blob)
+        if not fits:
+            raise Fail("the owner's signature did not check out: it fits no P-256 public key")
+        chosen = [k for k in fits if directory_lists(rec["relay"], k)]
+        if not chosen:
+            trusted = {k["public_key"]: k for k in tailnet_keys(home, cid)}
+            chosen = [trusted[k["public_key"]] for k in fits if k["public_key"] in trusted]
+        if not chosen:
             raise Fail("the passkey the owner used is not listed yet (it was set up before Yobiru 0.7.37 and no "
                        "machine has listed it since). On any machine that trusts it, run `yobiru approval setup` once "
                        "(0.7.37 or later lists it), then run `yobiru approval wait %s` here again" % rec["id"])
-        added, problem = None, None
-        for cand in candidates:
-            try:
-                added = _tm.owner_key_add(home, {f: cand[f] for f in _tm.OWNER_KEY_FIELDS}, blob, host, node_id,
-                                          bots)
-                break
-            except _tm.ApprovalError as e:
-                problem = e
-        if added is None:
-            raise Fail("the owner's signature did not check out: %s" % problem)
+        if len(chosen) > 1:
+            raise Fail("both public keys this signature fits are listed, so it cannot tell which is the owner's; "
+                       "nothing was pinned")
+        try:
+            added = _tm.owner_key_add(home, {f: chosen[0][f] for f in _tm.OWNER_KEY_FIELDS}, blob, host, node_id,
+                                      bots)
+        except _tm.ApprovalError as e:
+            raise Fail("the owner's signature did not check out: %s" % e)
         how = "confirmed"
     publish_keys(home, rec["relay"])
     return {"ok": True, "state": "key_added" if added["added"] else "key_already_trusted", "ref": rec["id"],
