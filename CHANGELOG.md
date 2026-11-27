@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.32 (2026-11-27)
+
+Clients only. Nothing changes on receivers or the gateway.
+
+- **Claude Code: sign what auto mode stopped, instead of typing an approval.** Claude Code's auto mode lets a risky
+  tool call through only when the owner says so in that very conversation, which means finding the right session and
+  typing again whenever the work runs elsewhere (a Remote Control session on a server, a thread another Claude
+  started). `yobiru guard install` adds three Claude Code hooks. When auto mode stops a call, the guard remembers it
+  and lets the model retry; the retry is refused with a `yobiru.com/approve` link that shows the owner exactly that
+  call (the command and its folder, a file change, or a tool and its input). The owner signs it with a passkey; on
+  the next retry the guard checks the signature on that computer, against the owner keys written into its own hook
+  command in Claude Code's settings, and allows that exact call once (`permissionDecision: allow`, which Claude Code
+  honors before auto mode's classifier). Anyone may pass the link along; only the owner's passkey can sign. A changed
+  call needs a new signature, a used signature does not work again, and any failure leaves the call to Claude Code's
+  own checks. `--protect REGEX` asks for a signature for chosen calls auto mode would allow; `guard wait`, `list`,
+  `forget`, `status` and `uninstall` complete it. The request is an ordinary owner approval for the agent
+  `claude-code` on that computer, so the signing page needs no change.
+
 ## 0.7.31 (2026-11-27)
 
 Clients, plus one field in the gateway's job view. Update the gateway first so that agents can tell when a message

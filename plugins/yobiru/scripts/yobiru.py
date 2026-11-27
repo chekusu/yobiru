@@ -94,6 +94,9 @@ Check and set up (read-only unless --apply):
   approval {{setup,request,for,wait,get,list,keys,remove,verify}}
                              owner approvals: the owner signs an exact instruction with a passkey on their own
                              device; receivers verify it in code (docs/APPROVALS.md)
+  guard {{install,uninstall,status,list,wait,forget}}
+                             Claude Code: when auto mode blocks a call, the owner allows exactly that call once
+                             by signing it with a passkey instead of typing an approval (docs/APPROVALS.md)
   mcp [--agent NAME]         local MCP server on stdio with the messaging commands as tools (the Claude Code
                              plugin registers it; other MCP clients can run it the same way)
   version
@@ -4217,6 +4220,13 @@ def cmd_muse(home, home_source, argv):
     return yobiru_muse.main(home, argv, sys.modules[__name__])
 
 
+def cmd_guard(home, home_source, argv):
+    """Claude Code guard: the owner allows one blocked tool call by signing it with a passkey."""
+    sys.path.insert(0, str(HERE))
+    import yobiru_guard
+    return yobiru_guard.main(home, argv, sys.modules[__name__])
+
+
 def cmd_approval(home, home_source, argv):
     sys.path.insert(0, str(HERE))
     import yobiru_approval
@@ -4406,7 +4416,7 @@ PLUGIN_COMMANDS = {"paths": cmd_paths, "doctor": cmd_doctor, "status": cmd_statu
                    "gateway": cmd_gateway, "public": cmd_public, "calendar-service": cmd_calendar_service,
                    "resource-service": cmd_resource_service,
                    "mcp": cmd_mcp, "muse": cmd_muse, "claude-bridge": cmd_claude_bridge,
-                   "approval": cmd_approval}
+                   "approval": cmd_approval, "guard": cmd_guard}
 
 
 def main(argv=None):

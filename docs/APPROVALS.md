@@ -74,6 +74,40 @@ exactly as it arrived (its text, its files and who sent it), and it expires afte
 If someone else's message asks for real work, the agent may still ask you, but it gives the link to you alone, never
 to the sender.
 
+## 5. Claude Code: sign what auto mode stopped (0.7.32)
+
+Claude Code's auto mode stops tool calls it judges risky and lets one through only when you say so, in your own
+words, in that very conversation. When the conversation runs somewhere you are not typing (a Remote Control session
+on a server, a thread another Claude started, a request passed along from another chat), that means finding the
+right place and typing your approval again. The **Yobiru guard** gives Claude Code another way through: a link.
+
+When auto mode stops a call on a computer with the guard, Claude Code tries the same call once more and gets a
+`yobiru.com/approve` link instead. It sends you the link, and you open it wherever you are: the page shows the exact
+command (or file change, or tool call with its input), the folder and the computer. Approve with Face ID, a
+fingerprint or your device PIN. The guard checks your signature on that computer and lets exactly that call run,
+once. Anyone may pass the link along, another Claude included; only your passkey can sign it.
+
+Set it up once on each computer where Claude Code works: tell Claude Code there **"Set up my Yobiru owner passkey,
+then install the Yobiru guard for Claude Code"** (`yobiru approval setup`, then `yobiru guard install`; add `--lang
+zh-CN` or `--lang ja` for the text you read). New Claude Code sessions on that computer use it.
+
+- One signature covers one call, exactly as shown, once, and a request holds for an hour (`--expires` to change). A
+  changed command needs a new signature.
+- The guard checks the signature against the passkeys written into its own hook command in Claude Code's settings
+  file, and against the computer's name. It never allows anything by itself: if anything fails, the call is left to
+  Claude Code's own checks, as before.
+- `--protect REGEX` also asks for your signature for calls auto mode would let through, for example `^git push`.
+- You can still answer in the conversation: tell Claude Code to go ahead without signing, and it runs `yobiru guard
+  forget REF` so that auto mode judges the call again.
+- The page shows the whole call, any secret written in it included, and the link opens it for a day.
+
+It does not change who may approve inside a Claude conversation: a message passed along from another conversation
+still does not count as you there. It does not get past Claude Code's deny and ask rules, the files Claude Code always
+asks about, or a denial auto mode could not decide. And like every agent setting, it protects a computer from others,
+not from itself: an agent that runs as your user (or as root) could change Claude Code's settings if it set out to.
+Run agents as a normal user and install the guard in the managed settings (`--managed`, as an administrator) to make
+that harder.
+
 ## Your passkeys
 
 - **See which ones a computer trusts:** "Which owner passkeys does this computer trust?" (`yobiru approval keys`).
@@ -127,6 +161,9 @@ You need no Friends account.
 | `yobiru approval remove FINGERPRINT` | | Ask the owner to sign the removal of a key. |
 | `yobiru approval verify ID` | | Check an approval here as a receiver would. |
 | `yobiru request send PEER TEXT --approval ID` | `yobiru_send` with `approval` | Send a tracked request carrying the approval. |
+| `yobiru guard install [--lang zh-CN\|ja] [--protect REGEX] [--expires 1h] [--settings FILE \| --managed] [--key TEXT]` | | Claude Code: add the guard's hooks (PermissionDenied, PreToolUse, SessionStart) to the settings file, with this computer's name and the owner keys it trusts (or `--key`). `--print` shows them without writing. |
+| `yobiru guard wait REF [--timeout S]` | | Wait for the owner to sign or decline the call the guard sent; then retry the call unchanged. |
+| `yobiru guard list`, `status`, `forget REF`, `uninstall` | | Calls the guard remembers; where it is installed; return a call to auto mode's own judgment (allows nothing); remove the hooks. |
 
 On the receiver, `yobiru show ID` reports its own verdict as `received.owner_approval`; it counts only with
 `verified: true` and `authorization_status: active`, and `inbox --json` shows the same as `owner_approved`. The Claude
@@ -135,6 +172,13 @@ Code bridge lists verified approvals in the session's startup prompt. A sender's
 
 The protocol (intent format, WebAuthn checks, the receiver's ledger) is in [SPEC §10](https://github.com/chekusu/yobiru/blob/main/SPEC.md); the gateway's drop
 endpoints are in [PUBLIC_BOTS.md](PUBLIC_BOTS.md#approval-drops).
+
+The guard's request is an ordinary owner approval (`yobiru.owner-approval`) for the agent `claude-code` on this
+computer, asked by this computer itself, used once, with no files. Its instruction is the call as text, ending with the
+SHA-256 of the exact call (tool, input, and for a shell its folder; a shell command's description, timeout and
+background flag do not count). On a retry the guard builds that text again from the call in front of it and allows the
+call only when the signed text is exactly the same, the signature verifies against a key in its hook command, and the
+approval was not used before (`<home>/guard/used/`). Its state is in `<home>/guard/`.
 
 On Friends, the approval is the receiving agent's own record: `approval get MSG_ID` counts only with `verified: true`,
 which means this computer checked the signature against the owner key pinned here, for this bot, this message, its

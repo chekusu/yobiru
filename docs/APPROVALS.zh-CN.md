@@ -65,6 +65,33 @@ Claude Code 不会只凭一条聊天消息就动手。它回复一个链接，�
 发件人），默认一小时后过期，除非你选更长。如果是别人的消息要求做实际的事，agent 仍然可以来问你，但链接只给你一个人，
 绝不给发件人。
 
+## 5. Claude Code：自动模式拦下的操作，用签名放行（0.7.32）
+
+Claude Code 的自动模式会拦下它认为有风险的工具调用，只有你在同一个对话里亲口说可以，它才放行。如果这个对话不在你
+打字的地方（服务器上的 Remote Control 会话、另一个 Claude 开的线程、从别的聊天转过来的请求），你就得找到那个地方，
+把批准再打一遍。**Yobiru guard（守门钩子）** 给 Claude Code 多开了一条路：一个链接。
+
+装了 guard 的电脑上，自动模式拦下一个调用后，Claude Code 会把同一个调用再试一次，这次拿到的是一个
+`yobiru.com/approve` 链接。它把链接发给你，你在哪儿都能打开：页面上写着确切的命令（或文件改动、工具调用和它的参数）、
+目录和电脑。用 Face ID、指纹或设备 PIN 批准。guard 在那台电脑上验证你的签名，然后只让这一条调用执行一次。链接谁都
+可以转，包括别的 Claude；只有你的 passkey 能签。
+
+在每台跑 Claude Code 的电脑上设置一次：对那里的 Claude Code 说 **“设置我的 Yobiru 主人 passkey，然后给 Claude Code
+装上 Yobiru guard，用中文”**（`yobiru approval setup`，然后 `yobiru guard install --lang zh-CN`）。之后这台电脑上新开的
+Claude Code 会话都会用它。
+
+- 一个签名只管一条调用，和页面上显示的一模一样，只能用一次；请求一小时内有效（用 `--expires` 改）。命令改了就要重新签。
+- guard 用写在它自己钩子命令里的 passkey（在 Claude Code 的设置文件里）和这台电脑的名字来验签。它自己从不放行任何东西：
+  任何一步出错，这个调用都交回 Claude Code 自己的检查，和以前一样。
+- `--protect 正则` 可以让自动模式本来会放行的调用也先要你签名，比如 `^git push`。
+- 你仍然可以直接在对话里回答：告诉 Claude Code 不用签了直接做，它会运行 `yobiru guard forget REF`，让自动模式重新判断。
+- 页面显示的是整条调用，里面写着的密钥也会显示；链接一天内都能打开它。
+
+它改变不了 Claude 对话里谁算批准：从别的对话转过来的话，在那里仍然不算你说的。它也绕不过 Claude Code 的 deny 和 ask
+规则、Claude Code 总要询问的那些文件，以及自动模式没能做出判断的拒绝。和所有 agent 设置一样，它防的是别人，防不了这台
+电脑自己：以你的用户（或 root）身份运行的 agent，如果存心，可以改 Claude Code 的设置。让 agent 以普通用户运行，并由管理员
+把 guard 装进托管设置（`--managed`），这件事就难得多。
+
 ## 你的 passkey
 
 - **查看一台电脑信任哪些：** “这台电脑信任哪些主人 passkey？”（`yobiru approval keys`）。
@@ -113,6 +140,9 @@ Claude Code 不会只凭一条聊天消息就动手。它回复一个链接，�
 | `yobiru approval remove FINGERPRINT` | | 请主人签名删除一把公钥。 |
 | `yobiru approval verify ID` | | 像接收端一样在本机检查一个批准。 |
 | `yobiru request send PEER TEXT --approval ID` | `yobiru_send` 带 `approval` | 发送带批准的跟踪请求。 |
+| `yobiru guard install [--lang zh-CN\|ja] [--protect 正则] [--expires 1h] [--settings 文件 \| --managed] [--key TEXT]` | | Claude Code：把 guard 的钩子（PermissionDenied、PreToolUse、SessionStart）写进设置文件，带上这台电脑的名字和它信任的主人公钥（或 `--key`）。`--print` 只显示不写入。 |
+| `yobiru guard wait REF [--timeout 秒]` | | 等主人签名或拒绝 guard 发出的那条调用；签好后原样重试那条调用。 |
+| `yobiru guard list`、`status`、`forget REF`、`uninstall` | | guard 记着的调用；装在哪里；把一条调用交回自动模式自己判断（不放行任何东西）；移除钩子。 |
 
 在接收端，`yobiru show ID` 会把它自己的结论显示为 `received.owner_approval`；只有 `verified: true` 且
 `authorization_status: active` 时才算，`inbox --json` 用 `owner_approved` 给出同样的结论。Claude Code 桥接会把
@@ -120,6 +150,11 @@ Claude Code 不会只凭一条聊天消息就动手。它回复一个链接，�
 
 协议细节（意图格式、WebAuthn 检查、接收端账本）见 [SPEC §10](https://github.com/chekusu/yobiru/blob/main/SPEC.md)；网关的投递点接口见
 [PUBLIC_BOTS.md](PUBLIC_BOTS.md#approval-drops)（英文）。
+
+guard 的请求就是一个普通的主人批准（`yobiru.owner-approval`）：给这台电脑上的 agent `claude-code`，由这台电脑自己
+发出，只用一次，不带文件。它的指令是这条调用的文字，结尾是这条调用的 SHA-256（工具、参数，shell 命令还包括目录；shell
+命令的说明、超时和后台标志不算）。重试时 guard 根据眼前这条调用重新生成这段文字，只有签名的文字完全一样、签名能用钩子
+命令里的公钥验证通过、并且这个批准没用过（`<home>/guard/used/`），才放行。它的状态在 `<home>/guard/`。
 
 在 Friends 上，批准是接收方 agent 自己的记录：`approval get MSG_ID` 只有 `verified: true` 才算，意思是这台电脑用这里
 保存的主人公钥验证过签名，而且签的正是这个 bot、这条消息、它的原文和附件、这个发件人。网关给的 `from.same_owner` 只决定

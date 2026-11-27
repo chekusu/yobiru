@@ -9,8 +9,8 @@ The final product logo set is maintained in
 Agent-to-agent messages, file handoff and receiver-controlled wake-ups between machines on your own
 Tailscale network, using the tailmsg protocol v1. One package for Codex, Cursor, Claude Code and Grok Bot.
 
-Version 0.7.31. Source: <https://github.com/chekusu/yobiru>; what changed:
-[changelog](https://github.com/chekusu/yobiru/blob/v0.7.31/CHANGELOG.md). Public submission and review
+Version 0.7.32. Source: <https://github.com/chekusu/yobiru>; what changed:
+[changelog](https://github.com/chekusu/yobiru/blob/v0.7.32/CHANGELOG.md). Public submission and review
 status: [marketplace record](https://github.com/chekusu/yobiru/blob/main/docs/MARKETPLACE_SUBMISSION.md).
 Repository installation does not establish a public listing.
 
@@ -36,6 +36,7 @@ Repository installation does not establish a public listing.
 | `skills/yobiru-friends-host` | Your own agent answers your bot's chat: directly for people in the inbox (followed or accepted), as drafts you approve otherwise. |
 | `scripts/yobiru_muse.py` | Muse connector implementation used by `yobiru muse`. |
 | `scripts/yobiru_approval.py` | Owner approvals used by `yobiru approval`: ask the owner to sign an instruction with a passkey, collect the sealed answer, manage this machine's owner keys (verification lives in `tailmsg.py`). |
+| `scripts/yobiru_guard.py` | `yobiru guard`: Claude Code hooks that let the owner allow one call auto mode stopped by signing it with a passkey (the hook runs this file directly). |
 | `scripts/yobiru`, `scripts/yobiru.py` | The `yobiru` command: setup, doctor and status, plus the messaging commands. |
 | `scripts/yobiru_mcp.py` | `yobiru mcp`: a stdio MCP server whose tools run the messaging commands (inbox, read, fetch, send, reply, respond, status, ack) and owner approvals. |
 | `scripts/tailmsg.py` | The bundled tailmsg CLI and receiver (stdlib only). |
@@ -56,8 +57,8 @@ gateway can serve `/mcp` to bearer-authenticated clients (no OAuth).
 The OpenAI package declares desktop execution because the skills run local programs. It uses the
 same implementation for Codex and compatible ChatGPT desktop installations; no hosted web or mobile
 connector is provided. Grok Bot and Cursor use the shared skills and Cursor-compatible metadata.
-See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.31/docs/GROK_BOT.md) and
-[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.31/docs/PRIVACY.md) of this release.
+See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.32/docs/GROK_BOT.md) and
+[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.32/docs/PRIVACY.md) of this release.
 
 ## Requirements
 
@@ -119,7 +120,7 @@ an agent. Get `response.id` from `request status ID --json`, then use `show RESP
 the result or `fetch RESPONSE_ID` to retrieve verified attachments into `<home>/inbox/RESPONSE_ID/files/`.
 Do not process protocol responses as new tasks or send replies to them.
 
-## Owner approvals (0.7.30, Friends 0.7.31)
+## Owner approvals (0.7.30, Friends 0.7.31, Claude Code guard 0.7.32)
 
 Work that needs the owner's own OK gets a passkey signature instead of a typed confirmation: `approval
 request PEER/AGENT TEXT` returns a link the owner opens on their phone, reads and signs with Face ID, a
@@ -127,8 +128,10 @@ fingerprint or the device PIN; `approval wait REF` collects it and `request send
 it. The receiver verifies the signature against the owner keys pinned on it (`approval setup`, `approval
 keys`) before its agent sees the request, and records it as the task's authorization. Since 0.7.31 a
 Friends bot's agent can ask the same for one message its bot received (`approval for MSG_ID`, `approval
-get MSG_ID`); it acts only on `verified: true`. See
-[Owner approvals](https://github.com/chekusu/yobiru/blob/v0.7.31/docs/APPROVALS.md).
+get MSG_ID`); it acts only on `verified: true`. Since 0.7.32 `guard install` adds Claude Code hooks: when
+auto mode stops a tool call, the retry is refused with a link for exactly that call, and once the owner signs it the
+guard verifies the signature on this computer and allows that call once. See
+[Owner approvals](https://github.com/chekusu/yobiru/blob/v0.7.32/docs/APPROVALS.md).
 
 Notifications (`--kind notice`, including upgrade notices) need no reply. Send a separate tracked
 request if you need a result. Old peers need upgrading; `send --kind request --legacy-request` is an
