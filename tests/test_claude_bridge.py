@@ -506,6 +506,25 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(3, len(result["refused"]))
         self.assertEqual([], self.launches())
 
+    def test_daemon_logs_only_when_the_outcome_changes(self):
+        results = iter([{"state": "idle", "refused": []}] * 3 + [{"state": "auth_required", "launched": False}] * 2
+                       + [{"state": "idle", "refused": []}])
+        class Stop(Exception):
+            pass
+        def step():
+            try:
+                return next(results)
+            except StopIteration:
+                raise Stop()
+        printed = []
+        with patch.object(self.b, "_step", side_effect=step), patch("time.sleep"), \
+                patch("builtins.print", side_effect=lambda line, **_: printed.append(json.loads(line))):
+            with self.assertRaises(Stop):
+                self.b.daemon()
+        self.assertEqual(["idle", "auth_required", "idle"], [line["state"] for line in printed])
+        for line in printed:
+            dt.datetime.strptime(line["at"], "%Y-%m-%dT%H:%M:%SZ")
+
 
 class InstallTests(unittest.TestCase):
     def setUp(self):
@@ -561,6 +580,64 @@ class InstallTests(unittest.TestCase):
         with self.assertRaisesRegex(bridge.BridgeError, "disallowed_tools"):
             installer.install(self.args)
         self.assertNotIn("disallowed_tools", bridge.read_json(self.target / "config.json"))
+
+    def test_stable_links_for_claude_and_python_are_kept_across_updates(self):
+        versions = self.root / "versions"
+        def release(number):
+            path = versions / number / "claude"
+            path.parent.mkdir(parents=True)
+            path.write_text("#!/bin/sh\nexit 0\n")
+            path.chmod(0o700)
+            return path
+        link = self.root / "bin" / "claude"
+        link.parent.mkdir()
+        link.symlink_to(release("1.0"))
+        python = self.root / "bin" / "python3"
+        python.symlink_to(sys.executable)
+        self.args.claude_path, self.args.apply = str(link), True
+        with patch.object(installer.sys, "executable", str(python)):
+            plan = installer.install(self.args)
+        self.assertEqual((str(link), str(python)), (plan["claude_path"], plan["python"]))
+        self.assertNotIn("previous_claude_path", plan)
+        cfg = bridge.read_json(self.target / "config.json")
+        self.assertEqual((str(link), str(python)), (cfg["claude_path"], cfg["python"]))
+        adapter = bridge.read_json(self.data / "config.json")["agents"]["claude"]["wake_adapter"]
+        self.assertEqual(str(python), adapter["argv"][0])
+        plist = plistlib.loads(next((self.target / "services").glob("*.plist")).read_bytes())
+        self.assertEqual(str(python), plist["ProgramArguments"][0])
+        # `claude update`: a new versioned file behind the same link, the old one removed.
+        link.unlink()
+        link.symlink_to(release("2.0"))
+        (versions / "1.0" / "claude").unlink()
+        self.args.claude_path = None
+        with patch.object(installer.sys, "executable", str(python)):
+            installer.install(self.args)
+        self.assertEqual(str(link), bridge.read_json(self.target / "config.json")["claude_path"])
+
+    def test_explicit_claude_path_replaces_a_removed_executable_but_workdir_stays_bound(self):
+        old = self.root / "versions" / "1.0" / "claude"
+        old.parent.mkdir(parents=True)
+        old.write_text("#!/bin/sh\nexit 0\n")
+        old.chmod(0o700)
+        self.args.claude_path, self.args.apply = str(old), True
+        installer.install(self.args)
+        old.unlink()
+        self.args.claude_path = None
+        with self.assertRaisesRegex(bridge.BridgeError, "--claude-path"):
+            installer.install(self.args)
+        self.args.claude_path, self.args.apply = sys.executable, False
+        plan = installer.install(self.args)
+        self.assertEqual((sys.executable, str(old)), (plan["claude_path"], plan["previous_claude_path"]))
+        self.args.apply = True
+        installer.install(self.args)
+        self.assertEqual(sys.executable, bridge.read_json(self.target / "config.json")["claude_path"])
+        other = self.root / "other"
+        other.mkdir()
+        self.args.workdir = str(other)
+        before = snapshot(self.root)
+        with self.assertRaisesRegex(bridge.BridgeError, "binding differs"):
+            installer.install(self.args)
+        self.assertEqual(before, snapshot(self.root))
 
     def test_cli_disallow_tool_flags_are_exclusive(self):
         with self.assertRaises(SystemExit), patch("sys.stderr"):

@@ -81,12 +81,19 @@ def install(args):
     workdir = args.workdir or (existing or {}).get("workdir")
     if not claude or not workdir:
         raise BridgeError("first install needs --claude-path and --workdir")
-    claude, workdir = Path(claude).expanduser().resolve(), Path(workdir).expanduser().resolve()
+    # Keep the executable path as given (absolute, symlinks not followed): `claude update` and package managers
+    # swap the versioned file behind a stable link such as ~/.local/bin/claude, so a resolved path would break.
+    claude, workdir = Path(os.path.abspath(os.path.expanduser(claude))), Path(workdir).expanduser().resolve()
     if not claude.is_file() or not os.access(str(claude), os.X_OK) or not workdir.is_dir():
-        raise BridgeError("Claude executable and trusted working directory must exist")
-    if existing and any(existing[key] != value for key, value in
-                        (("agent", agent), ("claude_path", str(claude)), ("workdir", str(workdir)))):
-        raise BridgeError("existing agent/executable/workdir binding differs; review instead of replacing it")
+        raise BridgeError("Claude executable and trusted working directory must exist; if an update removed the "
+                          "saved executable, pass --claude-path with its stable path (for example ~/.local/bin/claude)")
+    if existing and any(existing[key] != value for key, value in (("agent", agent), ("workdir", str(workdir)))):
+        raise BridgeError("existing agent/workdir binding differs; review instead of replacing it")
+    # Only an explicit --claude-path changes the saved executable; the preview shows the old and new path.
+    previous_claude = existing["claude_path"] if existing and existing["claude_path"] != str(claude) else None
+    # The bridge runs with the Python that runs the installer, again without following symlinks
+    # (a Homebrew upgrade removes the old versioned Cellar path).
+    python = os.path.abspath(sys.executable)
     files = package_files(source)
     digest = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
     release = target / "versions" / digest
@@ -97,7 +104,7 @@ def install(args):
     cfg = dict(existing or {})
     cfg.update(version=1, installation_id=install_id, bridge_home=str(target), tailmsg_home=str(home),
                agent=agent, claude_path=str(claude), workdir=str(workdir), plugin_root=str(installed_plugin),
-               instructions=(existing or {}).get("instructions", str(target / "CLAUDE_DISPATCHER.md")), python=str(Path(sys.executable).resolve()),
+               instructions=(existing or {}).get("instructions", str(target / "CLAUDE_DISPATCHER.md")), python=python,
                entry=str(installed_plugin / "scripts" / "claude_bridge" / "claude_bridge.py"))
     cfg["permission_mode"] = args.permission_mode or cfg.get("permission_mode", "manual")
     if args.model is not None:
@@ -134,11 +141,13 @@ def install(args):
     templates = service_templates(cfg)
     plan = {"applied": False, "starts_service": False, "launches_claude": False,
             "bridge_home": str(target), "agent": agent, "permission_mode": cfg["permission_mode"],
-            "model": cfg.get("model"),
+            "model": cfg.get("model"), "claude_path": cfg["claude_path"], "python": cfg["python"],
             "disallowed_tools": cfg.get("disallowed_tools", []),
             "package_sha256": digest, "package_files": len(files), "keeps_state": bool(existing),
             "instructions": "preserve existing local instructions; create template only when absent",
             "services": [str(target / "services" / name) for name in templates]}
+    if previous_claude:
+        plan["previous_claude_path"] = previous_claude
     if not args.apply:
         return plan
     os.umask(0o077)
@@ -203,7 +212,7 @@ def main(argv=None):
     ap.add_argument("--plugin-root", default=str(default_plugin))
     ap.add_argument("--bridge-home")
     ap.add_argument("--agent")
-    ap.add_argument("--claude-path")
+    ap.add_argument("--claude-path", help="stable path of the Claude executable, such as ~/.local/bin/claude")
     ap.add_argument("--workdir")
     ap.add_argument("--permission-mode", choices=PERMISSIONS)
     ap.add_argument("--model", metavar="ID", help="session model alias or full ID; omitted upgrades preserve the saved selection")

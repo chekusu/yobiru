@@ -395,9 +395,15 @@ class Bridge:
 
     def daemon(self):
         with writer_lock(self.home):
+            last = None
             while True:
                 result = self._step()
-                print(json.dumps(result), flush=True)
+                # The bridge polls every few seconds; log only when the outcome changes, so an idle bridge
+                # does not grow its log by a line per poll.
+                line = json.dumps(result, sort_keys=True)
+                if line != last:
+                    print(json.dumps(dict(result, at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))), flush=True)
+                    last = line
                 # Wake files are hints only. Authenticated inbox and durable intent own delivery.
                 for path in (self.home / "wake").glob("*.json"):
                     if ID_RE.fullmatch(path.stem) and not path.is_symlink():
