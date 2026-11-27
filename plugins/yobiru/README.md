@@ -9,8 +9,8 @@ The final product logo set is maintained in
 Agent-to-agent messages, file handoff and receiver-controlled wake-ups between machines on your own
 Tailscale network, using the tailmsg protocol v1. One package for Codex, Cursor, Claude Code and Grok Bot.
 
-Version 0.7.29. Source: <https://github.com/chekusu/yobiru>; what changed:
-[changelog](https://github.com/chekusu/yobiru/blob/v0.7.29/CHANGELOG.md). Public submission and review
+Version 0.7.30. Source: <https://github.com/chekusu/yobiru>; what changed:
+[changelog](https://github.com/chekusu/yobiru/blob/v0.7.30/CHANGELOG.md). Public submission and review
 status: [marketplace record](https://github.com/chekusu/yobiru/blob/main/docs/MARKETPLACE_SUBMISSION.md).
 Repository installation does not establish a public listing.
 
@@ -35,8 +35,9 @@ Repository installation does not establish a public listing.
 | `skills/yobiru-public-bot` | Publish and share a bot, set who may use what, review chat for your own agent, run the deterministic worker. |
 | `skills/yobiru-friends-host` | Your own agent answers your bot's chat: directly for people in the inbox (followed or accepted), as drafts you approve otherwise. |
 | `scripts/yobiru_muse.py` | Muse connector implementation used by `yobiru muse`. |
+| `scripts/yobiru_approval.py` | Owner approvals used by `yobiru approval`: ask the owner to sign an instruction with a passkey, collect the sealed answer, manage this machine's owner keys (verification lives in `tailmsg.py`). |
 | `scripts/yobiru`, `scripts/yobiru.py` | The `yobiru` command: setup, doctor and status, plus the messaging commands. |
-| `scripts/yobiru_mcp.py` | `yobiru mcp`: a stdio MCP server whose tools run the messaging commands (inbox, read, fetch, send, reply, respond, status, ack). |
+| `scripts/yobiru_mcp.py` | `yobiru mcp`: a stdio MCP server whose tools run the messaging commands (inbox, read, fetch, send, reply, respond, status, ack) and owner approvals. |
 | `scripts/tailmsg.py` | The bundled tailmsg CLI and receiver (stdlib only). |
 | `scripts/codex_bridge/` | Optional bridge into one fixed Codex session: macOS desktop app, or Linux user systemd + local app-server socket. |
 | `scripts/claude_bridge/` | Optional visible Claude Code Remote Control bridge with durable session reconciliation. |
@@ -55,8 +56,8 @@ gateway can serve `/mcp` to bearer-authenticated clients (no OAuth).
 The OpenAI package declares desktop execution because the skills run local programs. It uses the
 same implementation for Codex and compatible ChatGPT desktop installations; no hosted web or mobile
 connector is provided. Grok Bot and Cursor use the shared skills and Cursor-compatible metadata.
-See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.29/docs/GROK_BOT.md) and
-[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.29/docs/PRIVACY.md) of this release.
+See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.30/docs/GROK_BOT.md) and
+[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.30/docs/PRIVACY.md) of this release.
 
 ## Requirements
 
@@ -117,6 +118,15 @@ Tracked responses stay in the authenticated request ledger, not the ordinary inb
 an agent. Get `response.id` from `request status ID --json`, then use `show RESPONSE_ID` to inspect
 the result or `fetch RESPONSE_ID` to retrieve verified attachments into `<home>/inbox/RESPONSE_ID/files/`.
 Do not process protocol responses as new tasks or send replies to them.
+
+## Owner approvals (0.7.30)
+
+Work that needs the owner's own OK gets a passkey signature instead of a typed confirmation: `approval
+request PEER/AGENT TEXT` returns a link the owner opens on their phone, reads and signs with Face ID, a
+fingerprint or the device PIN; `approval wait REF` collects it and `request send ... --approval ID` carries
+it. The receiver verifies the signature against the owner keys pinned on it (`approval setup`, `approval
+keys`) before its agent sees the request, and records it as the task's authorization. See
+[Owner approvals](https://github.com/chekusu/yobiru/blob/v0.7.30/docs/APPROVALS.md).
 
 Notifications (`--kind notice`, including upgrade notices) need no reply. Send a separate tracked
 request if you need a result. Old peers need upgrading; `send --kind request --legacy-request` is an

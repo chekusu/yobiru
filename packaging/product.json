@@ -2,7 +2,7 @@
   "id": "yobiru",
   "displayName": "Yobiru",
   "nativeName": "ヨビル",
-  "version": "0.7.29",
+  "version": "0.7.30",
   "publisher": "Chekusu",
   "repository": "https://github.com/chekusu/yobiru",
   "license": "MIT",
@@ -63,7 +63,8 @@
   },
   "bundle": {
     "core": {
-      "tailmsg.py": "scripts/tailmsg.py"
+      "tailmsg.py": "scripts/tailmsg.py",
+      "docs/APPROVALS.md": "docs/APPROVALS.md"
     },
     "codexBridge": {
       "codex_bridge.py": "scripts/codex_bridge/codex_bridge.py",

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.7.30 (2026-11-27)
+
+Clients, receivers and the gateway. Receivers need 0.7.30 to accept approvals; the gateway adds one table by itself
+when it starts. Nothing changes for requests that carry no approval.
+
+- **Owner approvals signed with a passkey.** When one agent asks another of your agents to do something only you
+  may allow, you no longer type a phrase into a terminal. You open a link on your phone or computer, read exactly
+  what you approve on `yobiru.com/approve` (which computer and agent, which sender, your instruction word for word,
+  the exact files, how long and how many times), and confirm with Face ID, a fingerprint or your device PIN. That
+  signs it with a passkey (WebAuthn, ES256) whose private key never leaves your device. The receiving computer
+  checks the signature itself, against the owner keys pinned on it, before its agent sees the request: the exact
+  content, recipient, agent, sender and files, the expiry, and the number of uses, counted in the request ledger.
+  A verified approval becomes the task's authorization (`issuer_kind` `owner_signature`), and the Claude Code bridge
+  lists it in the session's startup prompt. A failed check never refuses the request; it arrives as an ordinary,
+  unauthorized one. See [Owner approvals](docs/APPROVALS.md) and SPEC §10.
+- **`yobiru approval`**: `setup` (the first passkey on a computer, a further one signed by a trusted one, or one
+  already in use elsewhere with `--key`), `request` (before sending), `for` (a request that arrived unsigned:
+  the agent answers `blocked` with the link), `wait`/`get`, `keys`, `remove` (signed by the owner) and `verify`.
+  `request send --approval ID` attaches one and checks it against the receiver first. MCP tools
+  `yobiru_approval_request`, `_for`, `_wait`, `_setup` and `_keys`, and `approval` on `yobiru_send`.
+- **`/info`** advertises `owner-approval-v1` and the public half of the owner keys a receiver trusts. **`show`**
+  reports the receiver's verdict with its authorization's current state, and **`inbox --json`** adds
+  `owner_approved`.
+- **Gateway: approval drops.** The link and the answer meet at `POST /v1/approval-drops/{id}/ask|answer` and
+  `GET /v1/approval-drops/{id}` on a gateway (`bots.yobiru.com` by default). Each slot is written once and sealed
+  with ChaCha20-Poly1305 under a key derived from the secret after `#` in the link, which browsers never send, so
+  the gateway stores only ciphertext. Drops are deleted after 24 hours. No Friends account is involved.
+
 ## 0.7.29 (2026-11-13)
 
 Clients only; the gateway is unchanged. The request ledger gains one column by itself when a 0.7.29 client or

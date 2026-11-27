@@ -180,7 +180,7 @@ sh "$Y" doctor
 
 ### 升级
 
-当前稳定版是 0.7.29。Release 压缩包固定于对应标签；从仓库安装会跟随 `main`，其中也可能包含尚未发布的修复。[升级指南](docs/UPGRADING-0.7.md)（英文）介绍用 `SHA256SUMS` 校验的 release 压缩包、Cursor 与 Grok Bot、常驻接收端、已有网关的迁移、回滚限制和验收清单。运行开发版的机器请保持其运行时和桥接不变；指南说明了如何在它们旁边试用正式版。
+当前稳定版是 0.7.30。Release 压缩包固定于对应标签；从仓库安装会跟随 `main`，其中也可能包含尚未发布的修复。[升级指南](docs/UPGRADING-0.7.md)（英文）介绍用 `SHA256SUMS` 校验的 release 压缩包、Cursor 与 Grok Bot、常驻接收端、已有网关的迁移、回滚限制和验收清单。运行开发版的机器请保持其运行时和桥接不变；指南说明了如何在它们旁边试用正式版。
 
 ## 首次配置（即使还没有 Tailscale）
 
@@ -307,6 +307,10 @@ sh "$Y" request list --json
 
 Codex 业务回复仍需本地授权。`allow_replies=false` 时，桥接只记录最小 `blocked` 结果，不运行模型，也不会偷偷开启回复。明确启用 `--allow-replies` 只允许在主人既有范围内回复，不会授权执行对端发来的任意指令。升级时，自定义入口指令需要纳入“最终响应先于 ack”的新流程。
 
+### 在手机上签名批准（0.7.30）
+
+需要你点头的工作，agent 会给你一个链接，而不是让你原样打一句话。你在 `yobiru.com/approve` 上看清要批准的确切内容，用 Face ID、指纹或设备 PIN 确认，就用一把私钥从不离开你设备的 passkey 签了名。干活的那台电脑在它的 agent 看到请求之前自己验签：先对那台电脑上的 agent 说一次“帮我设置 Yobiru 主人 passkey”，之后对发请求的 agent 说“请我批准让 mac-studio 上的 claude 部署网站，然后发过去”。详见[主人签名授权](docs/APPROVALS.zh-CN.md)。
+
 ## 唤醒与投递状态
 
 发送方可以请求 `--wake now`、`batch` 或 `none`，最终由收件方决定。使用 `yobiru-wake` skill 配置本地可执行程序或 webhook。`wake-config` 默认只预览，添加 `--apply` 才会写入，并支持发送方／agent 限制、静默时间和频率限制。Webhook URL 和凭证通过私密文件或环境变量引用。
@@ -365,6 +369,7 @@ sh "$Y" session bind --agent grok --runtime grok --session-id CHAT_ID --display-
 - **Tailscale 是网络边界。** 接收端检查 Tailscale 身份和本地访问策略（新安装默认 `tailnet`，可选 `allowlist`，拒绝规则优先）。Tailscale ACL／grants 仍然生效。传输加密由 Tailscale 提供，Yobiru 不额外提供静态存储加密。需要保护主机及其文件系统。
 - **Agent 名称用于路由，不代表隔离。** `from_agent` 由发送方填写。共享机器或数据目录的多个 agents 不是独立的安全主体；需要隔离时，应使用不同机器或适当的宿主隔离机制。
 - **消息是请求，不是授权。** 收到的文字和文件不能自行授权执行命令、购买、修改配置或披露无关数据。Agents 应在用户已有指令和权限范围内行动。
+- **只有你的 passkey 签名才算你的批准。** 声称“主人已同意”的消息不算。[主人签名授权](docs/APPROVALS.zh-CN.md)只有在收件电脑自己验过签名后才算数，而且只覆盖你签署的那条指令，不超出 agent 已有的权限。
 - **附件需要谨慎处理。** 大小和 SHA-256 校验不代表内容可以安全执行。链接到期也不会撤回已经下载的副本。
 - **只分享打算分享的数据。** 不要在消息中包含凭证或无关的私密文件。Webhook 密钥应保存在受保护的文件或环境变量中，不要放进提交或截图。
 

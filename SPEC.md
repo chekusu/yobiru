@@ -83,6 +83,7 @@ Yobiru 0.3.0 起另有 `GET /info`（发现接口，见 §9）。旧版接收端
 | `from_agent` | 否 | 发件方自己是哪个 agent，用于回信时自动点名回来。见 §5.9 |
 | `request` | 否 | 0.5 请求生命周期元数据；仅供已协商 `request-lifecycle-v1` 的请求使用，见 §10。 |
 | `response` | 否 | 0.5 请求状态或结果元数据；与原请求关联，见 §10。 |
+| `owner_approval` | 否 | 0.7.30 主人签名授权；只能出现在跟踪请求上，且对端 `/info` 声明 `owner-approval-v1`，见 §10。 |
 
 agent 名字规则：1–64 个字符，可以用中文等任意 Unicode；不能含 `/`、控制字符（含换行），首尾不能有空白。比较前做 NFC 规范化，区分大小写。
 
@@ -288,6 +289,8 @@ agent 名字规则：1–64 个字符，可以用中文等任意 Unicode；不�
 - `display_name` 是本地别名，`confirmed_title` 是用户绑定时确认的标题；两者都不是原生名称。`native_name` 只来自只读查询：Codex 桥接用 `thread/read`（`includeTurns: false`）读取绑定 UUID 的 `Thread.name`，从不使用 `preview`（首条用户消息），不启动模型回合。查询有界（子进程组超时清理、输出上限），结果按进程缓存约 5 分钟（失败 1 分钟）；冷查询超过约 1.5 秒时返回 `pending`，或返回带 `stale` 标记的旧值。短时读取器看到的 `notLoaded` 等状态不代表会话所属运行时的状态，因此 `activity` 永远是 `unknown`。
 - 发现方必须把整个响应当作不可信数据：限制大小与总时长，校验类型，去掉控制字符和终端转义，Codex 会话 ID 必须是小写 UUID。
 
+- 0.7.30 起 `capabilities` 含 `owner-approval-v1`，并给出 `owner_keys`：本机信任的主人 passkey 公钥摘要列表 `[{"credential_id", "fingerprint", "label", "rp_id"}]`（没有时为空列表）。只含公开信息，供发件方让主人的设备挑对 passkey；见 §10 主人签名授权。
+
 ### 9.1 调用方身份与托管连接器（Yobiru 0.7.26 起）
 
 `capabilities` 含 `caller-identity-v1` 时，`/info` 另外给出两项：`node_id` 是接收端自己的 StableID（线上写法 `node:<十六进制>`，与拉取请求的 `from` 相同），`caller` 是这次已通过鉴权的调用方在接收端本机 `tailscale whois` 下的身份：`{"node": "<MagicDNS 名称或 node:...>", "id": "node:<十六进制>"}`（没有可用 StableID 时不给 `id`）。这只是把调用方自己的身份告诉它本人，不含任何配置或其他节点的信息。
@@ -444,6 +447,38 @@ yobiru request maintain                                      # 单次维护和�
   在升级通知之外另发一个经授权的跟踪请求；升级通知本身不要求回复。
 - 这是持久的通信状态与结果约定，不是任务调度器，也不提供任务恰好执行一次、
   业务副作用的自动回滚，或离线设备必定完成任务的保证。接收回执也不是已读回执。
+
+### 主人签名授权（`owner-approval-v1`，0.7.30 起）
+
+消息和附件仍不是授权（见上一节）。唯一的例外是**主人签名授权**：主人在自己的设备上用 passkey（WebAuthn，ES256 / P-256，设备必须做用户验证：Face ID、指纹或 PIN）签署一条确切的指令。接收端在 agent 看到请求之前，用本机固定的主人公钥自己验签；私钥从不离开主人的设备，任何机器、网关或 agent 都不持有它。签名只证明“解锁了这把 passkey 的人批准了这段确切内容”，不证明是本人而不是拿着已解锁设备的人。用户说明见 [docs/APPROVALS.md](docs/APPROVALS.md)。
+
+**主人公钥。** 存在 `<home>/owner_keys.json`（0600，最多 16 把），每把 `{"alg": "ES256", "public_key": <base64url SPKI>, "credential_id", "rp_id": "yobiru.com", "origin": "https://yobiru.com", "label"}`；`id` 是 SPKI 的 SHA-256（hex），`fingerprint` 是其前 16 位分成四组（`ab12-cd34-ef56-7890`）。第一把由主人通过本机 agent 设置（`yobiru approval setup`，首次信任），之后的增加和删除都必须由已信任的某把 passkey 签名（类型 `yobiru.owner-key-add` / `yobiru.owner-key-remove`）。文件损坏时不信任任何主人公钥。
+
+**意图（intent）。** 被签名的是 JSON 对象的规范形式：`json.dumps(sort_keys=True, ensure_ascii=True, separators=(",", ":"))` 的 UTF-8 字节。字段严格，多一个少一个都拒绝：
+
+```json
+{"type": "yobiru.owner-approval", "v": 1,
+ "to": {"host": "mac-studio.example.ts.net", "agent": "claude", "node": "node:<十六进制>"},
+ "from": {"host": "grok-bot-1.example.ts.net", "node": "node:<十六进制>"},
+ "instruction": "Deploy the site from main",
+ "files": [{"name": "brief.md", "sha256": "<64 位 hex>", "size": 1834}],
+ "uses": 1, "nonce": "<base64url，16–64 字节>",
+ "issued_at": "2026-11-27T12:00:00Z", "expires_at": "2026-11-27T13:00:00Z"}
+```
+
+- `to.host` 必填，`to.agent`、`to.node` 可选；不写 `agent` 时只对不点名 agent 的请求（交给接收端默认 agent）有效；写了 `agent` 时，点名该 agent 或不点名而它正是默认 agent 都可以。`from` 可选（不写 = 任何经本机策略放行的发件方）。
+- `instruction` 1–4000 字符，不能含控制字符（换行和制表符除外）、私用区字符或双向文本控制符（U+202A–202E、U+2066–2069），以免签名页显示的和签名的不同。`files` 最多 20 项，`uses` 1–100，有效期最长 7 天。
+- 密钥管理意图：`yobiru.owner-key-add` 带 `key`（上面的公钥对象，六个字段），`yobiru.owner-key-remove` 带 `key_id`；两者的 `to` 只有 `host` 和可选 `node`。
+
+**签名。** WebAuthn challenge = SHA-256(`yobiru-owner-approval-v1\n` ‖ 意图字节)。授权对象（信封里的 `owner_approval`）恰好六个字段：`{"v": 1, "intent": <base64url 意图字节>, "credential_id", "authenticator_data", "client_data_json", "signature"}`（无填充 base64url，DER 编码 ECDSA 签名）；文本形式是 `yobiru-approval:` 加上它的规范 JSON 的 base64url。验证：`credential_id` 是一把已固定的主人公钥；`clientDataJSON` 的 `type` 为 `webauthn.get`、`challenge` 等于上式、`origin` 等于该公钥的 `origin`、`crossOrigin` 不为真；`authenticatorData` 的 rpIdHash 等于 SHA-256(`rp_id`)，标志位 UP 和 UV 都已置位；签名覆盖 `authenticatorData ‖ SHA-256(clientDataJSON)`；`issued_at` 不晚于本机时间 5 分钟以上，`expires_at` 未过。验证只用标准库（P-256 和严格 DER 解析写在 `tailmsg.py` 里），结果确定，不联网。
+
+**接收端。** `/msg` 收到带 `owner_approval` 的跟踪请求时，除上面的检查外还核对：`to` 指向本机（名称，以及写了的话本机 StableID）和这次点名的 agent（规则见上；点名不存在的 agent 一律不算）；`from` 与本机 `tailscale whois` 查到的发件方相符；请求附件（推送的 `fetch` 或拉取的 `request.uploads`）的 (sha256, size) 集合与 `files` 完全一致。接着在接收请求的同一个事务里扣一次使用次数（账本表 `owner_approval_uses`，按意图字节的 SHA-256 计），超过 `uses` 就不再算授权；请求到达时已过期或点名不存在的 agent，授权也不使用。通过时写入任务账本的一条授权：`issuer_kind` 为 `owner_signature`，`issuer_ref` 为 `key:<公钥 id>`，scope 含意图摘要、指令、文件和收发方，到期时间取意图的 `expires_at`；与其他授权一样会过期，也可被撤销。
+
+结论记在收件记录的 `received.owner_approval`，由接收端写入，从不取自发件方：`{"verified": true, "instruction", "files", "to", "from", "issued_at", "expires_at", "uses": {"allowed", "used"}, "key": {"id", "fingerprint", "label"}, "authorization_id", ...}`，或 `{"verified": false, "reason": "<简短原因>"}`。签名或核对不通过从不拒收请求：它照常作为没有授权的普通请求进入收件箱；只有字段形状不对（不是上述六个字段，或不在跟踪请求上）才按 §3 返回 400。`show <id>` 显示该结论并附上授权的当前状态 `authorization_status`，`inbox --json` 给出 `owner_approved`（结论有效且授权为 `active` 时为 true）。只有这样的结论才算主人授权；信封里的 `owner_approval` 字段本身、发件方的说法或 `verified: false` 都不算。授权只覆盖指令写明的事，在本机已有权限之内；正文和附件仍是不可信数据。
+
+**发件端。** `yobiru request send ... --approval ID` 在创建请求前检查：对端声明 `owner-approval-v1`，签名所用的 passkey 在对端 `/info` 的 `owner_keys` 里，意图未过期，`to`、`from` 与这次的目标、点名的 agent 和本机身份一致，附件与 `files` 完全一致；任何一项不符都不创建请求。授权字段不参与任务指纹：同一请求带或不带授权重发，仍是同一个任务。
+
+**请主人签名。** `yobiru approval request|for|setup|remove` 生成链接 `https://yobiru.com/approve/#r=<网关>&s=<32 字节密钥的 base64url>`，经网关的加密投递点（[PUBLIC_BOTS.md](docs/PUBLIC_BOTS.md#approval-drops)）把请求交给主人的页面、把签名带回来；`#` 之后的部分浏览器不会发给任何服务器，网关只保存它无法解读或篡改的密文。页面只接受 https 网关（本机回环地址除外），按上面的规则严格检查意图并逐项显示，再请设备签名；它不能替主人批准任何东西。
 
 ## 11. 单向共享请求（可选 `request-pull-v1`）
 

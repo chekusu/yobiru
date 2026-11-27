@@ -186,9 +186,18 @@ LIMIT_DEFAULTS = {
     # delivery evidence of a native binding
     "delivery_evidence_ttl_seconds": 604800,    # older evidence is stale
     "quiet_wake_seconds": 300,                  # unused credential before a wake, for quiet-wake correlation
+    # owner approval drops: a sealed request for the owner's signature and the sealed answer from their device
+    "approval_drop_bytes": 12288,               # one sealed slot (ask or answer)
+    "approval_drop_ttl_seconds": 86400,
+    "approval_drops_per_hour_per_ip": 30,       # writes per slot kind (ask, answer) from one address
+    "max_approval_drops": 20000,
 }
 # Limits that may also be 0: no settle delay (a test gateway), private hosts explicitly off, processes never replaced.
 ZERO_LIMITS = frozenset(("hosted_wake_settle_seconds", "hosted_wake_private_hosts", "process_memory_mb"))
+
+DROP_VALUE_RE = re.compile(r"[A-Za-z0-9_-]+")
+DROP_PATH_RE = re.compile(r"/v1/approval-drops/[A-Za-z0-9_-]{32}(?:/(?:ask|answer))?")
+DROP_ROUTES = ("drop_write", "drop_read", "drop_preflight")
 
 RESERVED_HANDLES = {
     "about", "account", "actor", "actors", "admin", "administrator", "api", "bot", "bots", "capability",
@@ -438,6 +447,11 @@ INBOX_TABLES = (
     # once the challenge is used or expired.
     "CREATE TABLE IF NOT EXISTS challenge_addresses (challenge_id TEXT PRIMARY KEY, sealed TEXT NOT NULL, "
     "expires_ts INTEGER NOT NULL)",
+    # Owner approval drops (0.7.30): an agent's sealed request for its owner's signature (`ask`) and the sealed
+    # answer from the owner's device (`answer`), each written once. The key comes from the approval link's secret,
+    # which never reaches the gateway; the id is a hash of that secret. Gone a day after the ask.
+    "CREATE TABLE IF NOT EXISTS approval_drops (id TEXT PRIMARY KEY, ask TEXT NOT NULL, answer TEXT, "
+    "created_ts INTEGER NOT NULL, answered_ts INTEGER, expires_ts INTEGER NOT NULL)",
 )
 # note: the owner's words for their agent, sent with each wake. failures/failing_since_ts/next_ts: consecutive
 # failed calls and when the next may go. disabled_ts: turned off after failing too long (a new PUT or an accepted
@@ -2950,7 +2964,57 @@ class Api(object):
                      # How a receiver checks a hosted wake call (see the hosted wakes section of PUBLIC_BOTS.md).
                      "hosted_wakes": {"signature": "X-Yobiru-Signature: t=<unix>,v1=<hex HMAC-SHA256>",
                                       "body_types": ["yobiru.job", "yobiru.ping"]},
+                     # Owner approvals: an agent asks its owner to sign an instruction on their own device; the
+                     # owner's page and the agent meet at a drop sealed with a key from the link (see APPROVALS.md).
+                     "approval_drops": {"write": "POST /v1/approval-drops/{id}/ask|answer (body: sealed text)",
+                                        "read": "GET /v1/approval-drops/{id}",
+                                        "max_bytes": self.limits["approval_drop_bytes"],
+                                        "ttl_seconds": self.limits["approval_drop_ttl_seconds"],
+                                        "sealed": "ChaCha20-Poly1305; the gateway never has the key"},
                      "identity": {"verified_person": False}}
+
+    def drop_write(self, db, r):
+        """Write one slot of an approval drop, once: `ask` (the agent's sealed request for a signature) opens it,
+        `answer` (the owner's device) completes it. Anyone with the link may write; only link holders can make
+        content that opens, and the gateway can neither read nor change it unnoticed."""
+        L, now, did, slot = self.limits, r.now, r.params["did"], r.params["slot"]
+        sealed = r.body.get("sealed")
+        if not isinstance(sealed, str) or not sealed or len(sealed) > L["approval_drop_bytes"] or \
+                not DROP_VALUE_RE.fullmatch(sealed):
+            raise Fail(400, "bad_drop", "a drop slot holds one sealed base64url value")
+        row = db.execute("SELECT * FROM approval_drops WHERE id=?", (did,)).fetchone()
+        if row is not None and row["expires_ts"] <= now:
+            db.execute("DELETE FROM approval_drops WHERE id=?", (did,))
+            row = None
+        written = row is not None and row[slot] is not None
+        if written and row[slot] == sealed:            # a retry of the same write
+            return 200, {"ok": True, "id": did, "slot": slot, "duplicate": True, "expires_at": ts_iso(row["expires_ts"])}
+        if written:
+            raise Fail(409, "already_written", "this drop's %s was already written" % slot)
+        if slot == "answer" and row is None:
+            raise Fail(404, "not_found", "no open approval drop with this id")
+        if not take(db, "drop:%s:%s" % (slot, r.client_ip), L["approval_drops_per_hour_per_ip"], 3600, now):
+            return 429, {"ok": False, "error": "rate_limited", "detail": "too many approval drops from this address"}
+        if slot == "ask":
+            if db.execute("SELECT COUNT(*) FROM approval_drops").fetchone()[0] >= L["max_approval_drops"]:
+                raise Fail(503, "capacity")
+            expires = int(now) + L["approval_drop_ttl_seconds"]
+            db.execute("INSERT INTO approval_drops(id, ask, created_ts, expires_ts) VALUES(?,?,?,?)",
+                       (did, sealed, int(now), expires))
+        else:
+            expires = row["expires_ts"]
+            db.execute("UPDATE approval_drops SET answer=?, answered_ts=? WHERE id=? AND answer IS NULL",
+                       (sealed, int(now), did))
+        return 201, {"ok": True, "id": did, "slot": slot, "duplicate": False, "expires_at": ts_iso(expires)}
+
+    def drop_read(self, db, r):
+        """Both slots of an open drop (null until written). Read-only: an agent polls it for the answer."""
+        row = db.execute("SELECT * FROM approval_drops WHERE id=?", (r.params["did"],)).fetchone()
+        if row is None or row["expires_ts"] <= r.now:
+            raise Fail(404, "not_found", "no open approval drop with this id")
+        return 200, {"ok": True, "id": row["id"], "ask": row["ask"], "answer": row["answer"],
+                     "expires_at": ts_iso(row["expires_ts"]),
+                     "answered_at": ts_iso(row["answered_ts"]) if row["answered_ts"] else None}
 
     def public_profile(self, db, r):
         return 200, dict(bot_card(self.cfg, db, self.published_bot(db, r.params["ref"])), ok=True)
@@ -5858,6 +5922,8 @@ AVATAR_RE = re.compile(r"/@(?P<ref>[^/]{1,64})/avatar(?:/(?P<v>[0-9a-f]{16}))?\Z
 ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
     ("GET", r"/v1/health", "health", None),
     ("GET", r"/\.well-known/yobiru", "well_known", None),
+    ("POST", r"/v1/approval-drops/(?P<did>[A-Za-z0-9_-]{32})/(?P<slot>ask|answer)", "drop_write", None),
+    ("GET", r"/v1/approval-drops/(?P<did>[A-Za-z0-9_-]{32})", "drop_read", None),
     ("GET", r"/@(?P<ref>[^/]{1,64})", "share_card", None),
     ("POST", r"/v1/actors", "enroll", None),
     ("POST", r"/v1/enroll", "enroll_bot", None),
@@ -6334,6 +6400,9 @@ def make_handler(api):
             self.send_header("X-Content-Type-Options", "nosniff")
             if status == 401:
                 self.send_header("WWW-Authenticate", "Bearer")
+            if getattr(self, "_route", None) in DROP_ROUTES:
+                # The owner's approval page (another origin) writes and reads drops; no credential is involved.
+                self.send_header("Access-Control-Allow-Origin", "*")
             for k, v in (extra or {}).items():
                 self.send_header(k, v)
             self.send_header("Connection", "close")
@@ -6356,6 +6425,22 @@ def make_handler(api):
 
         def do_PUT(self):
             self.dispatch()
+
+        def do_OPTIONS(self):
+            """CORS preflight, for approval drops only (a browser may preflight even a plain-text write)."""
+            path = urllib.parse.urlsplit(self.path).path
+            self._route = "drop_preflight"
+            if not DROP_PATH_RE.fullmatch(path):
+                return self.reply(404, {"ok": False, "error": "not_found"})
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Max-Age", "86400")
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
 
         def allow_body(self, n):
             """A body larger than the general limit (attachments) gets more than the fixed request budget: the timer
@@ -6472,7 +6557,14 @@ def make_handler(api):
                     raise Fail(401, "unauthorized")
                 else:
                     limit = None
-                req.body = self.read_body(limit) if body_needed else {}
+                if name == "drop_write":
+                    raw = self.read_raw(limits["approval_drop_bytes"] + 64)
+                    try:
+                        req.body = {"sealed": raw.decode("ascii").strip()}
+                    except UnicodeDecodeError:
+                        raise Fail(400, "bad_drop", "a drop slot holds one sealed base64url value")
+                else:
+                    req.body = self.read_body(limit) if body_needed else {}
                 self._timer.cancel()
 
                 def handle(db):
@@ -7367,6 +7459,7 @@ def maintenance(store):
         db.execute("DELETE FROM mail_notices WHERE expires_ts<?", (int(now) - 86400,))
         db.execute("DELETE FROM email_challenges WHERE expires_ts<?", (int(now) - 86400,))
         db.execute("DELETE FROM challenge_addresses WHERE expires_ts<?", (int(now),))
+        db.execute("DELETE FROM approval_drops WHERE expires_ts<?", (int(now),))
 
 
 # ---------------------------------------------------------------- commands

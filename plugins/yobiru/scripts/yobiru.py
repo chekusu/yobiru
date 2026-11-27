@@ -91,6 +91,9 @@ Check and set up (read-only unless --apply):
                              app-server socket (install/rollback support --dry-run and --no-start)
   muse {{check,send,status,resume,list,read,fetch}}  outbound-only Muse custom connector (JSON checks/results)
   claude-bridge {{install,status,step,daemon}}  optional visible Claude Remote Control dispatcher
+  approval {{setup,request,for,wait,get,keys,remove,verify}}
+                             owner approvals: the owner signs an exact instruction with a passkey on their own
+                             device; receivers verify it in code (docs/APPROVALS.md)
   mcp [--agent NAME]         local MCP server on stdio with the messaging commands as tools (the Claude Code
                              plugin registers it; other MCP clients can run it the same way)
   version
@@ -113,6 +116,7 @@ see docs/PUBLIC_BOTS.md):
 
 Messaging (passed unchanged to the bundled tailmsg.py):
   request send PEER[/AGENT] TEXT [--transport push|pull] [--file F] [--timeout-seconds 900] [--client-ref REF]
+                                        [--approval ID]  (an owner approval from `approval wait`)
   request status ID [--refresh] [--json]     request list [--open] [--json]
   request resolve TASK_ID [--by OWNER] [--json]
   request authorize TASK_ID --scope-json JSON [--generation N] [--expires-seconds N] [--json]
@@ -4213,6 +4217,12 @@ def cmd_muse(home, home_source, argv):
     return yobiru_muse.main(home, argv, sys.modules[__name__])
 
 
+def cmd_approval(home, home_source, argv):
+    sys.path.insert(0, str(HERE))
+    import yobiru_approval
+    return yobiru_approval.main(home, argv, sys.modules[__name__])
+
+
 def cmd_claude_bridge(home, home_source, argv):
     if not argv or argv[0] in ("--help", "-h"):
         print("yobiru claude-bridge install [--claude-path PATH --workdir DIR] [--apply]\n"
@@ -4395,7 +4405,8 @@ PLUGIN_COMMANDS = {"paths": cmd_paths, "doctor": cmd_doctor, "status": cmd_statu
                    "onboard": cmd_onboard, "agents": cmd_agents, "peers": cmd_agents, "session": cmd_session, "update": cmd_update,
                    "gateway": cmd_gateway, "public": cmd_public, "calendar-service": cmd_calendar_service,
                    "resource-service": cmd_resource_service,
-                   "mcp": cmd_mcp, "muse": cmd_muse, "claude-bridge": cmd_claude_bridge}
+                   "mcp": cmd_mcp, "muse": cmd_muse, "claude-bridge": cmd_claude_bridge,
+                   "approval": cmd_approval}
 
 
 def main(argv=None):
