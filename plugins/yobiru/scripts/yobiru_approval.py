@@ -41,6 +41,7 @@ SETUP_EXPIRES = 86400                        # a setup link waits a day, as long
 POLL_SECONDS = 3
 DISCOVERY_TIMEOUT = 3.0                      # seconds per receiver asked for the owner's passkey
 DISCOVERY_MAX = 64                           # machines asked at most
+UPGRADE_NOTE = "does not share its owner keys yet"     # marks a receiver to upgrade in discovery notes
 MODES = ("sign", "register", "add-key")
 DROP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{32}\Z")
 
@@ -379,7 +380,7 @@ def tailnet_receivers(ctx):
 
 def receiver_keys(ctx, fqdn, ip, port):
     """-> ([owner key records], problem or None) that one receiver says it trusts, from its authenticated /info.
-    A receiver before 0.7.34 lists no public keys; it is reported, not used."""
+    A receiver before 0.7.35 lists no public keys; it is reported, not used."""
     try:
         status, info = _tm.http_json(ip, port, "GET", "/info", host=fqdn, timeout=DISCOVERY_TIMEOUT,
                                      deadline=DISCOVERY_TIMEOUT, limit=64 * 1024)
@@ -395,8 +396,8 @@ def receiver_keys(ctx, fqdn, ip, port):
         except _tm.ApprovalError:
             continue
     if listed and not recs:
-        return [], "runs Yobiru %s, which does not share its owner keys yet (0.7.34 or later does)" % (
-            info.get("version") or "older than 0.7.34")
+        return [], "runs Yobiru %s, which %s (0.7.35 or later does)" % (
+            info.get("version") or "older than 0.7.35", UPGRADE_NOTE)
     return recs, None
 
 
@@ -446,7 +447,7 @@ def discover_keys(home, sources=()):
     if sources:
         notes += ["%s: %s" % (m, why) for m, why in sorted(asked.items()) if why]
     else:
-        notes += ["%s: %s" % (m, why) for m, why in sorted(asked.items()) if why and "0.7.34" in why]
+        notes += ["%s: %s" % (m, why) for m, why in sorted(asked.items()) if why and UPGRADE_NOTE in why]
     ranked = sorted(found.values(), key=lambda e: (-len(e["from"]), e["key"]["fingerprint"]))
     return ranked, len(asked), notes
 

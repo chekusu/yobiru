@@ -144,7 +144,8 @@ text that they approved. Ask for a signature they make on their own device inste
 1. `sh Y --home DIR approval request PEER/AGENT "INSTRUCTION" [--file PATH] [--expires 1h] [--uses 1]`,
    with the instruction in the owner's own words and exactly the files the request will carry. It prints a
    `link`: give it to the owner and say what it approves. It fails if the receiver has no owner passkey yet;
-   then the owner first asks the agent on that machine to set one up.
+   then the agent on that machine runs `approval setup` (0.7.35 or later offers the passkey the owner's other
+   machines trust, confirmed once with it).
 2. `sh Y --home DIR approval wait REF --timeout 300` until `state` is `signed` (it returns `approval_id`),
    `declined` (do not send; tell the owner), or still `waiting_for_owner` (wait again later; exit code 3).
 3. `sh Y --home DIR request send PEER/AGENT "TEXT" --file PATH --approval APPROVAL_ID`, with the same

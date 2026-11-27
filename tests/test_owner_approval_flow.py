@@ -286,7 +286,7 @@ class ApprovalFlowTests(unittest.TestCase):
         self.receivers = {"mac.example.ts.net": ([phone], None), "laptop.example.ts.net": ([phone], None),
                           "odd.example.ts.net": ([stranger], None),
                           "old.example.ts.net": ([], "runs Yobiru 0.7.33, which does not share its owner keys yet "
-                                                     "(0.7.34 or later does)"),
+                                                     "(0.7.35 or later does)"),
                           "printer.example.ts.net": ([], "unreachable (ConnectionRefusedError)")}
         code, started = self.run_cli("setup")
         self.assertEqual((code, started["state"], started["mode"]), (0, "waiting_for_owner", "adopt"), started)
@@ -343,7 +343,7 @@ class ApprovalFlowTests(unittest.TestCase):
 
     def test_no_shared_passkey_then_a_new_one_and_the_flags(self):
         self.receivers = {"old.example.ts.net": ([], "runs Yobiru 0.7.33, which does not share its owner keys yet "
-                                                     "(0.7.34 or later does)")}
+                                                     "(0.7.35 or later does)")}
         code, started = self.run_cli("setup", "--label", "studio")
         self.assertEqual((code, started["mode"]), (0, "register"), started)
         self.assertEqual(started["searched"]["machines_asked"], 1)
@@ -371,7 +371,7 @@ class ApprovalFlowTests(unittest.TestCase):
         self.assertEqual(none["searched"]["notes"], ["printer.example.ts.net: unreachable"])
 
     def test_receiver_keys_reads_a_real_info_answer(self):
-        """receiver_keys against an HTTP server answering /info as a 0.7.34 receiver, and as an older one."""
+        """receiver_keys against an HTTP server answering /info as a 0.7.35 receiver, and as an older one."""
         import http.server
         import threading
         phone = core.owner_key_record(self.phone.key())
@@ -396,7 +396,7 @@ class ApprovalFlowTests(unittest.TestCase):
         approval._tm = core
         ctx = core.Ctx(self.home)
         shared = dict({f: phone[f] for f in core.OWNER_KEY_FIELDS}, fingerprint=phone["fingerprint"])
-        answers["info"] = {"node": "mac.example.ts.net", "version": "0.7.34",
+        answers["info"] = {"node": "mac.example.ts.net", "version": "0.7.35",
                            "owner_keys": [shared, {"credential_id": "x", "public_key": "not a key"}]}
         recs, problem = RECEIVER_KEYS(ctx, "mac.example.ts.net", "127.0.0.1", port)
         self.assertEqual(([r["id"] for r in recs], problem), ([phone["id"]], None))
