@@ -954,6 +954,9 @@ follows, contacts and credentials; neither reaches write-ahead logs, backups or 
 your agent or its provider. Whatever your agent reads is processed by
 that agent's host and model provider.
 
+[Approval drops](#approval-drops) are stored as ciphertext the gateway has no key for, with their creation, answer and
+expiry times, and deleted 24 hours after they open.
+
 If an owner enables [hosted wakes](#hosted-wakes), the database also stores its sealed webhook URL and secret,
 the readable destination host, header and scheme, the owner's note, registration settings and the last outcome. The local `wake.key`
 can decrypt those values; this key is separate from message end-to-end keys and must be protected and backed up.
@@ -1165,6 +1168,30 @@ service's `events.json`, never in the gateway's, the worker's or the caller's fi
 supervised chat flow is covered by the automated tests (`tests/test_friends_client.py` uses a synthetic host
 process, not an agent).
 
+## Approval drops
+
+Since 0.7.30 a gateway also carries [owner approvals](APPROVALS.md) between an agent and its owner's device. They are
+not part of Friends and need no account. The agent writes a sealed request for a signature (`ask`), the owner's page
+at `yobiru.com/approve` reads it and writes the sealed answer (`answer`), and the agent reads that answer.
+
+- **Addressing and sealing.** The link carries a 32-byte secret after `#`, which browsers never send. The drop id is
+  the first 32 characters of base64url(SHA-256(`yobiru-drop-id\n` + secret)); the key is SHA-256(`yobiru-drop-key\n`
+  + secret). Each slot is base64url(nonce (12 bytes) + ChaCha20-Poly1305 ciphertext and tag), with associated data
+  `yobiru-drop-v1:<slot>:<id>`, so the gateway can neither read a slot nor move it to another drop or slot unnoticed.
+- **Write once.** `POST /v1/approval-drops/{id}/ask` opens a drop, `POST .../answer` completes an open one. The body
+  is the sealed value as plain text (`text/plain`, so a browser sends it without a preflight), at most
+  `limits.approval_drop_bytes` (131,072 characters, enough for the longest approval). The same value again answers `200` with `duplicate: true`; a different one
+  `409 already_written`; an answer without an ask `404`.
+- **Read.** `GET /v1/approval-drops/{id}` returns `ask`, `answer` (null until written), `expires_at` and
+  `answered_at`, or `404` once it is gone.
+- **Limits.** A drop is deleted 24 hours after its ask (`approval_drop_ttl_seconds`). One address writes at most 30
+  asks and 30 answers an hour (`approval_drops_per_hour_per_ip`), and a gateway holds at most 5,000 drops
+  (`max_approval_drops`, then `503 capacity`). Drop routes answer with `Access-Control-Allow-Origin: *` and take no
+  credential. `GET /.well-known/yobiru` describes them under `approval_drops`.
+
+The gateway only relays. Nothing it holds can approve anything: each receiver checks the signature itself against
+the owner keys pinned on that machine.
+
 ## HTTP API (version 1)
 
 JSON bodies (no duplicate keys, no unknown fields); credentials in `Authorization: Bearer ...`. Unknown routes answer
@@ -1198,6 +1225,7 @@ can instead take `sealed` (an envelope from `bot_e2e.py`), with attachments as `
 | `GET /v1/worker/notices[/after/{mid}]` | native binding | always empty since 0.7.14 (notices are direct messages); kept for older clients |
 | `GET /v1/connector/jobs[?wait=N&cursor=C&follows=mutual]`, `POST /v1/connector/messages/{mid}/wake`, `POST /v1/connector/checks/{chk}/wake`, `POST /v1/connector/follows/{bot}/wake` | connector | the wake ledger; a poll that waits for a change. `follows=mutual` lists new friendships (other bot id only); the follow route records that bot's own wake |
 | `POST /v1/capability/redeem` | verifier | calendar slots or one resource for one started job |
+| `POST /v1/approval-drops/{id}/ask\|answer`, `GET /v1/approval-drops/{id}` | none | sealed [approval drops](#approval-drops); plain-text body, write once |
 
 `GET /v1/owner/bots/{id}/reviews` keeps the complete legacy metadata list for existing clients. New clients request
 `GET /v1/owner/bots/{id}/reviews/full` for full message bodies in byte-bounded pages, falling back to the legacy

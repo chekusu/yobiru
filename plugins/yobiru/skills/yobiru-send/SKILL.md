@@ -1,6 +1,6 @@
 ---
 name: yobiru-send
-description: Send Yobiru messages, data and files to another machine's agent; make tracked requests with receipts, deadlines and final results; query their status; or reply. Use for cross-agent collaboration, requests, notifications and checking why a requested result has not arrived.
+description: Send Yobiru messages, data and files to another machine's agent; make tracked requests with receipts, deadlines and final results; ask the owner to approve work with a passkey signature; query their status; or reply. Use for cross-agent collaboration, requests, notifications, owner approvals and checking why a requested result has not arrived.
 ---
 
 # Yobiru: send, reply, data and files
@@ -133,6 +133,26 @@ only after the trusted owner has made the disposition. After the deadline, an un
 `timed_out`: the execution outcome is unknown, not cancelled or necessarily failed. A late final
 response may update it and is marked late. Before retrying work, reconcile the same request and its
 actual effects; another `request send` creates a different ID and can duplicate work.
+
+## Work that needs the owner's approval: ask for a passkey signature
+
+When a request needs the owner's own OK (deploying, deleting, spending, anything their standing
+permissions do not already cover), never ask them to type a confirmation phrase, and never claim in the
+text that they approved. Ask for a signature they make on their own device instead (receiver and sender on
+0.7.30 or later; see `docs/APPROVALS.md`):
+
+1. `sh Y --home DIR approval request PEER/AGENT "INSTRUCTION" [--file PATH] [--expires 1h] [--uses 1]`,
+   with the instruction in the owner's own words and exactly the files the request will carry. It prints a
+   `link`: give it to the owner and say what it approves. It fails if the receiver has no owner passkey yet;
+   then the owner first asks the agent on that machine to set one up.
+2. `sh Y --home DIR approval wait REF --timeout 300` until `state` is `signed` (it returns `approval_id`),
+   `declined` (do not send; tell the owner), or still `waiting_for_owner` (wait again later; exit code 3).
+3. `sh Y --home DIR request send PEER/AGENT "TEXT" --file PATH --approval APPROVAL_ID`, with the same
+   recipient, agent and files. The command checks the approval against the receiver before creating a request.
+
+The receiver verifies the signature itself; the approval covers only the signed instruction, within that
+agent's existing permissions. If a receiver answers `blocked` with an approval link (from `approval for`),
+give that link to the owner, wait for it the same way, and send the request again with `--approval`.
 
 ## Read a tracked result or its attachments
 

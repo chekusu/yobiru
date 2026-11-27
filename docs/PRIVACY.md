@@ -1,8 +1,11 @@
 # Yobiru plugin privacy policy
 
-Effective date: November 25, 2026. This revision shortens how long the official
-gateway's remote database backups keep deleted data: from roughly 8 days to
-roughly 3 days (see **How long** below). The November 8, 2026 revision, with
+Effective date: November 27, 2026. This revision, with Yobiru 0.7.30, describes
+owner approvals signed with a passkey: the public keys a computer keeps, the
+approvals it records, and the sealed drops a gateway relays for 24 hours (see
+[Owner approvals](#owner-approvals-0730-and-later)). The November 25, 2026 revision
+shortened how long the official gateway's remote database backups keep deleted
+data: from roughly 8 days to roughly 3 days (see **How long** below). The November 8, 2026 revision, with
 Yobiru 0.7.25, let a bot's owner delete the bot from a gateway themselves (see
 **Deletion** below). The November 1, 2026 revision described optional gateway-hosted
 wakes: webhook credentials held by the gateway and metadata sent to an endpoint
@@ -44,6 +47,7 @@ files, discover peers, wake configured agents, track requests, and diagnose erro
 | --- | --- |
 | Message text, structured data, sender/recipient identities, timestamps, message IDs and reply relationships | Stored by the participating receivers and sent to the addressed peer. |
 | Request text, receipts, progress, final results, deadlines and retry state | Stored in local request ledgers and response queues so delivery and outcomes can be reconciled. |
+| Owner passkey public keys (0.7.30) and owner approvals: the signed instruction, its recipient, sender, file hashes, validity, uses and the receiver's verdict | Public keys in `owner_keys.json`, approvals with the request they came with and in the request ledger, on the computers involved. A receiver tells allowed peers which public keys it trusts (`/info`). No private key is ever on a computer. |
 | Attachments, filenames, sizes, hashes and download grants | Copied to the sender's local outbox; downloaded to the recipient's computer when requested. |
 | Tailscale device names and addresses, configured agent names, versions and session metadata | Read or cached locally and disclosed to allowed peers through discovery, routing and status responses. Session metadata can include a configured session ID and display or native name. |
 | Receiver policy, agent settings, wake adapters and configuration | Stored locally. A configured adapter may read a webhook URL or credential from an environment variable or local file. |
@@ -247,6 +251,24 @@ before. Losing every device that holds a bot's key makes its stored encrypted
 messages unreadable; the owner can make a new key (`e2e enable --rotate`), and
 callers confirm it before they use it.
 
+## Owner approvals (0.7.30 and later)
+
+An [owner approval](APPROVALS.md) is an instruction the owner signs with a passkey on their own phone or computer.
+The private key is created and kept by that device (and, if the owner uses one, its passkey manager, such as
+iCloud Keychain or Google Password Manager, under that provider's terms). Yobiru never receives it.
+
+To reach the owner's device, an agent's computer and the owner's browser meet at a drop on a gateway: the official
+`bots.yobiru.com` unless the agent is set up with another one. The drop holds the request for a signature (the
+instruction, the computers and agent involved, file names, sizes and hashes) and the owner's answer (the signature
+and public key), both encrypted with a key that exists only in the part of the link after `#`, which browsers do not
+send to any server. The gateway, and Chekusu for the official one, keeps that ciphertext with its creation, answer
+and expiry times, and deletes it 24 hours after it opens; its log records addresses, routes and status codes as for
+any request. A drop involves no Friends account and is not tied to one.
+
+The signing page itself is served by the Yobiru website (`yobiru.com/approve`), which is outside this policy's
+scope; it is static, sets no cookies, loads no third-party scripts, and connects only to the gateway named in the
+link, to read and answer that one drop.
+
 ## Retention and deletion
 
 Inbox messages, downloaded attachments, request ledgers, configuration and service
@@ -254,6 +276,10 @@ logs remain on the participating computers until their owners remove them or
 apply their own retention policy. Acknowledging a message does not erase it.
 Deleting only an inbox file may not erase a tracked request: the request ledger
 also stores its content and can restore an inbox record.
+
+Owner keys stay in `owner_keys.json` until the owner removes them (`approval remove`) or deletes the file;
+approval drops are deleted from the gateway 24 hours after they open, approvals saved by a sender
+(`<home>/approvals/`) stay until removed with the data directory.
 
 Attachment download grants expire after 24 hours by default; the sender can
 choose another lifetime. The receiver refuses an expired grant. The running

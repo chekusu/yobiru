@@ -1,0 +1,19 @@
+{
+ "about": "A real WebAuthn assertion from Chromium's virtual authenticator (CDP WebAuthn domain) for an owner approval, made with tests' approval page flow; it expires an hour after issued_at, so tests pass now=.",
+ "key": {
+  "alg": "ES256",
+  "public_key": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEsfjBhR8wZqa9fSq3gabKMK0_Db2yHroxvPmIhPYuwsXTDNeDBDVmlveeM7304hegiVjjcQDZLCosfxfyUYm7vQ",
+  "credential_id": "S3w36sIJGbfpV4Uio0Nk3T9k4SdmQ1dRVNoNcQCzGa4",
+  "rp_id": "yobiru.com",
+  "origin": "https://yobiru.com",
+  "label": "test"
+ },
+ "approval": {
+  "v": 1,
+  "intent": "eyJleHBpcmVzX2F0IjoiMjAyNi0xMS0yN1QxMjo1ODozMloiLCJmaWxlcyI6W10sImZyb20iOnsiaG9zdCI6Imdyb2stYm90LTEuZXhhbXBsZS50cy5uZXQifSwiaW5zdHJ1Y3Rpb24iOiJcdThkZDFcdTRlMDBcdTRlMGIgeW9iaXJ1IFx1NzY4NFx1NmQ0Ylx1OGJkNVx1NWU3Nlx1NWYwMFx1ODM0OVx1N2EzZiBQUiIsImlzc3VlZF9hdCI6IjIwMjYtMTEtMjdUMTE6NTg6MzJaIiwibm9uY2UiOiJKaE93RVRtVTByZmJLY05id0J2aEdnIiwidG8iOnsiYWdlbnQiOiJjbGF1ZGUiLCJob3N0IjoibWFjLXN0dWRpby5leGFtcGxlLnRzLm5ldCJ9LCJ0eXBlIjoieW9iaXJ1Lm93bmVyLWFwcHJvdmFsIiwidXNlcyI6MSwidiI6MX0",
+  "credential_id": "S3w36sIJGbfpV4Uio0Nk3T9k4SdmQ1dRVNoNcQCzGa4",
+  "authenticator_data": "6xlC76G1vELX6yOJT2zFvaPW-4MqbfWh22m88hdzGDkFAAAAAg",
+  "client_data_json": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiUVVSRTR1MlVpb3JBRldZOUx4UlA5QmRkdVNVY3VzS0swcUZnRFlmOWhzQSIsIm9yaWdpbiI6Imh0dHBzOi8veW9iaXJ1LmNvbSIsImNyb3NzT3JpZ2luIjpmYWxzZX0",
+  "signature": "MEYCIQCxcJz9XT6z5N3c6atHyfWy9fsqQ89gqwVt1CgIKehwxgIhAKp-rsza5-aCP9cC01vzsO39ylFn3m2iiXE22wzhcLH2"
+ }
+}

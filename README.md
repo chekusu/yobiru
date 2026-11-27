@@ -180,7 +180,7 @@ For an installed plugin, replace `Y` with its absolute `scripts/yobiru` path. Qu
 
 ### Upgrading
 
-The current stable release is 0.7.29. Release archives are pinned to their tag; repository installation follows `main`, which may also contain unreleased fixes. The [upgrade guide](docs/UPGRADING-0.7.md) covers the release archive verified with `SHA256SUMS`, Cursor and Grok Bot, the durable receiver, migrating an existing gateway, rollback limits and an acceptance checklist. On a machine that runs a development build, keep its runtime and bridge as they are; the guide explains how to try a release next to them.
+The current stable release is 0.7.30. Release archives are pinned to their tag; repository installation follows `main`, which may also contain unreleased fixes. The [upgrade guide](docs/UPGRADING-0.7.md) covers the release archive verified with `SHA256SUMS`, Cursor and Grok Bot, the durable receiver, migrating an existing gateway, rollback limits and an acceptance checklist. On a machine that runs a development build, keep its runtime and bridge as they are; the guide explains how to try a release next to them.
 
 ## First-time setup, even without Tailscale
 
@@ -310,6 +310,14 @@ Receipts and results are durably queued and retried with stable response IDs by 
 
 Codex business replies still require local authorization. `allow_replies=false` makes the bridge record a minimal `blocked` result without running the model; it does not silently enable replies. Explicitly enabling `--allow-replies` permits replies within the owner's existing scope, not execution of arbitrary instructions received from peers. Customized dispatcher instructions must adopt the new result-before-ack workflow during an upgrade.
 
+### Your approval, signed on your phone (0.7.30)
+
+When work needs your OK, an agent gives you a link instead of asking you to type a phrase. You read exactly what you
+approve on `yobiru.com/approve` and confirm with Face ID, a fingerprint or your device PIN; that signs it with a
+passkey that never leaves your device. The computer that does the work checks the signature itself before its agent
+sees the request: tell its agent once, "Set up my Yobiru owner passkey", then tell the sending agent "Ask my approval
+for claude on mac-studio to deploy the site, then send it." See [Owner approvals](docs/APPROVALS.md).
+
 ## Wake-ups and delivery status
 
 Senders can request `--wake now`, `batch`, or `none`; the receiver makes the final decision. Configure a local executable or a webhook with the `yobiru-wake` skill. `wake-config` previews changes unless you add `--apply` and supports sender/agent limits, quiet hours, and rate limits. Webhook URLs and credentials are referenced through private files or environment variables.
@@ -368,6 +376,7 @@ See the [privacy notice](docs/PRIVACY.md) for storage, network contacts and dele
 - **Tailscale is the network boundary.** The receiver checks Tailscale identity and its own access policy (`tailnet` by default for new installations, optional `allowlist`, with deny rules taking precedence). Tailscale ACLs/grants still apply. Encryption in transit comes from Tailscale; Yobiru does not add encryption at rest. Protect the host and its filesystem.
 - **Agent names are routing, not isolation.** `from_agent` is sender-selected. Multiple agents sharing a machine or data home are not separate security principals; use separate machines or appropriate host isolation when required.
 - **Messages are requests, not permissions.** Received text and files do not authorize commands, purchases, configuration changes, or disclosure of unrelated data. Agents act within the user's existing instructions and permissions.
+- **Only your passkey signature is your approval.** A message that says you agreed is not. An [owner approval](docs/APPROVALS.md) counts only when the receiving computer verified your signature itself, and only for the exact instruction you signed, within the agent's existing permissions.
 - **Attachments need deliberate handling.** They are verified by size and SHA-256, which does not make their contents safe to execute. Expiring links do not revoke copies already downloaded.
 - **Share only intended data.** Do not put credentials or unrelated private files in messages. Keep webhook secrets in protected files or environment variables, never in commits or screenshots.
 

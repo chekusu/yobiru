@@ -115,11 +115,28 @@ class MappingTests(unittest.TestCase):
             self.assertTrue(t["name"].startswith("yobiru_"))
             self.assertEqual("object", t["inputSchema"]["type"])
             self.assertFalse(t["inputSchema"]["additionalProperties"])
-            required = {k: {"to": "h", "text": "t", "id": "abc", "ids": ["abc"], "state": "completed"}[k]
+            required = {k: {"to": "h", "text": "t", "id": "abc", "ids": ["abc"], "state": "completed",
+                            "instruction": "Run the tests", "ref": "AbCdEf12"}[k]
                         for k in t["inputSchema"]["required"]}
             self.assertIsNone(self.check(t["name"], required))
             argv, mode = self.m.command(t["name"], required, None)
             self.assertIn(mode, ("json", "last-json", "text"))
+
+    def test_owner_approval_tools_map_to_the_approval_commands(self):
+        cmd = lambda name, args: self.m.command(name, args, None)
+        self.assertEqual(cmd("yobiru_approval_request", {"to": "mac-studio/claude", "instruction": "Deploy",
+                                                         "files": ["/tmp/a.txt"], "expires": "2h", "uses": 3}),
+                         (["approval", "request", "--file", "/tmp/a.txt", "--expires", "2h", "--uses", "3", "--",
+                           "mac-studio/claude", "Deploy"], "json"))
+        self.assertEqual(cmd("yobiru_approval_for", {"id": "abc"}), (["approval", "for", "--", "abc"], "json"))
+        self.assertEqual(cmd("yobiru_approval_wait", {"ref": "AbCdEf12"}),
+                         (["approval", "wait", "--timeout", "60", "--", "AbCdEf12"], "json"))
+        self.assertEqual(cmd("yobiru_approval_keys", {})[0][:2], ["approval", "keys"])
+        argv, _ = cmd("yobiru_send", {"to": "h", "text": "t", "track": True, "approval": "0123456789abcdef"})
+        self.assertEqual(argv[argv.index("--approval") + 1], "0123456789abcdef")
+        with self.assertRaises(ValueError) as raised:
+            cmd("yobiru_send", {"to": "h", "text": "t", "approval": "0123456789abcdef"})
+        self.assertIn("track=true", str(raised.exception))
 
 
 class Client(object):

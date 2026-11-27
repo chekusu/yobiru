@@ -132,6 +132,15 @@ scheduled task at the shortest interval Grok allows that brings the friend's mes
 [yobiru-contact-bots](../yobiru-contact-bots/SKILL.md). The new bot must run on this same computer so it can use
 the existing Yobiru data homes in `/workspace`; never copy credentials to another computer for it.
 
+## Work that needs the owner's approval
+
+Grok Bot's computer sends; it never holds owner keys. When the owner asks for work on another of their
+computers that needs their own OK, use the approval steps in [yobiru-send](../yobiru-send/SKILL.md): `approval
+request` gives a link, show it to the owner in this conversation as a link they can tap on their phone, then
+`approval wait` and `request send --approval`. The approval is tied to this computer's current `grokbot-…`
+device; after a rebuild, ask for a new one (or ask with `--any-requester` when the owner wants it to survive one).
+Never ask the owner to type a confirmation phrase instead.
+
 ## Verify in the conversation
 
 When testing plugin installation, establish that Grok Bot lists and invokes this skill. Then run
