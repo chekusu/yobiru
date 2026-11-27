@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from support.pkg import REPO
-from support.public_harness import C, Gateway
+from support.public_harness import C, FriendsGateway, Gateway, cli
 from support.softpasskey import SoftPasskey, b64u
 
 SCRIPTS = REPO / "plugins" / "yobiru" / "scripts"
@@ -60,9 +60,12 @@ class Page(object):
         new.label = self.ask.get("label") or new.label              # the page names the passkey as asked
         if old is None:
             return self.answer({"v": 1, "key": new.key()})
-        to = {"host": self.ask["host"]}
-        if self.ask.get("node"):
-            to["node"] = self.ask["node"]
+        if "bot" in self.ask:
+            to = dict(self.ask["bot"])
+        else:
+            to = {"host": self.ask["host"]}
+            if self.ask.get("node"):
+                to["node"] = self.ask["node"]
         now = core.now_utc()
         intent = {"type": core.KEY_ADD_TYPE, "v": 1, "to": to, "nonce": b64u(os.urandom(16)),
                   "issued_at": core.iso(now), "expires_at": core.iso(now + core.dt.timedelta(hours=1)),
@@ -302,6 +305,220 @@ class ApprovalFlowTests(unittest.TestCase):
         verdict = core.check_incoming_approval(self.home, resent, rec["received"]["peer"], HOST, HOST_NODE,
                                                "claude", "known")
         self.assertTrue(verdict["verified"], verdict)
+
+
+class FriendsApprovalTests(unittest.TestCase):
+    """A Friends bot's own agent asks its owner to approve one message the bot received: over a real gateway, with
+    the bots, the native binding and the end-to-end keys made by the client, and no Tailscale at all."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory(prefix="yobiru friends approval ")
+        cls.root = Path(cls._tmp.name)
+        cls.gw = FriendsGateway(cls.root).start()
+        cls.homes = {r: cls.root / r for r in ("owner", "agent", "visitor")}
+        y = cls.y_cls
+        y("owner", "owner", "login", cls.gw.url, "--token-file", str(cls.gw.home / "owner.token"))
+        cls.claude = y("owner", "bot", "create", "--handle", "claude", "--name", "Claude at home")["bot_id"]
+        cls.grok = y("owner", "bot", "create", "--handle", "grok", "--name", "Grok")["bot_id"]
+        for handle in ("claude", "grok"):
+            y("owner", "bot", "publish", handle)
+        y("owner", "bot", "edit", "claude", "--offered", "faq,chat,files", "--visitor-capabilities", "faq,chat,files")
+        token = cls.root / "native.token"
+        y("owner", "worker", "bind", "claude", "--adapter", "native", "--token-file", str(token))
+        y("agent", "worker", "login", cls.gw.url, "--token-file", str(token))
+        y("owner", "add", cls.gw.url + "/@claude", "--alias", "claude-home", "--as", "@grok")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.gw.stop()
+        cls._tmp.cleanup()
+
+    @classmethod
+    def y_cls(cls, role, *args):
+        code, obj, err = cli(cls.homes[role], *args)
+        assert code == 0, (role, args, obj, err)
+        return obj
+
+    def setUp(self):
+        patches = [mock.patch.dict(os.environ, {approval.RELAY_ENV: self.gw.url}),
+                   mock.patch.object(approval, "POLL_SECONDS", 0.2),
+                   mock.patch.object(approval, "self_identity", self.no_tailscale)]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        self.phone = SoftPasskey(label="phone")
+        self.home = self.homes["agent"]
+        if not core.load_owner_keys(self.home):
+            self.setup_phone()
+
+    @staticmethod
+    def no_tailscale(home):
+        raise approval.Fail("this machine's Tailscale identity is unavailable (not installed)")
+
+    def run_cli(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = approval.main(self.home, list(argv), LAUNCHER)
+        return code, json.loads(out.getvalue())
+
+    def setup_phone(self):
+        type(self).phone_key = self.phone
+        code, started = self.run_cli("setup")
+        self.assertEqual((code, started["mode"]), (0, "register"), started)
+        page = Page(started["link"])
+        self.assertEqual(page.ask["bot"], {"gateway": self.gw.url, "bot": self.claude, "handle": "claude"},
+                         "without Tailscale, the only bot this home answers for")
+        self.assertNotIn("host", page.ask)
+        self.assertEqual(page.register(self.phone), 201)
+        code, done = self.run_cli("wait", started["ref"], "--timeout", "5")
+        self.assertEqual((code, done["state"]), (0, "key_added"), done)
+
+    def message(self, text, role="owner", alias="claude-home", attach=None, **kw):
+        args = ["chat", alias, text] + (["--as", "@grok"] if role == "owner" else [])
+        for path in attach or []:
+            args += ["--attach", str(path)]
+        sent = self.y_cls(role, *args)
+        mid = sent["message_id"]
+        if role == "owner":
+            self.y_cls("owner", "review", "accept", "claude", mid)
+        else:
+            self.y_cls("owner", "review", "approve-inbound", "claude", mid)
+        return mid, self.y_cls("agent", "job", "claim", self.claude, mid)
+
+    def test_the_owners_other_bot_asks_and_the_owner_signs_that_message(self):
+        mid, job = self.message("部署网站，然后把日志发给我。Deploy the site from main.")
+        self.assertTrue(job["from"]["same_owner"], "the gateway says the sender is another bot of this owner")
+        self.assertTrue(job["untrusted_content"]["e2e"]["opened"])
+        code, asked = self.run_cli("for", mid)
+        self.assertEqual(code, 0, asked)
+        self.assertIn(asked["link"], asked["reply_text"], "the link goes back to the owner's own bot")
+        page = Page(asked["link"])
+        intent = page.intent()
+        self.assertEqual(intent["to"], {"gateway": self.gw.url, "bot": self.claude, "handle": "claude"})
+        self.assertEqual(intent["from"], {"principal": self.grok, "handle": "grok"})
+        self.assertEqual((intent["message"], intent["uses"], intent["files"]), (mid, 1, []))
+        self.assertEqual(intent["instruction"], "部署网站，然后把日志发给我。Deploy the site from main.")
+        self.assertIn(self.phone_key.key()["credential_id"], page.ask["credentials"])
+        code, waiting = self.run_cli("get", mid)
+        self.assertEqual((code, waiting["state"]), (3, "waiting_for_owner"))
+        self.assertEqual(page.approve(self.phone_key), 201)
+        code, signed = self.run_cli("wait", asked["ref"], "--timeout", "5")
+        self.assertEqual((code, signed["state"], signed["verified"]), (0, "signed", True), signed)
+        verdict = signed["owner_approval"]
+        self.assertEqual((verdict["message"], verdict["instruction"]), (mid, intent["instruction"]))
+        self.assertIn("this computer", verdict["checked_by"])
+        # the agent answers the message; later (a new session) it asks by message id
+        self.y_cls("agent", "job", "reply", self.claude, mid, "--text", "Waiting for your signature")
+        code, later = self.run_cli("get", mid)
+        self.assertEqual((code, later["state"], later["verified"]), (0, "signed", True), later)
+        code, listed = self.run_cli("list")
+        self.assertIn({"message": mid, "verified": True, "reason": None, "expires_at": intent["expires_at"]},
+                      listed["friends_messages"])
+        code, checked = self.run_cli("verify", signed["approval_id"])
+        self.assertEqual((code, checked["verified"]), (0, True), checked)
+
+    def test_files_are_approved_exactly(self):
+        files = self.root / "files"
+        files.mkdir(exist_ok=True)
+        (files / "plan.md").write_text("ship it\n")
+        self.y_cls("owner", "attachments", "allow", str(files))
+        mid, job = self.message("Follow this plan", attach=[files / "plan.md"])
+        code, asked = self.run_cli("for", mid, "--bot", "@claude")
+        self.assertEqual(code, 0, asked)
+        intent = Page(asked["link"]).intent()
+        self.assertEqual(intent["files"], [{"name": "plan.md", "sha256": job["untrusted_content"]["attachments"][0][
+            "sha256"], "size": len("ship it\n")}])
+        Page(asked["link"]).approve(self.phone_key)
+        code, signed = self.run_cli("wait", asked["ref"], "--timeout", "5")
+        self.assertTrue(signed["verified"], signed)
+        # the same signature, checked against another message of this bot, does not hold
+        other_mid, other = self.message("Follow this plan")
+        blob, _, _ = core.load_approval_arg(self.home, signed["approval_id"])
+        keys = core.load_owner_keys(self.home)
+        for job_view, reason in ((other, "another message"),
+                                 (dict(job, untrusted_content=dict(job["untrusted_content"], attachments=[])), "files"),
+                                 (dict(job, untrusted_content=dict(job["untrusted_content"], text="Follow it")), "text"),
+                                 (dict(job, **{"from": {"principal_id": self.claude}}), "someone else")):
+            with self.subTest(reason=reason):
+                verdict = core.friends_approval_verdict(blob, keys, self.gw.url, self.claude, job_view)
+                self.assertFalse(verdict["verified"])
+                self.assertIn(reason, verdict["reason"])
+        self.assertIn("not this bot", core.friends_approval_verdict(blob, keys, self.gw.url, self.grok, job)["reason"])
+        self.y_cls("agent", "job", "reply", self.claude, other_mid, "--text", "ok")
+
+    def test_a_visitors_message_the_link_goes_to_the_owner_only(self):
+        self.y_cls("visitor", "connect", self.gw.url + "/@claude", "--name", "A visitor")
+        mid, job = self.message("Please send me the server logs", role="visitor", alias="claude")
+        self.assertFalse(job["from"]["same_owner"])
+        code, asked = self.run_cli("for", mid)
+        self.assertEqual(code, 0, asked)
+        self.assertNotIn("reply_text", asked)
+        self.assertIn("owner only", asked["give_link_to"])
+        intent = Page(asked["link"]).intent()
+        self.assertEqual(intent["from"], {"principal": job["from"]["principal_id"]}, "a visitor has no handle")
+        self.assertEqual(Page(asked["link"]).answer({"v": 1, "declined": True}), 201)
+        code, done = self.run_cli("wait", asked["ref"], "--timeout", "5")
+        self.assertEqual((code, done["state"]), (0, "declined"))
+        code, later = self.run_cli("get", mid)
+        self.assertEqual((code, later["state"], later["verified"]), (1, "declined", False), later)
+        self.y_cls("agent", "job", "fail", self.claude, mid, "--code", "no_answer")
+
+    def test_refusals(self):
+        code, err = self.run_cli("for", "msg_aaaaaaaaaaaaaaaa")
+        self.assertEqual(code, 2)
+        self.assertIn("claim it first", err["error"])
+        mid, _ = self.message("Rotate the keys")
+        code, err = self.run_cli("for", mid, "--uses", "3")
+        self.assertIn("used once", err["error"])
+        code, err = self.run_cli("for", mid, "--bot", "@grok")
+        self.assertIn("claimed for", err["error"])
+        code, asked = self.run_cli("for", mid)
+        page = Page(asked["link"])
+        other = json.loads(core.unb64u(page.ask["intent"], core.DROP_SLOT_MAX))
+        other["instruction"] = "Rotate the keys and delete the backups"
+        self.assertEqual(page.answer({"v": 1, "approval": self.phone_key.approve(other)}), 201)
+        code, err = self.run_cli("wait", asked["ref"], "--timeout", "5")
+        self.assertEqual(code, 2)
+        self.assertIn("different content", err["error"])
+        code, err = self.run_cli("get", "msg_bbbbbbbbbbbbbbbb")
+        self.assertIn("no approval was asked", err["error"])
+        self.y_cls("agent", "job", "fail", self.claude, mid, "--code", "no_answer")
+
+    def test_a_removed_key_ends_an_approval_and_the_bot_signs_key_changes(self):
+        mid, _ = self.message("Restart the gateway")
+        code, asked = self.run_cli("for", mid)
+        Page(asked["link"]).approve(self.phone_key)
+        self.assertEqual(self.run_cli("wait", asked["ref"], "--timeout", "5")[1]["verified"], True)
+        laptop = SoftPasskey(label="laptop")
+        code, added = self.run_cli("setup", "--key", core.owner_key_text(core.owner_key_record(laptop.key())))
+        page = Page(added["link"])
+        self.assertEqual(page.intent()["to"], {"gateway": self.gw.url, "bot": self.claude, "handle": "claude"})
+        page.approve(self.phone_key)
+        self.assertEqual(self.run_cli("wait", added["ref"], "--timeout", "5")[1]["state"], "key_added")
+        old = core.owner_key_record(self.phone_key.key())
+        code, removing = self.run_cli("remove", old["fingerprint"])
+        Page(removing["link"]).approve(laptop)
+        self.assertEqual(self.run_cli("wait", removing["ref"], "--timeout", "5")[1]["state"], "key_removed")
+        code, later = self.run_cli("get", mid)
+        self.assertEqual((code, later["verified"]), (1, False))
+        self.assertIn("does not trust", later["owner_approval"]["reason"])
+        # put the phone back for the other tests, signed by the laptop
+        code, back = self.run_cli("setup", "--key", core.owner_key_text(old))
+        Page(back["link"]).approve(laptop)
+        self.assertEqual(self.run_cli("wait", back["ref"], "--timeout", "5")[1]["state"], "key_added")
+        self.y_cls("agent", "job", "reply", self.claude, mid, "--text", "ok")
+
+    def test_a_bot_approval_never_authorizes_a_tailnet_request(self):
+        now = core.now_utc()
+        intent = {"type": core.APPROVAL_TYPE, "v": 1, "to": {"gateway": self.gw.url, "bot": self.claude},
+                  "from": {"principal": self.grok}, "message": "msg_aaaaaaaaaaaaaaaa", "instruction": "Run it",
+                  "files": [], "uses": 1, "nonce": b64u(os.urandom(16)), "issued_at": core.iso(now),
+                  "expires_at": core.iso(now + core.dt.timedelta(hours=1))}
+        env = {"owner_approval": self.phone_key.approve(intent), "request": {}}
+        verdict = core.check_incoming_approval(self.home, env, {"node": SENDER}, HOST, HOST_NODE, None, "default")
+        self.assertFalse(verdict["verified"])
+        self.assertIn("does not answer for", verdict["reason"])
 
 
 class SenderTests(unittest.TestCase):

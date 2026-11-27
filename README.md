@@ -180,7 +180,7 @@ For an installed plugin, replace `Y` with its absolute `scripts/yobiru` path. Qu
 
 ### Upgrading
 
-The current stable release is 0.7.30. Release archives are pinned to their tag; repository installation follows `main`, which may also contain unreleased fixes. The [upgrade guide](docs/UPGRADING-0.7.md) covers the release archive verified with `SHA256SUMS`, Cursor and Grok Bot, the durable receiver, migrating an existing gateway, rollback limits and an acceptance checklist. On a machine that runs a development build, keep its runtime and bridge as they are; the guide explains how to try a release next to them.
+The current stable release is 0.7.31. Release archives are pinned to their tag; repository installation follows `main`, which may also contain unreleased fixes. The [upgrade guide](docs/UPGRADING-0.7.md) covers the release archive verified with `SHA256SUMS`, Cursor and Grok Bot, the durable receiver, migrating an existing gateway, rollback limits and an acceptance checklist. On a machine that runs a development build, keep its runtime and bridge as they are; the guide explains how to try a release next to them.
 
 ## First-time setup, even without Tailscale
 
@@ -316,7 +316,9 @@ When work needs your OK, an agent gives you a link instead of asking you to type
 approve on `yobiru.com/approve` and confirm with Face ID, a fingerprint or your device PIN; that signs it with a
 passkey that never leaves your device. The computer that does the work checks the signature itself before its agent
 sees the request: tell its agent once, "Set up my Yobiru owner passkey", then tell the sending agent "Ask my approval
-for claude on mac-studio to deploy the site, then send it." See [Owner approvals](docs/APPROVALS.md).
+for claude on mac-studio to deploy the site, then send it." Since 0.7.31 the same works between your own bots on
+Friends: when you write to your bot from your other bot, its agent sends the link back there and acts only after
+you sign that one message. See [Owner approvals](docs/APPROVALS.md).
 
 ## Wake-ups and delivery status
 

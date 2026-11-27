@@ -149,6 +149,37 @@ class IntentTests(unittest.TestCase):
                 with self.assertRaisesRegex(core.ApprovalError, reason):
                     self.verify(value)
 
+    def test_a_friends_bot_and_one_of_its_messages(self):
+        bot = {"gateway": "https://bots.example.com", "bot": "bot_aaaaaaaaaaaaaaaa", "handle": "claude"}
+        good = intent(to=bot, message="msg_bbbbbbbbbbbbbbbb",
+                      **{"from": {"principal": "bot_cccccccccccccccc", "handle": "grok"}})
+        self.assertEqual(self.verify(good)["intent"]["to"], bot)
+        self.assertEqual(self.verify(dict(good, **{"from": {"principal": "act_dddddddddddddddd"}}))["intent"]["uses"], 1)
+        self.assertEqual(self.verify(dict(good, to=dict(bot, gateway="http://127.0.0.1:7780/gw")))["intent"]["message"],
+                         "msg_bbbbbbbbbbbbbbbb")
+        cases = {
+            "names the message": {k: v for k, v in good.items() if k != "message"},
+            "requester": dict(good, **{"from": {"host": SENDER}}),
+            "requester handle": dict(good, **{"from": {"principal": "act_dddddddddddddddd", "handle": "x-man"}}),
+            "approved message": dict(good, message="msg_short"),
+            "used once": dict(good, uses=2),
+            "recipient bot": dict(good, to=dict(bot, bot="act_aaaaaaaaaaaaaaaa")),
+            "recipient handle": dict(good, to=dict(bot, handle="@claude")),
+            "approval recipient": dict(good, to=dict(bot, agent="claude")),
+        }
+        for gateway in ("http://bots.example.com", "https://bots.example.com/", "https://Bots.example.com",
+                        "https://bots.example.com:443", "https://u@bots.example.com", "https://bots.example.com/?q",
+                        "https://bots.example.com/a/../b", "bots.example.com", "https://bots.example.com/a b"):
+            cases["gateway " + gateway] = dict(good, to=dict(bot, gateway=gateway))
+        for reason, value in cases.items():
+            with self.subTest(reason=reason):
+                with self.assertRaisesRegex(core.ApprovalError, reason.split(" ")[0] if reason.startswith("gateway")
+                                            else reason):
+                    self.verify(value)
+        with self.assertRaisesRegex(core.ApprovalError, "only an approval for a bot"):
+            self.verify(intent(message="msg_bbbbbbbbbbbbbbbb"))
+        self.assertEqual(core.recipient_label(bot), "@claude on https://bots.example.com")
+
     def test_bytes_must_be_canonical(self):
         raw = json.dumps(intent(), sort_keys=False).encode("utf-8")
         with self.assertRaisesRegex(core.ApprovalError, "canonical"):
@@ -363,6 +394,12 @@ class ReceiverTests(unittest.TestCase):
         self.assertIn("owner_approval", core.validate_env({k: v for k, v in self.env(approval).items()
                                                            if k != "request"}))
         self.assertIn("owner_approval", core.validate_env(self.env(dict(approval, extra="x"))))
+        # the largest approval a receiver verifies also fits the envelope (4,000 characters of CJK and 20 files)
+        files = [{"name": "f%02d.txt" % i, "sha256": "%064x" % i, "size": i} for i in range(20)]
+        largest = self.pk.approve(intent(instruction="部" * 4000, files=files))
+        self.assertGreater(len(json.dumps(largest)), 32768)
+        self.assertIsNone(core.validate_env(self.env(largest)))
+        self.assertIn("owner_approval", core.validate_env(self.env(dict(largest, intent=largest["intent"] + "A" * 20000))))
         self.assertEqual(core.task_fingerprint(self.env(approval)), core.task_fingerprint(
             {k: v for k, v in self.env(approval).items() if k != "owner_approval"}))
 

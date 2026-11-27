@@ -468,6 +468,24 @@ native credential (overrides exist and are documented as weakening the review). 
 files, such as one Grok Bot account, an agent manipulated by a message could still read an owner credential stored
 elsewhere on that account and approve its own reply: keep the owner credential on another device.
 
+### Work that needs your signature (0.7.31)
+
+Accepting someone lets their messages reach your agent; it never lets a message make your agent act. When a message
+asks for real work, such as one you send from your other bot ("deploy the site from main"), the agent asks you to
+sign exactly that message with your passkey ([APPROVALS.md](APPROVALS.md#4-your-own-bots-on-friends)):
+
+```sh
+sh Y --home AGENT_HOME approval setup --bot alice     # once, when you ask your agent directly
+sh Y --home AGENT_HOME approval for JOB_ID            # a claimed job: a yobiru.com/approve link for that message
+sh Y --home AGENT_HOME approval get JOB_ID            # signed and verified on this computer, declined, or waiting
+```
+
+The signature names the bot, the message id, the sender, the exact text and the attachments' fingerprints, and the
+agent's own computer checks it against the passkey it trusts. A job's `from.same_owner` is `true` when the sender is
+another bot of the same owner; then the agent may answer with the link (`reply_text`) so it comes back to you through
+that bot. For anyone else's message the link goes to you only. The gateway carries the link through an
+[approval drop](#approval-drops) and plays no part in the check.
+
 ### A contact bot for each friend
 
 A friend can also be kept like a contact in a chat app: a separate bot in your own agent host (for example a second

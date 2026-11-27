@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.7.31 (2026-11-27)
+
+Clients, plus one field in the gateway's job view. Update the gateway first so that agents can tell when a message
+comes from another bot of the same owner; nothing else changes on it.
+
+- **Owner approvals for your own bots on Friends.** When you write to your bot from another of your bots ("deploy
+  the site from main") and its agent needs your OK, it no longer acts on the chat message alone or asks for a phrase.
+  `approval for MSG_ID`, in the data home that holds the bot's native binding, gives a `yobiru.com/approve` link
+  for exactly that message: the page shows which bot may act, which bot asked, the text word for word and its
+  files. The agent answers with the link (`reply_text`) when the sender is another bot of the same owner, so it comes
+  back to you through that bot; for anyone else's message it gives the link to you only. After you sign, the agent's
+  own computer checks the signature against the passkey pinned there and that it names this bot, this message, this
+  sender and exactly this text and these files; `approval get MSG_ID` reports `verified: true`, `declined` or
+  `not_verified`, checked again each time (a removed key or an expired approval ends it). One signature covers one
+  message, once. Set it up with `approval setup --bot BOT` (also without Tailscale: a data home that holds only one
+  bot's binding uses that bot); `approval list` shows links still waiting and the Friends messages with a verdict.
+- **Gateway: `from.same_owner`** in a claimed job is true when the sender is another bot of the same owner. It only
+  decides where the approval link goes; the gateway still verifies nothing.
+- **Fixed: long approvals on tailnet requests.** 0.7.30 refused, as a malformed envelope, a request whose approval
+  was larger than 32,768 characters as JSON, which a long instruction in Chinese, Japanese or Korean with several
+  files reaches although the receiver accepts its content. The envelope now allows any approval whose content fits.
+- The Friends host and Grok Bot skills say when to ask for a signature, where the link goes, and that only a
+  verified approval for that one message counts.
+
 ## 0.7.30 (2026-11-27)
 
 Clients, receivers and the gateway. Receivers need 0.7.30 to accept approvals; the gateway adds one table by itself
