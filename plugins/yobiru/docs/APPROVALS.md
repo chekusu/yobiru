@@ -16,15 +16,26 @@ your tailnet, and not the server that carries the link.
 - A phone, tablet or computer with passkeys: iPhone or iPad (iOS 16+), Android 9+, a Mac with Touch ID, Windows
   Hello, or a security key. Any up-to-date browser that can open `yobiru.com`.
 
-## 1. Set up your passkey on each computer that does work (once)
+## 1. Set up your passkey (one passkey for all your computers)
 
-Tell the agent on that computer: **"Set up my Yobiru owner passkey."** It runs `yobiru approval setup` and gives you a
-link. Open it on your phone and tap **Create passkey**. From then on that computer accepts approvals you sign with it.
+Tell the agent on a computer that does work: **"Set up my Yobiru owner passkey."** It runs `yobiru approval setup` and
+gives you a link:
 
-Do the same on your other computers. Each one keeps its own list of passkeys it trusts, so no computer can vouch for
-another. Your phone keeps one passkey per computer under `yobiru.com`; the page picks the right one when you sign.
+- **On your first computer** the link creates the passkey: open it on your phone and tap **Create passkey**.
+- **On every other computer** (0.7.35 and later) setup first asks your other computers, over your tailnet, which
+  passkey they trust. The link then reads **Use your passkey here?**: confirm once with Face ID, fingerprint or PIN.
+  No new passkey is created; that computer now trusts the same one.
 
-To use a passkey you already have, ask the agent on a computer that trusts it for your **owner key text** (`yobiru
+An agent that needs your approval and finds no passkey set up runs the same setup by itself and sends you the link,
+so a new agent (Grok Bot, Muse, another Claude Code) only ever asks you to confirm with the passkey you already have.
+
+Each computer still keeps its own list of passkeys it trusts. A computer takes over a passkey only after that very
+passkey signs for it, so no computer can make another one trust a passkey you do not hold. Your other computers
+share the passkey's public half only; the private key never leaves your device. Agents that reach your tailnet
+through a connector and cannot list its computers (Grok Bot's official Tailscale plugin) name one with
+`approval setup --from mac-studio`.
+
+To use a passkey's text instead, ask the agent on a computer that trusts it for your **owner key text** (`yobiru
 approval keys`), and give it to the new computer's agent: **"Trust this owner key: yobiru-owner-key:…"**. Only do that
 for text you got from your own computer: on a computer with no owner key yet, the first key is trusted as given.
 
@@ -111,8 +122,11 @@ that harder.
 ## Your passkeys
 
 - **See which ones a computer trusts:** "Which owner passkeys does this computer trust?" (`yobiru approval keys`).
-- **Add one** (a new phone, a security key): run setup again on that computer. The page creates the new passkey and
-  then asks a passkey the computer already trusts to approve adding it.
+- **Add one** (a security key, a second passkey on purpose): `yobiru approval setup --new` on that computer. The page
+  creates the new passkey and then asks a passkey the computer already trusts to approve adding it. Your other
+  computers keep only the passkeys they had: give each the new key's text (`approval setup --key TEXT`) and confirm
+  with a passkey it already trusts. A passkey synced to a new phone (iCloud Keychain, Google Password Manager) is the
+  same passkey and needs nothing.
 - **Remove one:** "Stop trusting the passkey ab12-cd34-ef56-7890 on this computer" (`yobiru approval remove
   ab12-cd34-ef56-7890`, the fingerprint `approval keys` shows). You approve the removal with one of your passkeys,
   which may be the one being removed.
@@ -151,7 +165,7 @@ You need no Friends account.
 
 | Command | MCP tool | What it does |
 |---|---|---|
-| `yobiru approval setup [--label NAME] [--key TEXT] [--bot @BOT]` | `yobiru_approval_setup` | Set up or add the owner's passkey here; returns a link. `--bot` names the Friends bot this data home answers for. |
+| `yobiru approval setup [--from HOST] [--new] [--label NAME] [--key TEXT] [--bot @BOT]` | `yobiru_approval_setup` | Set up the owner's passkey here; returns a link. Without a key yet it adopts the passkey the owner's other receivers trust (`mode: adopt`, the owner signs once with it; `--from` names the receivers to ask), else creates one (`mode: register`). Already set up: `already_set_up`; `--new` adds a second passkey. `--bot` names the Friends bot this data home answers for. |
 | `yobiru approval request PEER/AGENT TEXT [--file F] [--expires 1h] [--uses 1] [--any-requester]` | `yobiru_approval_request` | Ask the owner to approve one instruction; returns a link. |
 | `yobiru approval for ID` | `yobiru_approval_for` | On a receiver: a link for the owner to approve a request that arrived unsigned. |
 | `yobiru approval for MSG_ID [--bot @BOT]` | | A Friends bot's agent (its native binding home): a link for the owner to approve one message the bot received; `give_link_to` and `reply_text` say where the link goes. |

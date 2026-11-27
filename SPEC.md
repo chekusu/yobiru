@@ -289,7 +289,7 @@ agent 名字规则：1–64 个字符，可以用中文等任意 Unicode；不�
 - `display_name` 是本地别名，`confirmed_title` 是用户绑定时确认的标题；两者都不是原生名称。`native_name` 只来自只读查询：Codex 桥接用 `thread/read`（`includeTurns: false`）读取绑定 UUID 的 `Thread.name`，从不使用 `preview`（首条用户消息），不启动模型回合。查询有界（子进程组超时清理、输出上限），结果按进程缓存约 5 分钟（失败 1 分钟）；冷查询超过约 1.5 秒时返回 `pending`，或返回带 `stale` 标记的旧值。短时读取器看到的 `notLoaded` 等状态不代表会话所属运行时的状态，因此 `activity` 永远是 `unknown`。
 - 发现方必须把整个响应当作不可信数据：限制大小与总时长，校验类型，去掉控制字符和终端转义，Codex 会话 ID 必须是小写 UUID。
 
-- 0.7.30 起 `capabilities` 含 `owner-approval-v1`，并给出 `owner_keys`：本机信任的主人 passkey 公钥摘要列表 `[{"credential_id", "fingerprint", "label", "rp_id"}]`（没有时为空列表）。只含公开信息，供发件方让主人的设备挑对 passkey；见 §10 主人签名授权。
+- 0.7.30 起 `capabilities` 含 `owner-approval-v1`，并给出 `owner_keys`：本机信任的主人 passkey 公钥列表（没有时为空列表）。0.7.30 到 0.7.34 每项为 `{"credential_id", "fingerprint", "label", "rp_id"}`；0.7.35 起是完整公钥 `{"alg", "public_key", "credential_id", "rp_id", "origin", "label", "fingerprint"}`。只含公开信息，供发件方让主人的设备挑对 passkey，也供主人的其他电脑在 `approval setup` 时沿用同一把；见 §10 主人签名授权。
 
 ### 9.1 调用方身份与托管连接器（Yobiru 0.7.26 起）
 
@@ -452,7 +452,7 @@ yobiru request maintain                                      # 单次维护和�
 
 消息和附件仍不是授权（见上一节）。唯一的例外是**主人签名授权**：主人在自己的设备上用 passkey（WebAuthn，ES256 / P-256，设备必须做用户验证：Face ID、指纹或 PIN）签署一条确切的指令。接收端在 agent 看到请求之前，用本机固定的主人公钥自己验签；私钥从不离开主人的设备，任何机器、网关或 agent 都不持有它。签名只证明“解锁了这把 passkey 的人批准了这段确切内容”，不证明是本人而不是拿着已解锁设备的人。用户说明见 [docs/APPROVALS.md](docs/APPROVALS.md)。
 
-**主人公钥。** 存在 `<home>/owner_keys.json`（0600，最多 16 把），每把 `{"alg": "ES256", "public_key": <base64url SPKI>, "credential_id", "rp_id": "yobiru.com", "origin": "https://yobiru.com", "label"}`；`id` 是 SPKI 的 SHA-256（hex），`fingerprint` 是其前 16 位分成四组（`ab12-cd34-ef56-7890`）。第一把由主人通过本机 agent 设置（`yobiru approval setup`，首次信任），之后的增加和删除都必须由已信任的某把 passkey 签名（类型 `yobiru.owner-key-add` / `yobiru.owner-key-remove`）。文件损坏时不信任任何主人公钥。
+**主人公钥。** 存在 `<home>/owner_keys.json`（0600，最多 16 把），每把 `{"alg": "ES256", "public_key": <base64url SPKI>, "credential_id", "rp_id": "yobiru.com", "origin": "https://yobiru.com", "label"}`；`id` 是 SPKI 的 SHA-256（hex），`fingerprint` 是其前 16 位分成四组（`ab12-cd34-ef56-7890`）。第一把由主人通过本机 agent 设置（`yobiru approval setup`）：新建的 passkey 或交给它的公钥文本按首次信任处理（`added_via: "first"`）；0.7.35 起，setup 先向主人其他接收端的 `/info` 要它们信任的公钥，由主人用**那把 passkey 本身**签一个指向本机的 `yobiru.owner-key-add`（页面只提供这一把），验证通过才信任（`added_via: "adopted"`）。持有私钥就是证明，所以别的电脑无法让本机信任一把主人没有的 passkey。之后的增加和删除都必须由已信任的某把 passkey 签名（类型 `yobiru.owner-key-add` / `yobiru.owner-key-remove`）；自签的 `owner-key-add` 只在本机还没有任何公钥时有效。文件损坏时不信任任何主人公钥。
 
 **意图（intent）。** 被签名的是 JSON 对象的规范形式：`json.dumps(sort_keys=True, ensure_ascii=True, separators=(",", ":"))` 的 UTF-8 字节。字段严格，多一个少一个都拒绝：
 
