@@ -1,8 +1,8 @@
 # Yobiru plugin privacy policy
 
-Effective date: November 27, 2026. This revision, with Yobiru 0.7.30 and 0.7.31, describes
+Effective date: November 27, 2026. This revision, with Yobiru 0.7.30 to 0.7.32, describes
 owner approvals signed with a passkey: the public keys a computer keeps, the
-approvals it records (0.7.31: also for one message a Friends bot received), and the sealed drops a gateway relays for 24 hours (see
+approvals it records (0.7.31: also for one message a Friends bot received; 0.7.32: one Claude Code tool call), and the sealed drops a gateway relays for 24 hours (see
 [Owner approvals](#owner-approvals-0730-and-later)). The November 25, 2026 revision
 shortened how long the official gateway's remote database backups keep deleted
 data: from roughly 8 days to roughly 3 days (see **How long** below). The November 8, 2026 revision, with
@@ -270,6 +270,12 @@ drop holds the message's text as the agent opened it, the bot, the sender's bot 
 message's file names, sizes and hashes, sealed the same way; the gateway that carries the drop learns nothing more
 than for any other drop. The agent's computer keeps the signed approval and its own verdict, or a note that the owner
 declined, in `<home>/approvals/friends/`.
+
+Since 0.7.32 the Claude Code guard (`guard install`) asks the owner to sign one tool call that Claude Code's auto
+mode stopped. That drop holds the call as the owner reads it (a command and its folder, a file's path and content, or
+a tool's name and input, including anything secret written in it) and this computer's name, sealed the same way. The
+computer keeps the call's record, its link and the owner's answer in `<home>/guard/calls/` until the call runs, is
+forgotten or expires (a day at most), and a marker of each approval used in `<home>/guard/used/` for 8 days.
 
 The signing page itself is served by the Yobiru website (`yobiru.com/approve`), which is outside this policy's
 scope; it is static, sets no cookies, loads no third-party scripts, and connects only to the gateway named in the
