@@ -64,7 +64,7 @@ FILES = {"type": "array", "minItems": 1, "maxItems": 20,
                         "(tracked pull requests upload them instead).",
          "items": {"type": "string", "minLength": 2, "maxLength": 4096,
                    "pattern": r"^(?:/|[A-Za-z]:[\\/])[^\x00\r\n]*$"}}
-APPROVAL = {"type": "string", "minLength": 8, "maxLength": 60000,
+APPROVAL = {"type": "string", "minLength": 8, "maxLength": 131088,
             "pattern": r"^(?:[0-9a-f]{8,64}|yobiru-approval:[A-Za-z0-9_-]+)$",
             "description": "Tracked requests only: the owner's signed approval for exactly this request (same "
                            "recipient, agent and files): the approval_id from yobiru_approval_wait, or "

@@ -1180,12 +1180,12 @@ at `yobiru.com/approve` reads it and writes the sealed answer (`answer`), and th
   `yobiru-drop-v1:<slot>:<id>`, so the gateway can neither read a slot nor move it to another drop or slot unnoticed.
 - **Write once.** `POST /v1/approval-drops/{id}/ask` opens a drop, `POST .../answer` completes an open one. The body
   is the sealed value as plain text (`text/plain`, so a browser sends it without a preflight), at most
-  `limits.approval_drop_bytes` (12,288). The same value again answers `200` with `duplicate: true`; a different one
+  `limits.approval_drop_bytes` (131,072 characters, enough for the longest approval). The same value again answers `200` with `duplicate: true`; a different one
   `409 already_written`; an answer without an ask `404`.
 - **Read.** `GET /v1/approval-drops/{id}` returns `ask`, `answer` (null until written), `expires_at` and
   `answered_at`, or `404` once it is gone.
 - **Limits.** A drop is deleted 24 hours after its ask (`approval_drop_ttl_seconds`). One address writes at most 30
-  asks and 30 answers an hour (`approval_drops_per_hour_per_ip`), and a gateway holds at most 20,000 drops
+  asks and 30 answers an hour (`approval_drops_per_hour_per_ip`), and a gateway holds at most 5,000 drops
   (`max_approval_drops`, then `503 capacity`). Drop routes answer with `Access-Control-Allow-Origin: *` and take no
   credential. `GET /.well-known/yobiru` describes them under `approval_drops`.
 

@@ -75,7 +75,7 @@ def seal(key, did, slot, obj):
 
 def unseal(key, did, slot, text):
     _, E = _modules()
-    raw = _tm.unb64u(text, 16384, "drop")
+    raw = _tm.unb64u(text, _tm.DROP_SLOT_MAX, "drop")
     try:
         plain = E.aead_decrypt(key, raw[:12], raw[12:], ("yobiru-drop-v1:%s:%s" % (slot, did)).encode("ascii"))
         obj = json.loads(plain.decode("utf-8"))
@@ -142,9 +142,16 @@ def save_pending(home, rec):
 
 
 def open_drop(home, relay, mode, ask, expires_at, purpose):
-    secret = secrets.token_bytes(32)
-    did, key = drop_parts(secret)
-    status, obj = drop_call(relay, "POST", "/v1/approval-drops/%s/ask" % did, seal(key, did, "ask", ask))
+    while True:     # a ref is typed as a command argument: never one that starts with "-"
+        secret = secrets.token_bytes(32)
+        did, key = drop_parts(secret)
+        if not did.startswith("-"):
+            break
+    sealed = seal(key, did, "ask", ask)
+    if len(sealed) > _tm.DROP_SLOT_MAX:
+        raise Fail("this request for a signature is too large to send (%d characters sealed, at most %d): approve "
+                   "fewer files, or remove unused owner keys" % (len(sealed), _tm.DROP_SLOT_MAX))
+    status, obj = drop_call(relay, "POST", "/v1/approval-drops/%s/ask" % did, sealed)
     if status not in (200, 201) or obj.get("ok") is not True:
         raise Fail("the relay did not open the drop (HTTP %s %s)" % (status, obj.get("error", "")))
     link = link_for(relay, secret)
@@ -224,7 +231,12 @@ def new_intent(kind, to, expires, extra):
               "issued_at": _tm.iso(now), "expires_at": _tm.iso(now + dt.timedelta(seconds=expires))}
     intent.update(extra)
     _tm.validate_intent(intent)
-    return intent, _tm.json_canonical(intent).encode("utf-8")
+    raw = _tm.json_canonical(intent).encode("utf-8")
+    if len(raw) > _tm.INTENT_MAX_BYTES:
+        raise Fail("the approval is %d bytes once encoded, more than %d: shorten the instruction (characters outside "
+                   "the basic set, such as emoji, take 12 bytes each) or approve fewer files"
+                   % (len(raw), _tm.INTENT_MAX_BYTES))
+    return intent, raw
 
 
 def file_items(paths):

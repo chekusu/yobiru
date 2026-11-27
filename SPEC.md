@@ -467,7 +467,7 @@ yobiru request maintain                                      # 单次维护和�
 ```
 
 - `to.host` 必填，`to.agent`、`to.node` 可选；不写 `agent` 时只对不点名 agent 的请求（交给接收端默认 agent）有效；写了 `agent` 时，点名该 agent 或不点名而它正是默认 agent 都可以。`from` 可选（不写 = 任何经本机策略放行的发件方）。
-- `instruction` 1–4000 字符，不能含控制字符（换行和制表符除外）、私用区字符或双向文本控制符（U+202A–202E、U+2066–2069），以免签名页显示的和签名的不同。`files` 最多 20 项，`uses` 1–100，有效期最长 7 天。
+- `instruction` 1–4000 字符，不能含控制字符（换行和制表符除外）、私用区字符或双向文本控制符（U+202A–202E、U+2066–2069），以免签名页显示的和签名的不同。`files` 最多 20 项，`uses` 1–100，有效期最长 7 天；规范形式最多 32768 字节（4000 个中日韩字符加 20 个文件放得下，表情符号每个占 12 字节）。
 - 密钥管理意图：`yobiru.owner-key-add` 带 `key`（上面的公钥对象，六个字段），`yobiru.owner-key-remove` 带 `key_id`；两者的 `to` 只有 `host` 和可选 `node`。
 
 **签名。** WebAuthn challenge = SHA-256(`yobiru-owner-approval-v1\n` ‖ 意图字节)。授权对象（信封里的 `owner_approval`）恰好六个字段：`{"v": 1, "intent": <base64url 意图字节>, "credential_id", "authenticator_data", "client_data_json", "signature"}`（无填充 base64url，DER 编码 ECDSA 签名）；文本形式是 `yobiru-approval:` 加上它的规范 JSON 的 base64url。验证：`credential_id` 是一把已固定的主人公钥；`clientDataJSON` 的 `type` 为 `webauthn.get`、`challenge` 等于上式、`origin` 等于该公钥的 `origin`、`crossOrigin` 不为真；`authenticatorData` 的 rpIdHash 等于 SHA-256(`rp_id`)，标志位 UP 和 UV 都已置位；签名覆盖 `authenticatorData ‖ SHA-256(clientDataJSON)`；`issued_at` 不晚于本机时间 5 分钟以上，`expires_at` 未过。验证只用标准库（P-256 和严格 DER 解析写在 `tailmsg.py` 里），结果确定，不联网。

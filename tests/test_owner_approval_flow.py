@@ -46,7 +46,7 @@ class Page(object):
         self.ask = approval.unseal(self.key, self.did, "ask", obj["ask"])
 
     def intent(self):
-        return json.loads(core.unb64u(self.ask["intent"]).decode("utf-8"))
+        return json.loads(core.unb64u(self.ask["intent"], core.DROP_SLOT_MAX).decode("utf-8"))
 
     def answer(self, obj, key=None):
         sealed = approval.seal(key or self.key, self.did, "answer", obj)
@@ -54,7 +54,7 @@ class Page(object):
                           {"Content-Type": "text/plain"})[0]
 
     def approve(self, passkey):
-        return self.answer({"v": 1, "approval": passkey.approve(core.unb64u(self.ask["intent"]))})
+        return self.answer({"v": 1, "approval": passkey.approve(core.unb64u(self.ask["intent"], core.DROP_SLOT_MAX))})
 
     def register(self, new, old=None):
         new.label = self.ask.get("label") or new.label              # the page names the passkey as asked
@@ -147,6 +147,55 @@ class ApprovalFlowTests(unittest.TestCase):
         code, checked = self.run_cli("verify", signed["approval_id"])
         self.assertEqual((code, checked["verified"]), (0, True), checked)
         self.assertFalse((self.home / "approvals" / "pending" / (asked["ref"] + ".json")).exists())
+
+    def test_the_longest_instruction_goes_through_the_gateway(self):
+        """4,000 characters of Chinese and emoji: about 24 KB canonical, well past the old 12 KB drop slot."""
+        self.setup_phone()
+        instruction = "部署网站并检查日志" * 443 + "部署网" + "\U0001F600" * 10
+        self.assertEqual(len(instruction), 4000)
+        with self.peer(core.load_owner_keys(self.home)):
+            code, asked = self.run_cli("request", "studio/claude", instruction)
+        self.assertEqual(code, 0, asked)
+        page = Page(asked["link"])
+        self.assertEqual(page.intent()["instruction"], instruction)
+        self.assertEqual(page.approve(self.phone), 201)
+        code, signed = self.run_cli("wait", asked["ref"], "--timeout", "5")
+        self.assertEqual((code, signed["state"]), (0, "signed"), signed)
+        blob, loaded, raw = core.load_approval_arg(self.home, signed["approval_id"])
+        self.assertEqual(loaded["instruction"], instruction)
+        self.assertLessEqual(len(raw), core.INTENT_MAX_BYTES)
+        self.assertEqual(core.load_approval_arg(self.home, core.approval_text(blob))[1], loaded)
+        code, checked = self.run_cli("verify", signed["approval_id"])
+        self.assertEqual((code, checked["verified"]), (0, True), checked)
+        # Past the intent limit (4,000 emoji are 48 KB), the command says so before anything is sent
+        with self.peer(core.load_owner_keys(self.home)):
+            code, refused = self.run_cli("request", "studio/claude", "\U0001F600" * 4000)
+        self.assertEqual(code, 2)
+        self.assertIn("bytes once encoded", refused["error"])
+
+    def test_drop_routes_refuse_what_they_cannot_hold(self):
+        import http.client
+        did = approval.drop_parts(os.urandom(32))[0]
+        post = lambda slot, body: C.post_raw(self.gw.url, "/v1/approval-drops/%s/%s" % (did, slot), body,
+                                             {"Content-Type": "text/plain"})[0]
+        self.assertEqual(post("answer", b"AAAA"), 404)                          # no ask to answer
+        self.assertEqual(post("ask", b"A" * (core.DROP_SLOT_MAX + 1)), 400)     # one slot holds at most this
+        self.assertEqual(post("ask", b"not base64url!"), 400)
+        self.assertEqual(post("ask", b"A" * core.DROP_SLOT_MAX), 201)           # the largest slot fits
+        self.assertEqual(post("ask", b"A" * core.DROP_SLOT_MAX), 200)           # the same write again
+        self.assertEqual(post("ask", b"B" * 8), 409)
+        port = int(self.gw.url.rsplit(":", 1)[1])
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("OPTIONS", "/v1/approval-drops/%s/answer" % did)
+        resp = conn.getresponse()
+        resp.read()
+        self.assertEqual((resp.status, resp.getheader("Access-Control-Allow-Origin")), (204, "*"))
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("GET", "/v1/approval-drops/%s" % did)
+        resp = conn.getresponse()
+        body = json.loads(resp.read())
+        self.assertEqual((resp.status, resp.getheader("Access-Control-Allow-Origin")), (200, "*"))
+        self.assertEqual((len(body["ask"]), body["answer"]), (core.DROP_SLOT_MAX, None))
 
     def test_decline_tamper_and_gone(self):
         self.setup_phone()

@@ -1931,6 +1931,9 @@ APPROVAL_FILES_MAX = 20
 APPROVAL_TEXT_PREFIX = "yobiru-approval:"
 OWNER_KEY_TEXT_PREFIX = "yobiru-owner-key:"
 INSTRUCTION_MAX = 4000
+INTENT_MAX_BYTES = 32768     # canonical form: 4,000 CJK characters (6 bytes each as \uXXXX) with 20 files fit
+APPROVAL_TEXT_MAX = 131072   # an approval's yobiru-approval:... spelling (the intent is base64url inside JSON again)
+DROP_SLOT_MAX = 131072       # one sealed drop slot, base64url: an ask or answer carrying the largest intent
 OWNER_KEYS_MAX = 16
 APPROVAL_FIELDS = {"v", "intent", "credential_id", "authenticator_data", "client_data_json", "signature"}
 OWNER_KEY_FIELDS = {"alg", "public_key", "credential_id", "rp_id", "origin", "label"}
@@ -1948,6 +1951,11 @@ class ApprovalError(ValueError):
 
 def b64u(raw):
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def b64u_length(n):
+    """Characters of unpadded base64url for n bytes."""
+    return (4 * n + 2) // 3
 
 
 def unb64u(text, limit=8192, what="field"):
@@ -2201,13 +2209,15 @@ def parse_approval(blob):
         text = blob.strip()
         try:
             if text.startswith(APPROVAL_TEXT_PREFIX):
-                text = unb64u(text[len(APPROVAL_TEXT_PREFIX):], 65536, "approval").decode("utf-8")
+                text = unb64u(text[len(APPROVAL_TEXT_PREFIX):], APPROVAL_TEXT_MAX, "approval").decode("utf-8")
             blob = json.loads(text)
         except (UnicodeDecodeError, ValueError) as exc:
             raise ApprovalError(str(exc) if isinstance(exc, ApprovalError) else "not a Yobiru owner approval")
     if not isinstance(blob, dict) or set(blob) != APPROVAL_FIELDS or type(blob.get("v")) is not int or blob["v"] != 1:
         raise ApprovalError("not a Yobiru owner approval")
-    intent_bytes = unb64u(blob["intent"], 16384, "intent")
+    intent_bytes = unb64u(blob["intent"], b64u_length(INTENT_MAX_BYTES), "intent")
+    if len(intent_bytes) > INTENT_MAX_BYTES:
+        raise ApprovalError("approval content is larger than %d bytes" % INTENT_MAX_BYTES)
     for field, limit in (("credential_id", 1366), ("authenticator_data", 1024), ("client_data_json", 4096),
                          ("signature", 128)):
         unb64u(blob[field], limit, field.replace("_", " "))
@@ -4900,7 +4910,7 @@ def load_approval_arg(home, value):
         if hits:
             return parse_approval(json.loads(hits[0].read_text(encoding="utf-8"))["approval"])
     path = Path(value).expanduser()
-    if path.is_file() and path.stat().st_size <= 70000:
+    if path.is_file() and path.stat().st_size <= APPROVAL_TEXT_MAX + 1024:
         text = path.read_text(encoding="utf-8").strip()
         try:
             saved = json.loads(text)

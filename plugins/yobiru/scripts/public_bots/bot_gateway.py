@@ -187,10 +187,10 @@ LIMIT_DEFAULTS = {
     "delivery_evidence_ttl_seconds": 604800,    # older evidence is stale
     "quiet_wake_seconds": 300,                  # unused credential before a wake, for quiet-wake correlation
     # owner approval drops: a sealed request for the owner's signature and the sealed answer from their device
-    "approval_drop_bytes": 12288,               # one sealed slot (ask or answer)
+    "approval_drop_bytes": 131072,              # one sealed slot (ask or answer); tailmsg.DROP_SLOT_MAX
     "approval_drop_ttl_seconds": 86400,
     "approval_drops_per_hour_per_ip": 30,       # writes per slot kind (ask, answer) from one address
-    "max_approval_drops": 20000,
+    "max_approval_drops": 5000,
 }
 # Limits that may also be 0: no settle delay (a test gateway), private hosts explicitly off, processes never replaced.
 ZERO_LIMITS = frozenset(("hosted_wake_settle_seconds", "hosted_wake_private_hosts", "process_memory_mb"))
