@@ -8,7 +8,7 @@
     },
     "scripts/tailmsg.py": {
       "source": "tailmsg.py",
-      "sha256": "d5b20caf68c615cd39f32b57737044136614ae4fad0e7f24b83dcdfa68009f37"
+      "sha256": "55439b536c4162c30b7af467742fea18bf27e8772e1b259b244bd72b0bb22a72"
     },
     "scripts/codex_bridge/CODEX_DISPATCHER.md": {
       "source": "CODEX_DISPATCHER.md",
@@ -44,15 +44,15 @@
     },
     "scripts/claude_bridge/claude_bridge.py": {
       "source": "claude_bridge.py",
-      "sha256": "a375f4f2b0774b70b9e3d3bfd25d10bdc7ac9c98830c8c951e5bacb49b92ebe3"
+      "sha256": "742d9e01a5ba5a44b69f459d77deb7610b4d4458f090ba382a921a68811571a1"
     },
     "scripts/claude_bridge/CLAUDE_BRIDGE.md": {
       "source": "docs/CLAUDE_BRIDGE.md",
-      "sha256": "e124c9cd9485152fd23ebc14622014ed9ff917e93b0d2cbba877e39c9057b0af"
+      "sha256": "ff33e394b68b1aec754d5ded2bdc3f9f0b7d572e9785514d8eb9e2efc815a1fb"
     },
     "scripts/claude_bridge/install_claude_bridge.py": {
       "source": "install_claude_bridge.py",
-      "sha256": "1bba51c728f9a4ae21b2360a85f252e438c9e0d782fd346b8bd6e62d6561f562"
+      "sha256": "08cd6ae33e547bfd6b2b7553963d55fc74168c6a9a7fffdc7fcb63c5521e94b8"
     },
     "docs/PUBLIC_BOTS.md": {
       "source": "docs/PUBLIC_BOTS.md",

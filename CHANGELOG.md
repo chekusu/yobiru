@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.36 (2026-11-28)
+
+The optional Claude bridge only. Nothing changes on receivers, other clients or the gateway.
+
+- **The bridge keeps working after `claude update` or a Homebrew upgrade.** `claude-bridge install` used to save the
+  versioned file behind `--claude-path` (for example `~/.local/share/claude/versions/2.1.331`) and behind the Python
+  that ran it (a Homebrew Cellar path); an update removes those files and the bridge stops. It now saves both paths
+  as given, made absolute without following symlinks, in the config, the wake adapter and the service templates.
+- **An explicit `--claude-path` replaces the saved executable.** A reinstall used to refuse any change of the
+  executable, so an install whose saved file an update had removed could not be repaired. The preview shows
+  `claude_path`, `python` and, when it changes, `previous_claude_path`; a different agent or working directory is
+  still refused.
+- **The daemon logs only when its outcome changes**, with the time (`at`, UTC). It used to write a line every
+  3-second poll, about 1 MB a day while idle.
+
 ## 0.7.35 (2026-11-28)
 
 Owner approvals: one passkey for all of the owner's computers. Receivers and clients; the gateway is unchanged.
