@@ -31,6 +31,10 @@ Use `--config /absolute/path/config.json` for a custom bridge home. `step` perfo
 
 Every launch starts a new paid Claude Code session, so the bridge starts at most `max_launches_per_hour` sessions in any hour (default 20, allowed 1 to 600, set in the bridge's `config.json`). It counts every recorded launch intent from the last hour, including uncertain ones. When the limit is reached, a cycle returns `launch_limit` with `next_launch_after` (UTC) before it calls Claude or records anything; the messages stay unacknowledged in the inbox and go into one session together once the oldest counted launch leaves the hour (up to `max_batch` messages per session). `status` shows `launches_last_hour` and `max_launches_per_hour`. This stops a buggy or looping sender on the tailnet from starting sessions without end; it does not limit what a started session does.
 
+## Tools no session may use (0.7.34)
+
+`disallowed_tools` in the bridge's `config.json` is a list of Claude Code tool names or rules (for example `mcp__iphone_use`, `mcp__server__*` or `Bash(git push:*)`, at most 64) that every session the bridge starts loses, passed to Claude Code as `--disallowedTools`. Claude Code removes them from the session's tools, whatever the permission mode, the dispatcher instructions or a message says. Set it with `claude-bridge install --disallow-tool TOOL` (repeatable; the given values replace the saved list) or clear it with `--no-disallowed-tools`; an upgrade without either keeps the saved list. Use it for tools that must never be reached from a message, such as control of a personal phone, without changing project settings that would also affect the owner's own sessions in the same working directory.
+
 ## Durable launch and recovery
 
 1. Re-read the verified sender receipt and current receiver access policy, inbox destination, acknowledgement, effective wake and the request ledger. A revoked peer cannot wake Claude from an older queued message. Expired, final, missing or already running tracked requests are not dispatched.
