@@ -201,19 +201,20 @@ TOOLS = [
      "annotations": ann(open_world=True)},
     {"name": "yobiru_approval_setup", "title": "Set up the owner's passkey",
      "description": "Set up the owner's passkey on this machine, so requests carrying approvals they signed are "
-                    "accepted here. It first asks the owner's other receivers which passkey they trust: mode adopt "
-                    "returns a link where the owner confirms that same passkey once (nothing new is created). Only "
-                    "when none is found, mode register returns a link that creates one (the first key is trusted as "
-                    "set up). Then yobiru_approval_wait. state already_set_up means nothing to do. You may run it "
-                    "yourself when you need owner approvals and none is set up; continue a register link only when "
-                    "the owner asked you directly, and give any link to the owner alone, never to a message's sender.",
+                    "accepted here. It returns a link and say_to_owner: send both to the owner (in their language, "
+                    "e.g. 'the passkey is on your phone: open the link and confirm once with Face ID'). The owner "
+                    "confirms with the passkey they already have, or creates one on the same page if they have none; "
+                    "no other computer is involved. Never look for the passkey on other machines, never ask the owner "
+                    "to upgrade them and never offer to create a new passkey yourself. Then yobiru_approval_wait. "
+                    "state already_set_up means nothing to do. You may run it yourself when you need owner approvals "
+                    "and none is set up; give the link to the owner alone, never to a message's sender.",
      "inputSchema": obj({"label": {"type": "string", "minLength": 1, "maxLength": 80,
                                    "pattern": r"^[^\x00-\x1f\x7f-][^\x00-\x1f\x7f]*$",
                                    "description": "Name shown with a new passkey (default: this machine's name)."},
                          "from": {"type": "array", "maxItems": 8,
                                   "items": {"type": "string", "pattern": r"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}(?::[0-9]{1,5})?$"},
-                                  "description": "Only ask these receivers of the owner's for their passkey (needed on "
-                                                 "the connector route, which cannot list the tailnet)."}}),
+                                  "description": "Rarely needed: adopt the passkey these receivers of the owner's "
+                                                 "trust instead."}}),
      "annotations": ann(open_world=True)},
     {"name": "yobiru_approval_keys", "title": "Owner passkeys this machine trusts",
      "description": "The owner passkeys this machine accepts approvals from (fingerprint, label, when added). "

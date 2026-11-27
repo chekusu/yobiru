@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.7.37 (2026-11-28)
+
+Owner approvals: set up the owner's passkey with one Face ID, without any other computer. Gateway, receivers and
+clients; yobiru.com/approve gets the matching screen.
+
+- **The setup link uses the passkey the owner already has.** `approval setup` on a computer or bot with no owner key
+  now gives a link that reads "Use your passkey": the owner taps **Use my passkey** and confirms once with Face ID,
+  fingerprint or PIN, with the passkey on their phone. It never looks for the passkey on other computers and never
+  asks to upgrade them. An owner with no passkey yet taps **Create one** on the same page. The output carries
+  `say_to_owner`, one plain sentence for the agent to pass on.
+- **A passkey directory on the gateway.** A WebAuthn signature does not carry its public key, so every machine that
+  trusts a passkey lists its public half on the relay (`POST /v1/passkeys`), without a label, machine or account.
+  The new machine signs a claim naming itself (`yobiru.owner-key-claim`, no key in it). The signature fits exactly two
+  public keys, and only one of them has a private key anyone holds; the new machine works out both and asks the
+  directory about those two only (`GET /v1/passkeys/{credential_id}/{listing}`), so keys anyone else lists under the
+  same credential id are neither trusted nor in the way. It pins the listed one (`added_via: claimed`). Keys set up
+  before 0.7.37 are listed the next time `approval setup`, or any approval link, runs on a
+  machine that trusts them; until then `wait` also asks the owner's 0.7.35+ receivers on the tailnet, quietly.
+- `--from HOST` still adopts the passkey named receivers trust, and `--new` still creates another one. The skills, the
+  MCP tool and the guard tell agents to send the link with that sentence and nothing else.
+
 ## 0.7.36 (2026-11-28)
 
 The optional Claude bridge only. Nothing changes on receivers, other clients or the gateway.

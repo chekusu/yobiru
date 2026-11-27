@@ -774,8 +774,8 @@ def install_keys(home, a):
             raise Fail(str(e))
     if not recs:
         raise Fail("no owner passkey yet: set one up first with `yobiru approval setup` (your owner opens the link "
-                   "and confirms the passkey their other computers trust, or creates one), or pass --key with the "
-                   "yobiru-owner-key:... text of one they already use")
+                   "on their phone and confirms once with Face ID, using the passkey they already have, or creates "
+                   "one there), or pass --key with the yobiru-owner-key:... text of one they already use")
     return recs
 
 

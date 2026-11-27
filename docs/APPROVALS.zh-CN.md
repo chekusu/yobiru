@@ -15,21 +15,22 @@
 
 ## 1. 设置你的 passkey（所有电脑共用一把）
 
-对一台干活的电脑上的 agent 说：**“帮我设置 Yobiru 主人 passkey。”** 它会运行 `yobiru approval setup`，给你一个链接：
+passkey 在你手机上（或者你 passkey 同步到的设备上）。对一台干活的电脑上的 agent，或者你某个 bot 的 agent 说：
+**“帮我设置 Yobiru 主人 passkey。”** 它会运行 `yobiru approval setup`，发给你一个链接。在手机上打开，页面写着
+**用你的 passkey 确认**：点 **用我的 passkey**，按一次 Face ID、指纹或设备密码就好。不需要任何别的电脑，也不会新建
+passkey。
 
-- **第一台电脑**：链接会创建 passkey。在手机上打开，点 **创建 passkey**。
-- **其他电脑**（0.7.35 起）：设置会先通过你的 tailnet 问你的其他电脑信任哪一把 passkey。链接上写着
-  **在这里也用你的 passkey？**，用 Face ID、指纹或设备密码确认一次即可。不会新建 passkey，这台电脑从此信任同一把。
+只有第一次、你还没有 Yobiru passkey 的时候，才在同一个页面上点 **新建一个**。
 
 agent 需要你批准、却发现本机还没设置 passkey 时，会自己运行同样的设置并把链接发给你。所以新的 agent（Grok Bot、
-Muse、另一个 Claude Code）只会请你用已有的那把 passkey 确认一次。
+Muse、另一个 Claude Code）只会请你确认这一次。
 
-每台电脑仍各自保存它信任的 passkey 列表。一台电脑只有在那把 passkey 亲自为它签名后才会信任它，所以任何电脑都不能让
-另一台信任一把你手里没有的 passkey。你的其他电脑只分享 passkey 的公钥，私钥从不离开你的设备。通过连接器进入
-tailnet、看不到电脑列表的 agent（Grok Bot 的官方 Tailscale 插件）用 `approval setup --from mac-studio` 指定一台。
+原理（0.7.37）：passkey 的签名里不带公钥，但从签名能算出恰好两把公钥，其中只有一把属于真实存在的 passkey。每台信任你
+passkey 的电脑都会把它的公钥登记在 Yobiru 网关（`bots.yobiru.com`）上，新电脑从你的签名算出这两把，只问网关其中哪一把
+登记过；你的签名用这把验得过，别人登记的其他公钥也挡不住它。每台电脑仍各自保存它信任的 passkey 列表，私钥从不离开你的设备。
 
 也可以用公钥文本：请一台已经信任它的电脑上的 agent 给出你的**主人公钥文本**（`yobiru approval keys`），
-再交给新电脑上的 agent：**“信任这把主人公钥：yobiru-owner-key:…”**。只用你从自己电脑上拿到的文本：
+再交给新的 agent：**“信任这把主人公钥：yobiru-owner-key:…”**。只用你从自己电脑上拿到的文本：
 一台还没有任何主人公钥的电脑，会直接信任交给它的第一把。
 
 ## 2. 发出之前先批准
@@ -121,15 +122,16 @@ Claude Code 会话都会用它。
 - 防住电脑自己：控制着接收端电脑或其 agent 的人，可以改它信任哪些 passkey。它防的是这台电脑以外的一切。
 
 创建第一把 passkey 时，谁打开设置链接就信任谁，所以请你自己要求、自己打开链接，并确认页面上写的是你预期的
-那台电脑。agent 只在你直接要求时才新建 passkey，绝不因为某条消息要求就新建。沿用你其他电脑已经信任的那把（0.7.35）
-需要那把 passkey 亲自签名，所以 agent 可以自己发起。此后，一台电脑信任的 passkey 每次变动都需要你的签名。
+那台电脑。agent 只在你直接要求、或它自己需要你批准时才发起设置，绝不因为某条消息要求就发起。用你已有的 passkey
+需要那把 passkey 亲自签名。此后，一台电脑信任的 passkey 每次变动都需要你的签名。
 
 这里用的 passkey 绑定在 `yobiru.com` 上，所以只有 `https://yobiru.com/approve/` 这个页面能请你的设备签名。
 这个页面只是几份静态文件：不用账号，不做追踪，也没有第三方脚本。
 
 ## 隐私
 
-你的私钥留在你的设备上。电脑只保存公钥，放在数据文件夹里的 `owner_keys.json`。
+你的私钥留在你的设备上。电脑只保存公钥，放在数据文件夹里的 `owner_keys.json`。它们还会把每把 passkey 的公钥登记在
+网关的 passkey 目录里，只按 passkey 的编号存放（没有名字、电脑或账号），这样你的下一台电脑才能验你的签名。
 
 链接经由 Yobiru 网关上的一个投递点转送请求和你的回答（默认 `bots.yobiru.com`，你也可以用自己的网关）。两者都用
 一把只存在于链接 `#` 之后那部分的密钥加密，而浏览器从不把那部分发给任何服务器，所以网关只保存它读不懂、也无法
@@ -139,7 +141,7 @@ Claude Code 会话都会用它。
 
 | 命令 | MCP 工具 | 作用 |
 |---|---|---|
-| `yobiru approval setup [--from HOST] [--new] [--label NAME] [--key TEXT] [--bot @BOT]` | `yobiru_approval_setup` | 在本机设置主人 passkey，返回链接。还没有公钥时，沿用主人其他接收端信任的那把（`mode: adopt`，主人用它签一次；`--from` 指定去问哪几台），找不到才新建（`mode: register`）。已经设置过：`already_set_up`；`--new` 添加第二把。`--bot` 指定这个数据目录替哪个 Friends bot 回复。 |
+| `yobiru approval setup [--new] [--label NAME] [--key TEXT] [--from HOST] [--bot @BOT]` | `yobiru_approval_setup` | 在本机设置主人 passkey，返回链接和 `say_to_owner`。还没有公钥时（`mode: claim`，0.7.37），主人用已有的 passkey 确认一次，没有的话在同一页面新建；`wait` 按凭据编号在中转网关的 passkey 目录里查到公钥，验过签名才信任。已经设置过：`already_set_up`，不用再做什么。`--new` 添加第二把；`--from` 沿用指定接收端信任的那把（`mode: adopt`）。`--bot` 指定这个数据目录替哪个 Friends bot 回复。 |
 | `yobiru approval request PEER/AGENT TEXT [--file F] [--expires 1h] [--uses 1] [--any-requester]` | `yobiru_approval_request` | 请主人批准一条指令，返回链接。 |
 | `yobiru approval for ID` | `yobiru_approval_for` | 在接收端：为一个没带签名的请求生成让主人批准的链接。 |
 | `yobiru approval for MSG_ID [--bot @BOT]` | | Friends bot 的 agent（在它的原生绑定数据目录里）：为这个 bot 收到的一条消息生成让主人批准的链接；`give_link_to` 和 `reply_text` 说明链接该给谁。 |
