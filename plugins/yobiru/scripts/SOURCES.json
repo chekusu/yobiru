@@ -8,7 +8,7 @@
     },
     "scripts/tailmsg.py": {
       "source": "tailmsg.py",
-      "sha256": "7bf03ca70d6990d1fe9bfef4d992b871a01117c4c56eaeaf41ec2e794e609a9d"
+      "sha256": "d5b20caf68c615cd39f32b57737044136614ae4fad0e7f24b83dcdfa68009f37"
     },
     "scripts/codex_bridge/CODEX_DISPATCHER.md": {
       "source": "CODEX_DISPATCHER.md",
