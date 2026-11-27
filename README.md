@@ -8,7 +8,7 @@ Website: [yobiru.com](https://yobiru.com) (16 languages) · Install: give your a
 
 <!-- README-I18N:START -->
 
-**English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
+**English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md) | [Türkçe](README.tr.md)
 
 <!-- README-I18N:END -->
 
