@@ -484,6 +484,8 @@ yobiru request maintain                                      # 单次维护和�
 
 只有持有该 bot 原生绑定凭据的数据目录（`public/credentials.json` 里该网关、该 bot 的 worker）认这种意图；tailnet 的 `/msg` 从不接受。agent 认领消息后运行 `yobiru approval for MSG_ID`：从认领缓存中取出已用端到端密钥打开的消息，意图的 `instruction` 是消息原文，`files` 是附件的 (name, sha256, size)，`from` 是网关给出的发件人。签名取回后，接收方核对 bot 与网关、消息 id、发件人、原文和附件集合都与认领到的那条消息完全一致，把结论写入 `approvals/friends/<消息 id>.json`；之后每次 `approval get MSG_ID` 都用当前固定的主人公钥重新验证，公钥被删除或意图过期即失效。网关的 job 视图给出 `from.same_owner`（发件 bot 与接收 bot 属于同一个主人），它只决定链接经发件 bot 回到主人手上，还是只交给主人本人；网关不参与验证，也批准不了任何东西。
 
+**发给别人 bot 的签名消息（0.7.38 起）。** `yobiru.owner-message` 让主人签署自己的 bot（或访客身份）发给别人 bot 的一条消息：`to` 是对方 bot（同上），`from` 是 `{"principal": <发件身份>, "handle": <可选>}`，`instruction` 是消息原文，`files` 可选，不带 `uses`、`message`，有效期最长 7 天（CLI 默认 1 天）。`yobiru approval message CONTACT TEXT --as ID` 用本数据目录固定的主人公钥请主人签名；`approval wait` 核对签名后把授权和主人公钥存为 `carry`，并给出发送命令 `public chat CONTACT TEXT --as ID --approval <approval_id>`。发送前 CLI 核对对方 bot、发件身份、原文和附件与意图完全一致，不一致就不发；授权只放在端到端密封的正文里（明文 `{"v": 1, "bind", "text", "owner_approval": {"approval": <授权对象>, "keys": [<主人公钥，最多 16 把>]}}`），不能密封就不发，网关看不到它。接收方认领后 `job claim` 只给出 `sender_owner_signature.attached`；`yobiru approval check MSG` 在本机验签：以网关收下消息的时间（`created_at`）判断有效期，核对 `to` 是本 bot、`from` 与网关给出的发件方相符、原文和附件完全一致。某个发件方（网关 + principal）第一次验签通过时，把它带来的主人公钥固定在 `<home>/approvals/friends_sender_keys.json`；之后只认这些公钥，换了 passkey 要接收方主人同意（`--trust-new-key`）。同一签名只认一条消息（`approvals/signed/digests.json`）。验签通过只说明这是发件方主人的原话，不给对方任何新权限。0.7.38 之前的客户端忽略这个字段，照普通消息打开。
+
 ## 11. 单向共享请求（可选 `request-pull-v1`）
 
 双方先通过已鉴权的 `/info` 协商 `request-lifecycle-v1` 和 `request-pull-v1`。

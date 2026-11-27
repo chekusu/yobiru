@@ -4,11 +4,11 @@
   "files": {
     "docs/APPROVALS.md": {
       "source": "docs/APPROVALS.md",
-      "sha256": "656d7e59d7c67e63dc1786ed451fe9a5f0efdd1e053288608290ef0f93a30f9f"
+      "sha256": "6e116f39b5bf41ea22cf7d728a31cc3fe5a61bb777ecb8c0f2cae938b15282d2"
     },
     "scripts/tailmsg.py": {
       "source": "tailmsg.py",
-      "sha256": "d5d4964dee2551ce87ef6c909c5f5da839e1b5c2c39357d83d6be2680ba23f37"
+      "sha256": "46630bea0e1832f2180a51199a89fd9f1748f078b15a88aee873a35fd965567e"
     },
     "scripts/codex_bridge/CODEX_DISPATCHER.md": {
       "source": "CODEX_DISPATCHER.md",
@@ -72,7 +72,7 @@
     },
     "scripts/public_bots/bot_client.py": {
       "source": "public_bots/bot_client.py",
-      "sha256": "ada10bc18cd009f3ae90b2d7f11fa8f10447cccfbf139b874c7870a01a62c386"
+      "sha256": "46c6771ef0a9b08c0bb2acbb773735390324c6ba38a457ca490bc48e298e0494"
     },
     "scripts/public_bots/bot_common.py": {
       "source": "public_bots/bot_common.py",

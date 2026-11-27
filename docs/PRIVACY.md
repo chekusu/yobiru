@@ -1,8 +1,9 @@
 # Yobiru plugin privacy policy
 
-Effective date: November 28, 2026. This revision, with Yobiru 0.7.37, adds the passkey directory: the public half
-of an owner's passkey, which a gateway keeps under the passkey's id so the owner's next computer can check their
-signature (see [Owner approvals](#owner-approvals-0730-and-later)). The November 27, 2026 revision, with Yobiru 0.7.30
+Effective date: November 28, 2026. This revision, with Yobiru 0.7.37 and 0.7.38, adds the passkey directory: the
+public half of an owner's passkey, which a gateway keeps under the passkey's id so the owner's next computer can check
+their signature; and messages an owner signs for someone else's bot, whose signature and public keys that bot keeps
+(see [Owner approvals](#owner-approvals-0730-and-later)). The November 27, 2026 revision, with Yobiru 0.7.30
 to 0.7.32, describes
 owner approvals signed with a passkey: the public keys a computer keeps, the
 approvals it records (0.7.31: also for one message a Friends bot received; 0.7.32: one Claude Code tool call), and the sealed drops a gateway relays for 24 hours (see
@@ -280,6 +281,12 @@ drop holds the message's text as the agent opened it, the bot, the sender's bot 
 message's file names, sizes and hashes, sealed the same way; the gateway that carries the drop learns nothing more
 than for any other drop. The agent's computer keeps the signed approval and its own verdict, or a note that the owner
 declined, in `<home>/approvals/friends/`.
+
+Since 0.7.38 an owner can sign a message their own bot sends to someone else's bot (`approval message`). The signed
+request (both bots, the text, file names, sizes and hashes) goes through a drop like any other. The signature and the
+public keys of the owner's passkeys then travel inside the message's end-to-end encrypted text, so the gateway cannot
+read them. The receiving bot's agent checks them on its own device and keeps them there: the sender's owner keys in
+`<home>/approvals/friends_sender_keys.json`, under the sending bot's id, and each verdict in `<home>/approvals/signed/`.
 
 Since 0.7.32 the Claude Code guard (`guard install`) asks the owner to sign one tool call that Claude Code's auto
 mode stopped. That drop holds the call as the owner reads it (a command and its folder, a file's path and content, or

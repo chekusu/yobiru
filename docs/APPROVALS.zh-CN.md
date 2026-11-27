@@ -73,6 +73,17 @@ Claude Code 不会只凭一条聊天消息就动手。它回复一个链接，�
 发件人），默认一小时后过期，除非你选更长。如果是别人的消息要求做实际的事，agent 仍然可以来问你，但链接只给你一个人，
 绝不给发件人。
 
+### 给朋友的 bot 传话时带上你的签名（0.7.38）
+
+你的签名也可以跟着一条消息走，让朋友的 bot 知道这些话确实是你说的，比如你要把一项授权传过去：对你的 agent 说
+**“替我签名告诉 Muse 的 bot：可以帮我订明晚七点两个人的位子，记在我账上。”** 它会给你一个链接，上面写着由你的哪个
+bot 发、发给哪个 bot，以及你这条消息的原文和附件。用 Face ID 批准后，你的 bot 会原样发出这条消息，签名封在里面
+（端到端加密，网关看不到）。
+
+朋友的 bot 在自己的设备上核验签名（`yobiru approval check`）。你的 bot 发来的第一条签名消息会让它记住你 passkey 的公钥；
+之后它只认这一把，换了别的 passkey 要它的主人点头。签名只证明这是你的原话，只对那一条消息、那一个 bot 有效，
+不会给任何人新的权限：朋友的 bot 怎么处理，由它的主人决定。
+
 ## 5. Claude Code：自动模式拦下的操作，用签名放行（0.7.32）
 
 Claude Code 的自动模式会拦下它认为有风险的工具调用，只有你在同一个对话里亲口说可以，它才放行。如果这个对话不在你
@@ -146,6 +157,8 @@ Claude Code 会话都会用它。
 | `yobiru approval for ID` | `yobiru_approval_for` | 在接收端：为一个没带签名的请求生成让主人批准的链接。 |
 | `yobiru approval for MSG_ID [--bot @BOT]` | | Friends bot 的 agent（在它的原生绑定数据目录里）：为这个 bot 收到的一条消息生成让主人批准的链接；`give_link_to` 和 `reply_text` 说明链接该给谁。 |
 | `yobiru approval wait REF [--timeout S]`、`get REF` | `yobiru_approval_wait` | 取回答复：`signed`（带 `approval_id`）、`key_added`、`declined`，或仍在等待。`get MSG_ID` 给出一条 Friends 消息的结论，每次都重新检查。 |
+| `yobiru approval message 联系人 文字 [--as @BOT] [--attach 文件] [--expires 1d]` | | Friends（0.7.38）：生成让主人签名的链接，签的是自己的 bot 发给别人 bot 的一条消息；签好后 `wait` 会给出原样发送的 `public chat ... --approval ID` 命令，签名封在消息里。 |
+| `yobiru approval check MSG_ID [--bot @BOT] [--trust-new-key]` | | Friends（0.7.38）：在收消息的 bot 的设备上，核验发件方主人附在已认领消息上的签名。第一次核验通过就记住发件方主人的公钥；以后换了 passkey 要加 `--trust-new-key`，并且要本 bot 主人同意。 |
 | `yobiru approval list` | | 还在等主人的链接，以及已有结论的 Friends 消息。 |
 | `yobiru approval keys` | `yobiru_approval_keys` | 本机信任的主人公钥，含可分享的公钥文本。 |
 | `yobiru approval remove FINGERPRINT` | | 请主人签名删除一把公钥。 |

@@ -21,12 +21,15 @@ received (`approval for msg_...`). The intent names that bot on its gateway, the
 and files; when the owner signs, `approval wait` checks it here against the same pinned keys and records the verdict.
 """
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 import re
 import secrets
+import shlex
 import sys
 import time
 import urllib.parse
@@ -46,6 +49,8 @@ DISCOVERY_TIMEOUT = 3.0                      # seconds per receiver asked for th
 DISCOVERY_MAX = 64                           # machines asked at most
 UPGRADE_NOTE = "does not share its owner keys yet"     # marks a receiver to upgrade in discovery notes
 MODES = ("sign", "register", "add-key", "claim")
+MESSAGE_EXPIRES = "1d"                       # a message signed for a friend's bot: time to sign it and send it
+SENDER_KEYS_FILE = "friends_sender_keys.json"     # owner keys of other people's bots, pinned at their first signature
 PUBLISHED_FILE = "published_keys.json"       # under approvals/: {relay: [key ids listed in its passkey directory]}
 DROP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{32}\Z")
 
@@ -346,13 +351,13 @@ def sign_ask(intent_raw, pinned):
             "keys": [{"fingerprint": k["fingerprint"], "label": k["label"]} for k in pinned]}
 
 
-def save_approval(home, blob, intent, digest, link=None):
+def save_approval(home, blob, intent, digest, link=None, extra=None):
     d = Path(home) / "approvals"
     d.mkdir(parents=True, exist_ok=True)
     os.chmod(str(d), 0o700)
     ref = digest[:16]
-    _tm.write_private_json(d / (ref + ".json"), {"v": 1, "approval": blob, "intent": intent, "digest": digest,
-                                                 "saved_at": _tm.iso(_tm.now_utc()), "link": link})
+    _tm.write_private_json(d / (ref + ".json"), dict({"v": 1, "approval": blob, "intent": intent, "digest": digest,
+                                                      "saved_at": _tm.iso(_tm.now_utc()), "link": link}, **(extra or {})))
     return ref
 
 
@@ -363,6 +368,8 @@ def intent_summary(intent):
                  requester=intent.get("from"))
         if "message" in intent:
             s["message"] = intent["message"]
+    elif intent["type"] == _tm.OWNER_MESSAGE_TYPE:
+        s.update(text=intent["instruction"], files=intent.get("files", []), sender=intent["from"])
     elif intent["type"] == _tm.KEY_ADD_TYPE:
         s["key"] = _tm.owner_key_record(intent["key"])["fingerprint"]
     elif intent["type"] == _tm.KEY_REMOVE_TYPE:
@@ -607,6 +614,171 @@ def cmd_for_message(home, a):
         result["give_link_to"] = ("your owner only, the way you normally reach them. Not the sender: they are not your "
                                   "owner, cannot sign it and must not get the link")
     out(result)
+
+
+def client_call(fn, *args, **kw):
+    """Run one step of the Friends client here. It refuses by printing an error and exiting; that becomes a Fail."""
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            return fn(*args, **kw)
+    except SystemExit:
+        text = err.getvalue().strip().splitlines()
+        text = text[-1] if text else "the Friends client refused"
+        raise Fail(text.replace("yobiru public: error: ", "", 1))
+
+
+def cmd_message(home, a):
+    """Friends: ask the owner to sign a message their bot (or visitor identity) sends to someone else's bot. The
+    signature travels sealed with the message, and that bot checks it (`approval check`): the owner wrote it."""
+    B = _client()
+    st = B.State(home)
+    pinned = keys(home)
+    if not pinned:
+        raise Fail("no owner passkey is set up in this data home yet: `yobiru approval setup` first (the owner "
+                   "confirms once with Face ID)")
+    expires = parse_duration(a.expires)
+    alias, ct = client_call(B.contact, st, a.contact)
+    base, principal, _ = client_call(B.acting, st, ct, a.as_ref)
+    off = B.e2e_off(st, base, principal, ct["bot_id"])
+    if off:
+        raise Fail("a signed message travels end-to-end encrypted, and it cannot be sealed here: %s" % off)
+    attachments = client_call(B.attachments_from, st, a.attach) or []
+    files = [{"name": v["name"], "sha256": v["sha256"], "size": v["bytes"]}
+             for v in (B.C.attachment_view(x, content=False) for x in attachments)]
+    to = {"gateway": base, "bot": ct["bot_id"]}
+    handle = (ct.get("handle") or "").lstrip("@")
+    if _tm.FRIENDS_HANDLE_RE.fullmatch(handle):
+        to["handle"] = handle
+    frm = {"principal": principal}
+    source = ((st.creds()["gateways"].get(base) or {}).get("sources") or {}).get(principal) or {}
+    mine = (source.get("handle") or "").lstrip("@")
+    if principal.startswith("bot_") and _tm.FRIENDS_HANDLE_RE.fullmatch(mine):
+        frm["handle"] = mine
+    intent, raw = new_intent(_tm.OWNER_MESSAGE_TYPE, to, expires, {"from": frm, "instruction": a.text, "files": files})
+    purpose = {"signed_message": True, "contact": alias, "as": principal,
+               "attach": [str(Path(p).expanduser().absolute()) for p in a.attach]}
+    drop = open_drop(home, relay_url(a.relay), "sign", sign_ask(raw, pinned), intent["expires_at"], purpose)
+    out({"ok": True, "state": "waiting_for_owner", "ref": drop["id"], "link": drop["link"],
+         "approval": intent_summary(intent),
+         "say_to_owner": "Open this link and confirm with Face ID to sign this message as your own words.",
+         "next": "give the owner the link; then `yobiru approval wait %s`, which prints the command that sends it"
+                 % drop["id"]})
+
+
+def signed_dir(home):
+    d = Path(home) / "approvals" / "signed"
+    d.mkdir(parents=True, exist_ok=True)
+    for p in (d.parent, d):
+        os.chmod(str(p), 0o700)
+    return d
+
+
+def sender_keys(home):
+    """{"<gateway> <principal>": {"keys": [owner key records], "pinned_at", "handle"}}: the owner keys of other
+    people's bots and visitors, pinned here at the first signature from that sender that checked out."""
+    path = Path(home) / "approvals" / SENDER_KEYS_FILE
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        raise Fail("%s is damaged; no sender's owner key is trusted until it is repaired" % path)
+    return obj.get("senders") if isinstance(obj, dict) and isinstance(obj.get("senders"), dict) else {}
+
+
+def save_sender_keys(home, senders):
+    signed_dir(home)
+    _tm.write_private_json(Path(home) / "approvals" / SENDER_KEYS_FILE, {"v": 1, "senders": senders})
+
+
+def carried_keys(signed):
+    recs = []
+    for k in (signed.get("keys") or [])[:_tm.OWNER_KEYS_MAX]:
+        if not isinstance(k, dict):
+            continue
+        try:
+            rec = _tm.owner_key_record({f: k[f] for f in _tm.OWNER_KEY_FIELDS if f in k})
+        except _tm.ApprovalError:
+            continue
+        if rec["id"] not in [r["id"] for r in recs]:
+            recs.append(rec)
+    return recs
+
+
+def check_signed(home, base, bot_id, job, trust_new=False):
+    """The verdict on the signature a message's sender attached: their owner's, for exactly this message to this
+    bot. The sender's owner keys are pinned here at the first signature that checks out (they travel with it)."""
+    mid = job.get("job_id")
+    signed = (job.get("untrusted_content") or {}).get("sender_owner_approval")
+    if not isinstance(signed, dict) or not isinstance(signed.get("approval"), dict):
+        return {"verified": False, "reason": "the sender attached no owner signature to this message"}
+    sender = (job.get("from") or {}).get("principal_id")
+    if not isinstance(sender, str) or not _tm.FRIENDS_PRINCIPAL_RE.fullmatch(sender):
+        return {"verified": False, "reason": "the message has no sender to check the signature against"}
+    slot = "%s %s" % (base, sender)
+    senders = sender_keys(home)
+    known = senders.get(slot)
+    pinned = []
+    for k in (known or {}).get("keys") or []:
+        try:
+            pinned.append(_tm.owner_key_record(k, extra=True))
+        except _tm.ApprovalError:
+            continue
+    offered = carried_keys(signed)
+    first = not pinned
+    verdict = _tm.friends_signed_message_verdict(signed["approval"], pinned or offered, base, bot_id, job,
+                                                 now=_tm.now_utc())
+    added = None
+    if not verdict["verified"] and pinned and "does not trust" in verdict.get("reason", ""):
+        fresh = [k for k in offered if k["id"] not in [p["id"] for p in pinned]]
+        again = _tm.friends_signed_message_verdict(signed["approval"], fresh, base, bot_id, job, now=_tm.now_utc())
+        if again["verified"] and not trust_new:
+            return {"verified": False, "new_key": again["key"],
+                    "reason": "signed with a passkey this sender's owner has not used with this bot before. Ask "
+                              "your owner; only if they say so, run `yobiru approval check %s --trust-new-key`" % mid}
+        if again["verified"]:
+            verdict, added = again, next(k for k in fresh if k["id"] == again["key"]["id"])
+    if not verdict["verified"]:
+        return verdict
+    index = signed_dir(home) / "digests.json"
+    try:
+        seen = json.loads(index.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        seen = {}
+    if seen.get(verdict["digest"]) not in (None, mid):
+        return {"verified": False, "reason": "this signature was already used for %s; a signature covers one "
+                                             "message" % seen[verdict["digest"]]}
+    seen[verdict["digest"]] = mid
+    _tm.write_private_json(index, seen)
+    if first or added:
+        stamp = _tm.iso(_tm.now_utc())
+        keep = pinned + ([dict(added, added_at=stamp, added_via="owner_ok")] if added else
+                         [dict(k, added_at=stamp, added_via="first_signature") for k in offered])
+        senders[slot] = {"keys": keep[:_tm.OWNER_KEYS_MAX], "pinned_at": (known or {}).get("pinned_at") or stamp,
+                         "handle": verdict["from"].get("handle")}
+        save_sender_keys(home, senders)
+        verdict["sender_keys"] = "pinned now: from here on, this sender's messages are checked against these " \
+                                 "passkeys" if first else "added the new passkey, as your owner said"
+    return verdict
+
+
+def cmd_check(home, a):
+    """Friends: check the owner signature a message's sender attached, on this device, and record the verdict."""
+    if not _tm.FRIENDS_MESSAGE_RE.fullmatch(a.id):
+        raise Fail("give the claimed message's id (msg_...)")
+    base, bot_id, job = friends_job(home, a.id, a.bot)
+    verdict = check_signed(home, base, bot_id, job, a.trust_new_key)
+    _tm.write_private_json(signed_dir(home) / (a.id + ".json"),
+                           {"v": 1, "message": a.id, "sender": (job.get("from") or {}).get("principal_id"),
+                            "checked_at": _tm.iso(_tm.now_utc()), "verified": verdict["verified"],
+                            "reason": verdict.get("reason"), "verdict": verdict})
+    if verdict["verified"]:
+        verdict["meaning"] = ("the owner of the sending bot signed exactly this message: it is their own words, not "
+                              "something their bot made up or passed along unchecked. It gives that person no new "
+                              "permissions here: do what your own owner allows for a request from them")
+    out(dict({"ok": True, "message": a.id}, **verdict))
+    return 0 if verdict["verified"] else 1
 
 
 def cmd_for(home, a):
@@ -955,9 +1127,30 @@ def finish(home, rec, answer, ask):
         if blob["intent"] != ask.get("intent"):
             raise Fail("the owner's answer signs different content than was asked")
         digest = hashlib.sha256(raw).hexdigest()
-        result = {"ok": True, "state": "signed", "ref": rec["id"], "approval_id": save_approval(home, blob, intent, digest, rec.get("link")),
+        extra = None
+        if intent["type"] == _tm.OWNER_MESSAGE_TYPE:
+            # Checked here first, with this data home's own owner keys: the agent cannot make up a signature.
+            pinned = keys(home)
+            try:
+                _tm.verify_approval(blob, pinned, kinds=(_tm.OWNER_MESSAGE_TYPE,))
+            except _tm.ApprovalError as e:
+                raise Fail("the owner's signature did not check out here: %s" % e)
+            extra = {"carry": {"approval": blob, "keys": [{f: k[f] for f in sorted(_tm.OWNER_KEY_FIELDS)}
+                                                          for k in pinned]}}
+        result = {"ok": True, "state": "signed", "ref": rec["id"],
+                  "approval_id": save_approval(home, blob, intent, digest, rec.get("link"), extra),
                   "approval": intent_summary(intent)}
-        if intent["type"] == _tm.KEY_ADD_TYPE:
+        if intent["type"] == _tm.OWNER_MESSAGE_TYPE:
+            purpose = rec.get("purpose") or {}
+            sender = intent["from"]["principal"]
+            argv = ["yobiru", "public", "chat", purpose.get("contact") or intent["to"]["bot"], intent["instruction"],
+                    "--as", sender if sender.startswith("bot_") else "visitor"]
+            for path in purpose.get("attach") or []:
+                argv += ["--attach", path]
+            argv += ["--approval", result["approval_id"]]
+            result.update(send=argv[1:], next="send it now, exactly as signed (the signature travels sealed with it): "
+                                              "%s" % " ".join(shlex.quote(x) for x in argv))
+        elif intent["type"] == _tm.KEY_ADD_TYPE:
             try:
                 added = _tm.owner_key_add(home, intent["key"], blob, *audience(home, intent["to"]))
             except _tm.ApprovalError as e:
@@ -1111,8 +1304,18 @@ def cmd_list(home, a):
         verdict = friends_status(home, path.stem)
         messages.append({"message": path.stem, "verified": bool(verdict and verdict["verified"]),
                          "reason": (verdict or {}).get("reason"), "expires_at": (verdict or {}).get("expires_at")})
+    signed = []
+    sdir = Path(home) / "approvals" / "signed"
+    for path in (sdir.glob("msg_*.json") if sdir.is_dir() else []):
+        try:
+            rec = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        signed.append({"message": path.stem, "sender": rec.get("sender"), "verified": rec.get("verified") is True,
+                       "reason": rec.get("reason"), "checked_at": rec.get("checked_at")})
     out({"ok": True, "waiting_for_owner": sorted(pending, key=lambda r: r["created_at"] or "", reverse=True),
-         "friends_messages": sorted(messages, key=lambda r: r["message"])})
+         "friends_messages": sorted(messages, key=lambda r: r["message"]),
+         "signed_by_senders": sorted(signed, key=lambda r: r["message"])})
 
 
 def parser():
@@ -1146,6 +1349,19 @@ def parser():
     p.add_argument("--expires", default="1h")
     p.add_argument("--uses", type=int, default=1)
     p.add_argument("--relay")
+    p = sp.add_parser("message", help="Friends: ask the owner to sign a message their bot sends to someone else's bot, "
+                                      "so that bot can check the owner wrote it themselves")
+    p.add_argument("contact", help="the friend's bot: a saved contact alias")
+    p.add_argument("text", help="the message, exactly as it will be sent")
+    p.add_argument("--as", dest="as_ref", help="send as this bot of the owner's (handle or id), or `visitor`")
+    p.add_argument("--attach", action="append", default=[], metavar="PATH", help="a file the message will carry")
+    p.add_argument("--expires", default=MESSAGE_EXPIRES, help="time to sign and send it: 1h, 1d (default), at most 7d")
+    p.add_argument("--relay")
+    p = sp.add_parser("check", help="Friends: check the signature of the sender's owner on a message your bot claimed")
+    p.add_argument("id", help="the claimed message id (msg_...)")
+    p.add_argument("--bot", help="the bot that claimed it (id or handle)")
+    p.add_argument("--trust-new-key", action="store_true",
+                   help="accept a passkey not seen before from that sender's owner (only when your owner says so)")
     p = sp.add_parser("wait", help="wait for the owner's answer and save or apply it")
     p.add_argument("ref", help="the ref or link `approval request|for|setup|remove` printed, or a Friends message id")
     p.add_argument("--timeout", type=int, default=300, help="seconds to wait (default 300; 0 checks once)")
@@ -1173,7 +1389,8 @@ def main(home, argv, launcher):
         if a.cmd == "get":
             a = argparse.Namespace(cmd="wait", ref=a.ref, timeout=0)
         return {"setup": cmd_setup, "request": cmd_request, "for": cmd_for, "wait": cmd_wait, "keys": cmd_keys,
-                "remove": cmd_remove, "verify": cmd_verify, "list": cmd_list}[a.cmd](Path(home), a) or 0
+                "remove": cmd_remove, "verify": cmd_verify, "list": cmd_list, "message": cmd_message,
+                "check": cmd_check}[a.cmd](Path(home), a) or 0
     except (Fail, _tm.ApprovalError) as e:
         out({"ok": False, "error": str(e)})
         return 2

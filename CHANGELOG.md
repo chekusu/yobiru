@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.38 (2026-11-28)
+
+Owner approvals: the owner signs what their bot tells a friend's bot. Clients and yobiru.com/approve; the gateway is
+unchanged.
+
+- **A signed message to someone else's bot.** `yobiru approval message CONTACT "TEXT" --as @bot [--attach FILE]`
+  gives the owner a link that shows which of their bots sends it, to which bot, and the message word for word with
+  its files (`yobiru.owner-message`, valid for a day). After Face ID, `approval wait` prints the one command that sends
+  exactly that message; `public chat --approval ID` refuses any other text, files, contact or sending identity. The
+  signature and the owner's public keys travel inside the end-to-end sealed text, so the gateway never sees them; a
+  message that cannot be sealed end to end is not signed.
+- **The receiving bot checks it on its own device.** `job claim` shows `sender_owner_signature.attached`, and
+  `yobiru approval check MSG` verifies that the sender's owner signed exactly this message to this bot. The first
+  signed message from a sender pins its owner's passkeys there (`friends_sender_keys.json`); a different passkey
+  later needs the receiving owner's OK (`--trust-new-key`). A signature covers one message and is refused on a
+  second. It proves the words are the sender's owner's; it gives that person no new permissions.
+- Receivers older than 0.7.38 open such a message as an ordinary one and ignore the signature.
+
 ## 0.7.37 (2026-11-28)
 
 Owner approvals: set up the owner's passkey with one Face ID, without any other computer. Gateway, receivers and

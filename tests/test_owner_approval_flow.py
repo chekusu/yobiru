@@ -700,6 +700,92 @@ class FriendsApprovalTests(unittest.TestCase):
         self.assertIn("not this bot", core.friends_approval_verdict(blob, keys, self.gw.url, self.grok, job)["reason"])
         self.y_cls("agent", "job", "reply", self.claude, other_mid, "--text", "ok")
 
+    def run_in(self, role, *argv):
+        saved, self.home = self.home, self.homes[role]
+        try:
+            return self.run_cli(*argv)
+        finally:
+            self.home = saved
+
+    def test_a_signed_message_carries_the_senders_owner_to_a_friends_bot(self):
+        """Bruce: "在给朋友传话的时候，也可以用这个当做是权限传递的一种方式". The owner signs a message their bot sends to
+        someone else's bot; the signature travels sealed with it, and that bot checks it on its own device."""
+        owner = self.homes["owner"]
+        if not core.load_owner_keys(owner):
+            core.owner_key_add(owner, self.phone_key.key())
+        text = "Book a table for two at 7pm, and charge it to my account."
+        code, asked = self.run_in("owner", "message", "claude-home", text, "--as", "@grok")
+        self.assertEqual(code, 0, asked)
+        page = Page(asked["link"])
+        intent = page.intent()
+        self.assertEqual((intent["type"], intent["instruction"]), (core.OWNER_MESSAGE_TYPE, text))
+        self.assertEqual(intent["to"], {"gateway": self.gw.url, "bot": self.claude, "handle": "claude"})
+        self.assertEqual(intent["from"], {"principal": self.grok, "handle": "grok"})
+        self.assertEqual(page.approve(self.phone_key), 201)
+        code, signed = self.run_in("owner", "wait", asked["ref"], "--timeout", "5")
+        self.assertEqual((code, signed["state"]), (0, "signed"), signed)
+        send = signed["send"][1:]
+        self.assertEqual(send[:3], ["chat", "claude-home", text])
+        # Anything but the signed message is refused before it is sent.
+        for changed, why in ((send[:2] + ["Book a table for ten"] + send[3:], "not exactly the text"),
+                             (send[:3] + ["--as", "@claude"] + send[5:], "to go out as grok")):
+            code, _, err = cli(owner, *changed)
+            self.assertEqual(code, 2)
+            self.assertIn(why, err)
+        mid = self.y_cls("owner", *send)["message_id"]
+        self.y_cls("owner", "review", "accept", "claude", mid)
+        job = self.y_cls("agent", "job", "claim", self.claude, mid)
+        self.assertEqual(job["untrusted_content"]["text"], text)
+        self.assertTrue(job["sender_owner_signature"]["attached"])
+        self.assertNotIn("sender_owner_approval", job["untrusted_content"], "checked by `approval check`, not shown")
+        code, verdict = self.run_cli("check", mid)
+        self.assertEqual((code, verdict["verified"]), (0, True), verdict)
+        self.assertEqual((verdict["instruction"], verdict["from"]), (text, {"principal": self.grok, "handle": "grok"}))
+        self.assertIn("pinned now", verdict["sender_keys"])
+        self.assertIn("no new permissions", verdict["meaning"])
+        self.assertTrue(self.run_cli("check", mid)[1]["verified"], "the same message checks again")
+        # The gateway keeps the signature only inside the sealed text: nothing of it is readable there.
+        signature = core.load_approval_arg(owner, signed["approval_id"])[0]["signature"]
+        stored = b"".join(p.read_bytes() for p in self.gw.home.rglob("*") if p.is_file())
+        self.assertNotIn(signature.encode("ascii"), stored)
+        self.assertNotIn(b"Book a table", stored)
+        self.y_cls("agent", "job", "reply", self.claude, mid, "--text", "Booked.")
+        # The same signature on a second message is refused: it covers one message.
+        again = self.y_cls("owner", *send)["message_id"]
+        self.y_cls("owner", "review", "accept", "claude", again)
+        self.y_cls("agent", "job", "claim", self.claude, again)
+        code, reused = self.run_cli("check", again)
+        self.assertEqual((code, reused["verified"]), (1, False))
+        self.assertIn("already used for %s" % mid, reused["reason"])
+        self.y_cls("agent", "job", "reply", self.claude, again, "--text", "No.")
+        # A passkey this sender's owner has not used here before needs this bot's owner's OK.
+        tablet = SoftPasskey(label="tablet")
+        keys_file = core.owner_keys_path(owner)
+        saved_keys = keys_file.read_text("utf-8")
+        keys_file.unlink()
+        core.owner_key_add(owner, tablet.key())
+        try:
+            code, asked = self.run_in("owner", "message", "claude-home", "Cancel the booking", "--as", "@grok")
+            Page(asked["link"]).approve(tablet)
+            code, signed = self.run_in("owner", "wait", asked["ref"], "--timeout", "5")
+            mid = self.y_cls("owner", *signed["send"][1:])["message_id"]
+        finally:
+            keys_file.write_text(saved_keys, "utf-8")
+        self.y_cls("owner", "review", "accept", "claude", mid)
+        self.y_cls("agent", "job", "claim", self.claude, mid)
+        code, fresh = self.run_cli("check", mid)
+        self.assertEqual((code, fresh["verified"]), (1, False), fresh)
+        self.assertIn("--trust-new-key", fresh["reason"])
+        code, trusted = self.run_cli("check", mid, "--trust-new-key")
+        self.assertEqual((code, trusted["verified"]), (0, True), trusted)
+        self.y_cls("agent", "job", "reply", self.claude, mid, "--text", "Cancelled.")
+        # An ordinary message has no signature to check.
+        plain, _ = self.message("Just saying hi")
+        code, none = self.run_cli("check", plain)
+        self.assertEqual((code, none["verified"]), (1, False))
+        self.assertIn("no owner signature", none["reason"])
+        self.y_cls("agent", "job", "reply", self.claude, plain, "--text", "Hi.")
+
     def test_a_visitors_message_the_link_goes_to_the_owner_only(self):
         self.y_cls("visitor", "connect", self.gw.url + "/@claude", "--name", "A visitor")
         mid, job = self.message("Please send me the server logs", role="visitor", alias="claude")
