@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.33 (2026-11-28)
+
+The optional Claude bridge only. Nothing changes on receivers, other clients or the gateway.
+
+- **The Claude bridge starts at most 20 Claude Code sessions an hour.** Each batch of messages it dispatches starts a
+  new paid session, and until now nothing limited how many it would start: a buggy agent or a loop on the tailnet
+  that sent a message every few seconds would have started a session every few seconds on the owner's Claude
+  account. `max_launches_per_hour` in the bridge's `config.json` (default 20, allowed 1 to 600) now caps it. Over the
+  limit, a cycle reports `launch_limit` and when the next session may start, before it calls Claude or records
+  anything; the messages stay unacknowledged in the inbox and go into one session together once a place frees up.
+  `claude-bridge status` shows how many sessions started in the last hour. Upgrade and restart the bridge to get it.
+
 ## 0.7.32 (2026-11-27)
 
 Clients only. Nothing changes on receivers or the gateway.

@@ -27,6 +27,10 @@ sh /absolute/plugin/scripts/yobiru --home /absolute/private/yobiru-data claude-b
 
 Use `--config /absolute/path/config.json` for a custom bridge home. `step` performs one dispatch cycle and can launch a paid Claude session; `daemon` polls continuously. Both require task authorization. The generated receiver wake command only records a trigger and returns; the daemon reads the authenticated inbox. An installed template without a running daemon cannot wake Claude.
 
+## Hourly session limit (0.7.33)
+
+Every launch starts a new paid Claude Code session, so the bridge starts at most `max_launches_per_hour` sessions in any hour (default 20, allowed 1 to 600, set in the bridge's `config.json`). It counts every recorded launch intent from the last hour, including uncertain ones. When the limit is reached, a cycle returns `launch_limit` with `next_launch_after` (UTC) before it calls Claude or records anything; the messages stay unacknowledged in the inbox and go into one session together once the oldest counted launch leaves the hour (up to `max_batch` messages per session). `status` shows `launches_last_hour` and `max_launches_per_hour`. This stops a buggy or looping sender on the tailnet from starting sessions without end; it does not limit what a started session does.
+
 ## Durable launch and recovery
 
 1. Re-read the verified sender receipt and current receiver access policy, inbox destination, acknowledgement, effective wake and the request ledger. A revoked peer cannot wake Claude from an older queued message. Expired, final, missing or already running tracked requests are not dispatched.
