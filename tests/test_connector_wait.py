@@ -148,19 +148,6 @@ class GatewayWaitTests(WaitCase):
         self.assertEqual(1, len(obj2["checks"]))
         self.assertLess(took, 3)
 
-    def test_a_refused_wake_ends_the_wait_when_it_may_be_tried_again(self):
-        gw = self.gw
-        mid = gw.chat(gw.conversation(self.beta, self.sa), self.sa, "hello")
-        phase = self.listing()["jobs"][0]["phase"]
-        for step in ({"step": "intent", "wake_id": "wake-refused-1", "phase": phase},
-                     {"step": "result", "wake_id": "wake-refused-1", "outcome": "refused"}):
-            self.assertEqual(200, gw.call("POST", "/v1/connector/messages/%s/wake" % mid, step, self.ctok)[0])
-        waiting = self.listing()
-        self.assertEqual([], waiting["jobs"])
-        (status, obj), took = timed(lambda: self.poll(wait=20, cursor=waiting["cursor"]))
-        self.assertEqual([(mid, 1)], [(j["job_id"], j["wake_attempts"]) for j in obj["jobs"]])
-        self.assertLess(took, 4, "the retry time, a second after the refusal, ends the wait")
-
     def test_wait_and_cursor_are_checked_and_other_routes_take_no_query(self):
         for query, error in (("wait=31", "invalid_wait"), ("wait=-1", "invalid_wait"), ("wait=x", "invalid_wait"),
                              ("cursor=ABC", "invalid_wait"), ("wait=1&wait=2", "query_not_supported"),
@@ -172,6 +159,25 @@ class GatewayWaitTests(WaitCase):
                 self.assertEqual((400, error), (status, obj["error"]))
         status, obj = self.gw.call("GET", "/v1/health?wait=1")
         self.assertEqual((400, "query_not_supported"), (status, obj["error"]))
+
+
+class RefusedWakeWaitTests(WaitCase):
+    """A refused wake's retry time ends a wait. Its delay is 3 seconds here, not 1: the gateway counts whole seconds,
+    so a 1-second retry can already be due when the test lists the jobs right after the refusal."""
+    limits = dict(LIMITS, wake_retry_seconds=3)
+
+    def test_a_refused_wake_ends_the_wait_when_it_may_be_tried_again(self):
+        gw = self.gw
+        mid = gw.chat(gw.conversation(self.beta, self.sa), self.sa, "hello")
+        phase = self.listing()["jobs"][0]["phase"]
+        for step in ({"step": "intent", "wake_id": "wake-refused-1", "phase": phase},
+                     {"step": "result", "wake_id": "wake-refused-1", "outcome": "refused"}):
+            self.assertEqual(200, gw.call("POST", "/v1/connector/messages/%s/wake" % mid, step, self.ctok)[0])
+        waiting = self.listing()
+        self.assertEqual([], waiting["jobs"])
+        (status, obj), took = timed(lambda: self.poll(wait=20, cursor=waiting["cursor"]))
+        self.assertEqual([(mid, 1)], [(j["job_id"], j["wake_attempts"]) for j in obj["jobs"]])
+        self.assertLess(took, 5, "the retry time, 2 to 3 seconds after the refusal, ends the wait")
 
 
 class WaitingPlacesTests(WaitCase):
