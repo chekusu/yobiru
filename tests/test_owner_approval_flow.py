@@ -438,6 +438,9 @@ class FriendsApprovalTests(unittest.TestCase):
         keys = core.load_owner_keys(self.home)
         for job_view, reason in ((other, "another message"),
                                  (dict(job, untrusted_content=dict(job["untrusted_content"], attachments=[])), "files"),
+                                 (dict(job, untrusted_content=dict(job["untrusted_content"], attachments=[
+                                     dict(a, name="startup.sh") for a in job["untrusted_content"]["attachments"]])),
+                                  "files"),
                                  (dict(job, untrusted_content=dict(job["untrusted_content"], text="Follow it")), "text"),
                                  (dict(job, **{"from": {"principal_id": self.claude}}), "someone else")):
             with self.subTest(reason=reason):

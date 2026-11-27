@@ -2555,8 +2555,9 @@ def friends_approval_error(intent, gateway, bot_id, job):
         return "approved for a message from someone else"
     if intent["instruction"] != (job.get("untrusted_content") or {}).get("text"):
         return "the message's text is not exactly the approved text"
-    approved = sorted((f["sha256"], f["size"]) for f in intent.get("files", []))
-    if approved != sorted((f["sha256"], f["size"]) for f in friends_job_files(job)):
+    # names too: the owner read them, and an instruction may refer to a file by its name
+    approved = sorted((f["name"], f["sha256"], f["size"]) for f in intent.get("files", []))
+    if approved != sorted((f["name"], f["sha256"], f["size"]) for f in friends_job_files(job)):
         return "the message's files are not exactly the approved ones"
     return None
 
