@@ -706,9 +706,33 @@ def carried_keys(signed):
     return recs
 
 
+class _SignedLock(object):
+    """One `approval check` at a time per data home: the sender keys and the index of used signatures are read,
+    checked and written as one step, so one signature never verifies two messages."""
+
+    def __init__(self, home):
+        self.lock = _tm.FileLock(signed_dir(home) / ".lock")
+
+    def __enter__(self):
+        deadline = time.monotonic() + 10
+        while not self.lock.acquire():
+            if time.monotonic() > deadline:
+                raise Fail("another `yobiru approval check` is running in this data home; try again")
+            time.sleep(0.05)
+        return self
+
+    def __exit__(self, *exc):
+        self.lock.release()
+
+
 def check_signed(home, base, bot_id, job, trust_new=False):
     """The verdict on the signature a message's sender attached: their owner's, for exactly this message to this
     bot. The sender's owner keys are pinned here at the first signature that checks out (they travel with it)."""
+    with _SignedLock(home):
+        return _check_signed(home, base, bot_id, job, trust_new)
+
+
+def _check_signed(home, base, bot_id, job, trust_new):
     mid = job.get("job_id")
     signed = (job.get("untrusted_content") or {}).get("sender_owner_approval")
     if not isinstance(signed, dict) or not isinstance(signed.get("approval"), dict):
@@ -744,8 +768,13 @@ def check_signed(home, base, bot_id, job, trust_new=False):
     index = signed_dir(home) / "digests.json"
     try:
         seen = json.loads(index.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
         seen = {}
+    except (OSError, ValueError):
+        seen = None
+    if not isinstance(seen, dict):
+        return {"verified": False, "reason": "%s is damaged; no signed message is accepted until it is repaired"
+                                             % index}
     if seen.get(verdict["digest"]) not in (None, mid):
         return {"verified": False, "reason": "this signature was already used for %s; a signature covers one "
                                              "message" % seen[verdict["digest"]]}

@@ -9,6 +9,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import types
 import unittest
 import urllib.parse
@@ -757,6 +758,26 @@ class FriendsApprovalTests(unittest.TestCase):
         code, reused = self.run_cli("check", again)
         self.assertEqual((code, reused["verified"]), (1, False))
         self.assertIn("already used for %s" % mid, reused["reason"])
+        # Checks run one at a time in a data home (read, check and record as one step), so two checks at once
+        # cannot both accept one signature.
+        base, bot_id, job = approval.friends_job(self.home, again)
+        held = approval._SignedLock(self.home).__enter__()
+        verdicts = []
+        waiting = threading.Thread(target=lambda: verdicts.append(approval.check_signed(self.home, base, bot_id, job)))
+        waiting.start()
+        waiting.join(0.3)
+        self.assertTrue(waiting.is_alive(), "it waits for the check that holds the lock")
+        held.__exit__(None, None, None)
+        waiting.join(5)
+        self.assertIn("already used for %s" % mid, verdicts[0]["reason"])
+        # A damaged index of used signatures accepts nothing.
+        index = self.home / "approvals" / "signed" / "digests.json"
+        saved_index = index.read_text("utf-8")
+        index.write_text("{", "utf-8")
+        code, damaged = self.run_cli("check", again)
+        self.assertEqual((code, damaged["verified"]), (1, False))
+        self.assertIn("damaged", damaged["reason"])
+        index.write_text(saved_index, "utf-8")
         self.y_cls("agent", "job", "reply", self.claude, again, "--text", "No.")
         # A passkey this sender's owner has not used here before needs this bot's owner's OK.
         tablet = SoftPasskey(label="tablet")
