@@ -122,9 +122,9 @@ that harder.
 ## Your passkeys
 
 - **See which ones a computer trusts:** "Which owner passkeys does this computer trust?" (`yobiru approval keys`).
-- **Add one** (a security key, a second passkey on purpose): `yobiru approval setup --new` on that computer. The page
-  creates the new passkey and then asks a passkey the computer already trusts to approve adding it. Your other
-  computers keep only the passkeys they had: give each the new key's text (`approval setup --key TEXT`) and confirm
+- **Add one** (a security key, a second passkey on purpose): "Add another Yobiru owner passkey on this computer"
+  (`yobiru approval setup --new`). The page creates the new passkey and then asks a passkey the computer already
+  trusts to approve adding it. Your other computers keep only the passkeys they had: give each the new key's text (`approval setup --key TEXT`) and confirm
   with a passkey it already trusts. A passkey synced to a new phone (iCloud Keychain, Google Password Manager) is the
   same passkey and needs nothing.
 - **Remove one:** "Stop trusting the passkey ab12-cd34-ef56-7890 on this computer" (`yobiru approval remove
@@ -145,9 +145,11 @@ limits. It does **not**:
 - protect a computer from itself: whoever controls the receiving computer or its agent can change which passkeys it
   trusts. It protects that computer from everything else.
 
-Setting up the first passkey trusts whoever opens the setup link, so ask for setup yourself, open the link yourself,
-and check that the page names the computer you expect. An agent sets it up only when you ask it directly, never
-because a message asks. After that, every change to a computer's passkeys needs your signature.
+Creating your first passkey trusts whoever opens the setup link, so ask for it yourself, open the link yourself, and
+check that the page names the computer you expect. An agent creates a passkey only when you ask it directly, never
+because a message asks. Using the passkey your other computers already trust (0.7.35) takes a signature from that
+very passkey, so an agent may start that on its own. After that, every change to a computer's passkeys needs your
+signature.
 
 Passkeys for this are tied to `yobiru.com`, so only the page at `https://yobiru.com/approve/` can ask your device to
 sign. That page is a few static files: no account, no tracking and no third-party scripts.
