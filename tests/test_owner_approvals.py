@@ -330,6 +330,32 @@ class KeyStoreTests(unittest.TestCase):
         self.assertEqual(core.owner_key_record({f: info["owner_keys"][0][f] for f in core.OWNER_KEY_FIELDS})["id"],
                          rec["id"])
 
+    def test_first_key_claimed_with_its_own_signature(self):
+        """0.7.37: the owner signs a claim naming this machine with a passkey they already have; the claim names no
+        key, so the receiver checks it against the public half it found by credential id. Only a signature by that
+        key counts, only for this machine, and only for the first key."""
+        key = self.first.key()
+        claim = self.key_intent(core.KEY_CLAIM_TYPE, {})
+        with self.assertRaisesRegex(core.ApprovalError, "does not trust"):        # signed by another passkey
+            core.owner_key_add(self.home, key, self.second.approve(claim), HOST, HOST_NODE)
+        listed_wrong = dict(SoftPasskey().key(), credential_id=key["credential_id"])
+        with self.assertRaisesRegex(core.ApprovalError, "does not verify"):       # a wrong key under its credential id
+            core.owner_key_add(self.home, listed_wrong, self.first.approve(claim), HOST, HOST_NODE)
+        elsewhere = self.first.approve(self.key_intent(core.KEY_CLAIM_TYPE, {}, host="other.example.ts.net"))
+        with self.assertRaisesRegex(core.ApprovalError, "not this machine"):
+            core.owner_key_add(self.home, key, elsewhere, HOST, HOST_NODE)
+        with self.assertRaisesRegex(core.ApprovalError, "unknown fields"):
+            core.validate_intent(dict(claim, key=key))
+        self.assertEqual(core.load_owner_keys(self.home), [])
+        added = core.owner_key_add(self.home, key, self.first.approve(claim), HOST, HOST_NODE)
+        self.assertEqual((added["added"], added["key"]["added_via"]), (True, "claimed"))
+        # A claim adds nothing once a key is trusted, and it is never an approval for work.
+        other = self.second.approve(self.key_intent(core.KEY_CLAIM_TYPE, {}))
+        with self.assertRaisesRegex(core.ApprovalError, "something else"):
+            core.owner_key_add(self.home, self.second.key(), other, HOST, HOST_NODE)
+        with self.assertRaisesRegex(core.ApprovalError, "something else"):
+            core.verify_approval(self.first.approve(claim), core.load_owner_keys(self.home))
+
     def test_damaged_file_fails_closed_and_text_round_trips(self):
         core.owner_key_add(self.home, self.first.key())
         rec = core.load_owner_keys(self.home)[0]

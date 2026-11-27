@@ -9,9 +9,12 @@ Nothing here can approve anything. Verification lives in tailmsg.py, which each 
 the owner keys pinned in its data home; this module only builds requests for a signature, collects answers and pins
 keys (the first one when the owner sets it up with this machine's agent, later ones only with a signed approval).
 
-One passkey serves all of the owner's machines: `approval setup` first asks the owner's other receivers (their
-authenticated /info) which passkey they trust, and has the owner sign once with that same passkey to show they hold
-it. Only when none is found does it have the owner create one.
+One passkey serves all of the owner's machines and bots, and it lives on the owner's own device (usually their
+phone): `approval setup` gives a link where the owner confirms once, with Face ID, fingerprint or PIN, using the
+yobiru.com passkey they already have. That signature names no key, so `approval wait` finds the passkey's public half
+by its credential id in the relay's passkey directory (0.7.37; every machine that trusts a passkey lists it there)
+and checks the signature with it before pinning. An owner without a passkey yet creates one on the same page. No
+other computer is needed.
 
 Friends: a bot's own agent (its native binding, in this data home) asks its owner to approve one message the bot
 received (`approval for msg_...`). The intent names that bot on its gateway, the message, its sender, its exact text
@@ -42,7 +45,9 @@ POLL_SECONDS = 3
 DISCOVERY_TIMEOUT = 3.0                      # seconds per receiver asked for the owner's passkey
 DISCOVERY_MAX = 64                           # machines asked at most
 UPGRADE_NOTE = "does not share its owner keys yet"     # marks a receiver to upgrade in discovery notes
-MODES = ("sign", "register", "add-key")
+MODES = ("sign", "register", "add-key", "claim")
+PUBLISHED_FILE = "published_keys.json"       # under approvals/: {relay: [key ids listed in its passkey directory]}
+CREDENTIAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{22,1366}\Z")
 DROP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{32}\Z")
 
 
@@ -179,7 +184,70 @@ def open_drop(home, relay, mode, ask, expires_at, purpose):
            "created_at": _tm.iso(_tm.now_utc()), "expires_at": expires_at, "purpose": purpose,
            "intent": ask.get("intent")}
     save_pending(home, rec)
+    publish_keys(home, relay)
     return rec
+
+
+# ---------------------------------------------------------------- passkey directory
+def directory_keys(relay, credential_id):
+    """The public halves the relay's passkey directory lists for one credential id ([] when none, or on a relay
+    without a directory). Whoever listed them, a key only counts once a signature checks out with it."""
+    if not isinstance(credential_id, str) or not CREDENTIAL_ID_RE.fullmatch(credential_id):
+        return []
+    try:
+        status, obj = drop_call(relay, "GET", "/v1/passkeys/" + credential_id)
+    except Fail:
+        return []
+    if status != 200 or not isinstance(obj, dict) or not isinstance(obj.get("keys"), list):
+        return []
+    recs = []
+    for k in obj["keys"][:_tm.OWNER_KEYS_MAX]:
+        if not isinstance(k, dict):
+            continue
+        try:
+            rec = _tm.owner_key_record({f: k[f] for f in _tm.OWNER_KEY_FIELDS - {"label"} if f in k})
+        except _tm.ApprovalError:
+            continue
+        if rec["credential_id"] == credential_id and rec["id"] not in [r["id"] for r in recs]:
+            recs.append(rec)
+    return recs
+
+
+def publish_keys(home, relay):
+    """Best effort, once per key and relay: list the passkeys pinned here in the relay's passkey directory (public
+    halves only, without labels), so the owner's next machine or bot finds them by credential id. Nothing in it is
+    secret: a listed key can only check a signature made with that very passkey."""
+    try:
+        pinned = _tm.load_owner_keys(home)
+    except Exception:
+        return
+    if not pinned:
+        return
+    path = Path(home) / "approvals" / PUBLISHED_FILE
+    try:
+        done = json.loads(path.read_text(encoding="utf-8"))
+        done = done if isinstance(done, dict) else {}
+    except (OSError, ValueError):
+        done = {}
+    sent = set(x for x in done.get(relay) or [] if isinstance(x, str))
+    todo = [k for k in pinned if k["id"] not in sent]
+    if not todo:
+        return
+    C, _ = _modules()
+    for k in todo:
+        body = {"key": {f: k[f] for f in ("alg", "public_key", "credential_id", "rp_id", "origin")}}
+        try:
+            status, obj = C.api_call(relay, "POST", "/v1/passkeys", body, timeout=5)
+        except Exception:
+            continue
+        if status in (200, 201) and isinstance(obj, dict) and obj.get("ok") is True:
+            sent.add(k["id"])
+    done[relay] = sorted(sent)
+    try:
+        pending_dir(home)
+        _tm.write_private_json(path, done)
+    except OSError:
+        pass
 
 
 def find_pending(home, ref):
@@ -309,7 +377,7 @@ def intent_summary(intent):
             s["message"] = intent["message"]
     elif intent["type"] == _tm.KEY_ADD_TYPE:
         s["key"] = _tm.owner_key_record(intent["key"])["fingerprint"]
-    else:
+    elif intent["type"] == _tm.KEY_REMOVE_TYPE:
         s["key_id"] = intent["key_id"]
     return s
 
@@ -614,6 +682,7 @@ def setup_with_key(home, a, to, pinned):
             added = _tm.owner_key_add(home, key, None)
         except _tm.ApprovalError as e:
             raise Fail(str(e))
+        publish_keys(home, relay_url(a.relay))
         out({"ok": True, "state": "key_added", "key": added["key"], "keys": added["keys"],
              "note": "%s now accepts approvals signed with this passkey" % _tm.recipient_label(to)})
         return 0
@@ -650,10 +719,9 @@ def setup_adopt(home, a, to, found, searched, notes):
                      {"setup": _tm.recipient_label(to), "adopt_key": rec["id"]})
     result = {"ok": True, "state": "waiting_for_owner", "ref": drop["id"], "link": drop["link"], "mode": "adopt",
               "for": _tm.recipient_label(to), "key": key_line(best), "machines_asked": searched,
-              "next": "give the owner this link: they confirm once with the passkey they already use (Face ID, "
-                      "fingerprint or PIN), and no new passkey is created; then `yobiru approval wait %s`. If "
-                      "their device does not have that passkey, `yobiru approval setup --new` creates one instead"
-                      % drop["id"]}
+              "say_to_owner": OWNER_SENTENCE,
+              "next": "send the owner the link with that sentence (in their language); then `yobiru approval wait "
+                      "%s`" % drop["id"]}
     if len(found) > 1:
         result["other_keys"] = [key_line(e) for e in found[1:]]
     if notes:
@@ -663,9 +731,33 @@ def setup_adopt(home, a, to, found, searched, notes):
     out(result)
 
 
+OWNER_SENTENCE = ("Open this link on your phone and confirm once with Face ID (or fingerprint or PIN). It uses the "
+                  "Yobiru passkey you already have; if you have none yet, the same page creates one.")
+
+
+def setup_claim(home, a, to, label, notes=()):
+    """Have the owner confirm, with the yobiru.com passkey they already have (on their phone, usually), that this
+    machine or bot trusts it from now on: one Face ID, fingerprint or PIN. The signature names no key: `wait` finds
+    the passkey's public half by its credential id and checks the signature with it. An owner without a passkey
+    creates one on the same page."""
+    intent, raw = new_intent(_tm.KEY_CLAIM_TYPE, {k: v for k, v in to.items() if k != "agent"}, SETUP_EXPIRES, {})
+    ask = {"v": 1, "mode": "claim", "intent": _tm.b64u(raw), "label": label[:80], "rp_id": _tm.OWNER_RP_ID}
+    drop = open_drop(home, relay_url(a.relay), "claim", ask, intent["expires_at"], {"setup": _tm.recipient_label(to)})
+    result = {"ok": True, "state": "waiting_for_owner", "ref": drop["id"], "link": drop["link"], "mode": "claim",
+              "for": _tm.recipient_label(to), "say_to_owner": OWNER_SENTENCE,
+              "next": "send the owner the link with that sentence (in their language); then `yobiru approval wait "
+                      "%s`. Nothing else is needed: no other computer, and no new passkey unless they have none"
+                      % drop["id"]}
+    if notes:
+        result["notes"] = list(notes)
+    if a.wait:
+        return cmd_wait(home, argparse.Namespace(ref=drop["id"], timeout=a.wait), prefix=result)
+    out(result)
+
+
 def cmd_setup(home, a):
-    """Set up the owner's passkey for this data home: adopt the one the owner's other machines trust (the owner
-    signs once with it), or have the owner create one when none is found (or with --new)."""
+    """Set up the owner's passkey for this data home: the owner confirms once with the passkey they already have
+    (or creates one on the same page); with --from, adopt the one those machines trust; --new creates another."""
     to = identity(home, a.bot)
     pinned = keys(home)
     if a.key:
@@ -673,21 +765,19 @@ def cmd_setup(home, a):
     friends = _tm.is_friends_recipient(to)
     label = setup_label(a, to)
     if pinned and not a.new:
+        publish_keys(home, relay_url(a.relay))
         out({"ok": True, "state": "already_set_up", "for": _tm.recipient_label(to),
              "keys": [_tm.owner_key_view(k) for k in pinned],
-             "note": "approvals signed with these passkeys are accepted here. One passkey serves all of the owner's "
-                     "machines; to trust one from another machine run `yobiru approval setup --key TEXT` (its "
-                     "`approval keys` share text), and only if the owner wants a second passkey, `--new`"})
+             "note": "done: approvals signed with these passkeys are accepted here. Nothing else to set up; a second "
+                     "passkey (`--new`) only if the owner asks for one"})
         return 0
-    searched, notes = 0, []
     if not pinned and not a.new:
-        if friends and not a.source and not has_tailnet(home):
-            notes = ["this computer has no Tailscale identity, so the owner's other machines cannot be asked; name "
-                     "one of their receivers with --from"]
-        else:
+        notes = []
+        if a.source:
             found, searched, notes = discover_keys(home, a.source)
             if found:
                 return setup_adopt(home, a, to, found, searched, notes)
+        return setup_claim(home, a, to, label, notes)
     mode = "add-key" if pinned else "register"
     ask = {"v": 1, "mode": mode, "label": label[:80], "rp_id": _tm.OWNER_RP_ID}
     if friends:
@@ -706,12 +796,6 @@ def cmd_setup(home, a):
               "next": "give the owner this link (they create a passkey with Face ID, fingerprint or PIN%s); then "
                       "`yobiru approval wait %s`" % (" and confirm with a key already trusted here"
                                                      if pinned else "", rec["id"])}
-    if not pinned and not a.new:
-        result["searched"] = {"machines_asked": searched,
-                              "detail": "none of the owner's other machines shares a passkey yet, so the owner "
-                                        "creates one now; later machines adopt it"}
-        if notes:
-            result["searched"]["notes"] = notes
     if a.wait:
         return cmd_wait(home, argparse.Namespace(ref=rec["id"], timeout=a.wait), prefix=result)
     out(result)
@@ -780,6 +864,83 @@ def pending_for_message(home, mid):
     return max(found, key=lambda r: r.get("created_at") or "") if found else None
 
 
+def setup_audience(home, to):
+    """(host, node id, bots) for pinning a key named for `to`, which must be this machine or one of this home's bots."""
+    if _tm.is_friends_recipient(to):
+        bots = bot_pairs(home)
+        if (to.get("gateway"), to.get("bot")) not in bots:
+            raise Fail("this setup link was made for the bot %s, which this data home does not answer for"
+                       % to.get("bot"))
+        return None, None, bots
+    host, node_id = self_identity(home)
+    if to.get("host") != host:
+        raise Fail("this setup link was made for %s, not this machine" % to.get("host"))
+    return host, node_id, ()
+
+
+def tailnet_keys(home, credential_id):
+    """The owner's other receivers' keys with this credential id (0.7.35 or later lists them in /info): for a
+    passkey set up before the directory, asked quietly."""
+    if not has_tailnet(home):
+        return []
+    try:
+        found, _, _ = discover_keys(home)
+    except Exception:
+        return []
+    return [e["key"] for e in found if e["key"]["credential_id"] == credential_id]
+
+
+def finish_claim(home, rec, answer, ask):
+    """The owner confirmed with a passkey they have (`approval` over the claim) or created one (`key`)."""
+    try:
+        claim_raw = _tm.unb64u(ask.get("intent"), _tm.b64u_length(_tm.INTENT_MAX_BYTES), "intent")
+        claim = _tm.validate_intent(json.loads(claim_raw.decode("utf-8")))
+    except (_tm.ApprovalError, UnicodeDecodeError, ValueError):
+        raise Fail("this setup link carries no valid request")
+    if claim["type"] != _tm.KEY_CLAIM_TYPE:
+        raise Fail("this setup link carries no valid request")
+    host, node_id, bots = setup_audience(home, claim["to"])
+    if "approval" not in answer:
+        try:
+            added = _tm.owner_key_add(home, answer.get("key"), None, host, node_id, bots)
+        except _tm.ApprovalError as e:
+            raise Fail(str(e))
+        how = "created"
+    else:
+        try:
+            blob, _, _ = _tm.parse_approval(answer.get("approval"))
+        except _tm.ApprovalError as e:
+            raise Fail("the owner's answer is not a valid approval: %s" % e)
+        if blob["intent"] != ask.get("intent"):
+            raise Fail("the owner's answer signs different content than was asked")
+        cid = blob["credential_id"]
+        pinned = keys(home)
+        known = next((k for k in pinned if k["credential_id"] == cid), None)
+        if known is not None:
+            return {"ok": True, "state": "key_already_trusted", "ref": rec["id"], "key": _tm.owner_key_view(known),
+                    "keys": len(pinned)}
+        candidates = directory_keys(rec["relay"], cid) or tailnet_keys(home, cid)
+        if not candidates:
+            raise Fail("the passkey the owner used is not listed yet (it was set up before Yobiru 0.7.37 and no "
+                       "machine has listed it since). On any machine that trusts it, run `yobiru approval setup` once "
+                       "(0.7.37 or later lists it), then run `yobiru approval wait %s` here again" % rec["id"])
+        added, problem = None, None
+        for cand in candidates:
+            try:
+                added = _tm.owner_key_add(home, {f: cand[f] for f in _tm.OWNER_KEY_FIELDS}, blob, host, node_id,
+                                          bots)
+                break
+            except _tm.ApprovalError as e:
+                problem = e
+        if added is None:
+            raise Fail("the owner's signature did not check out: %s" % problem)
+        how = "confirmed"
+    publish_keys(home, rec["relay"])
+    return {"ok": True, "state": "key_added" if added["added"] else "key_already_trusted", "ref": rec["id"],
+            "key": added["key"], "keys": added["keys"], "passkey": how,
+            "note": "done: approvals signed with this passkey are now accepted here"}
+
+
 def finish(home, rec, answer, ask):
     """Apply a drop's answer according to what was asked."""
     mode = ask.get("mode")
@@ -789,6 +950,8 @@ def finish(home, rec, answer, ask):
             _tm.write_private_json(friends_dir(home) / (mid + ".json"),
                                    {"v": 1, "message": mid, "declined": True, "checked_at": _tm.iso(_tm.now_utc())})
         return {"ok": True, "state": "declined", "ref": rec["id"], "detail": "the owner declined"}
+    if mode == "claim":
+        return finish_claim(home, rec, answer, ask)
     if mode == "sign":
         approval = answer.get("approval")
         try:
@@ -807,6 +970,7 @@ def finish(home, rec, answer, ask):
                 raise Fail(str(e))
             result.update(state="key_added" if added["added"] else "key_already_trusted", key=added["key"],
                           keys=added["keys"])
+            publish_keys(home, rec["relay"])
         elif intent["type"] == _tm.KEY_REMOVE_TYPE:
             try:
                 result["removed"] = _tm.owner_key_remove(home, intent["key_id"], blob, *audience(home, intent["to"]))
@@ -841,6 +1005,7 @@ def finish(home, rec, answer, ask):
                                       host, node_id, bots)
         except _tm.ApprovalError as e:
             raise Fail(str(e))
+        publish_keys(home, rec["relay"])
         return {"ok": True, "state": "key_added" if added["added"] else "key_already_trusted", "ref": rec["id"],
                 "key": added["key"], "keys": added["keys"],
                 "note": "approvals signed with this passkey are now accepted here"}
@@ -959,18 +1124,17 @@ def cmd_list(home, a):
 def parser():
     ap = argparse.ArgumentParser(prog="yobiru approval", description=__doc__.split("\n\n")[0])
     sp = ap.add_subparsers(dest="cmd", required=True)
-    p = sp.add_parser("setup", help="set up the owner's passkey for this machine: the one their other machines "
-                                    "already trust (the owner confirms it once), else a new one")
+    p = sp.add_parser("setup", help="set up the owner's passkey here: the owner confirms once with the passkey they "
+                                    "already have (Face ID on their phone), or creates one on the same page")
     p.add_argument("--label", help="name shown with the passkey (default: this machine's name)")
     p.add_argument("--relay", help="gateway that carries the sealed answer (default %s)" % DEFAULT_RELAY)
     p.add_argument("--wait", type=int, default=0, metavar="SECONDS", help="wait for the owner this long")
     p.add_argument("--key", metavar="TEXT", help="trust a passkey the owner already uses on another machine: its "
                                                  "yobiru-owner-key:... text from `yobiru approval keys` there")
     p.add_argument("--from", dest="source", action="append", default=[], metavar="HOST",
-                   help="ask only this receiver of the owner's for their passkey (repeatable); needed on the "
-                        "connector route, which cannot list the tailnet")
+                   help="adopt the passkey this receiver of the owner's trusts (repeatable); not needed normally")
     p.add_argument("--new", action="store_true",
-                   help="have the owner create a new passkey instead of using the one their other machines trust")
+                   help="have the owner create another passkey (only when they ask for one)")
     p.add_argument("--bot", help="for a Friends bot whose native binding this data home holds (id or handle), "
                                  "instead of this machine")
     p = sp.add_parser("request", help="ask the owner to approve an instruction for an agent on another machine")

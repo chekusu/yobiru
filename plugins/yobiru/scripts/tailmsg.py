@@ -15,7 +15,7 @@ from pathlib import Path
 
 VERSION = 1                     # wire protocol version (unchanged)
 PRODUCT = "yobiru"
-PRODUCT_VERSION = "0.7.36"  # Yobiru release of this file; tools/build_plugin.py check keeps it in sync
+PRODUCT_VERSION = "0.7.37"  # Yobiru release of this file; tools/build_plugin.py check keeps it in sync
 DEFAULTS = {
     "port": 7766,
     "access_policy": "tailnet",    # authenticated Tailscale peers; use "allowlist" for opt-in restriction
@@ -1923,6 +1923,10 @@ OWNER_SIGNATURE_ISSUER = "owner_signature"
 APPROVAL_TYPE = "yobiru.owner-approval"
 KEY_ADD_TYPE = "yobiru.owner-key-add"
 KEY_REMOVE_TYPE = "yobiru.owner-key-remove"
+# The owner confirms with a passkey they already have that one recipient trusts it from now on (0.7.37). It names no
+# key: the page signs with whichever yobiru.com passkey the device offers, and the receiver finds that passkey's
+# public half by its credential id (in the passkey directory of a Yobiru gateway), then checks the signature.
+KEY_CLAIM_TYPE = "yobiru.owner-key-claim"
 APPROVAL_DOMAIN = b"yobiru-owner-approval-v1\n"
 APPROVAL_MAX_SECONDS = 7 * 24 * 3600
 APPROVAL_SKEW_SECONDS = 300
@@ -2204,6 +2208,8 @@ def validate_intent(intent):
         allowed = required = common | {"key"}
     elif kind == KEY_REMOVE_TYPE:
         allowed = required = common | {"key_id"}
+    elif kind == KEY_CLAIM_TYPE:
+        allowed = required = common
     else:
         raise ApprovalError("unknown approval type")
     if set(intent) - allowed:
@@ -2277,7 +2283,7 @@ def validate_intent(intent):
         if not isinstance(intent["key"], dict) or set(intent["key"]) != OWNER_KEY_FIELDS:
             raise ApprovalError("bad key in the approval")
         owner_key_record(intent["key"])
-    elif not isinstance(intent["key_id"], str) or not HEX64_RE.fullmatch(intent["key_id"]):
+    elif kind == KEY_REMOVE_TYPE and (not isinstance(intent["key_id"], str) or not HEX64_RE.fullmatch(intent["key_id"])):
         raise ApprovalError("bad key id in the approval")
     return intent
 
@@ -2464,9 +2470,10 @@ def owner_key_view(rec):
 
 def owner_key_add(home, key, approval=None, host=None, node_id=None, bots=()):
     """Pin an owner key. The first key of a data home is set up by the owner talking to this machine's agent:
-    created on the spot, given as text, or adopted from the owner's other machines with an approval that key signed
-    itself (KEY_ADD_TYPE naming this machine: the owner holds it). After that, a key is added only with an approval
-    signed by one already pinned."""
+    created on the spot, given as text, or one the owner already has, with an approval that key signed itself
+    naming this machine (KEY_ADD_TYPE adopting a key their other machines trust, or KEY_CLAIM_TYPE for a key found
+    by its credential id): the owner holds it. After that, a key is added only with an approval signed by one
+    already pinned."""
     rec = owner_key_record(key)
     with _OwnerKeysLock(home):
         keys = load_owner_keys(home)
@@ -2488,13 +2495,14 @@ def owner_key_add(home, key, approval=None, host=None, node_id=None, bots=()):
                 raise ApprovalError("the approval adds a different key")
             via, signer = "signed", check["key"]["id"]
         elif approval is not None:
-            check = verify_approval(approval, [rec], kinds=(KEY_ADD_TYPE,))
+            check = verify_approval(approval, [rec], kinds=(KEY_ADD_TYPE, KEY_CLAIM_TYPE))
             reason = approval_audience_error(check["intent"], host, node_id, bots=bots)
             if reason:
                 raise ApprovalError(reason)
-            if owner_key_record(check["intent"]["key"])["id"] != rec["id"]:
+            claimed = check["intent"]["type"] == KEY_CLAIM_TYPE
+            if not claimed and owner_key_record(check["intent"]["key"])["id"] != rec["id"]:
                 raise ApprovalError("the approval adds a different key")
-            via, signer = "adopted", rec["id"]
+            via, signer = "claimed" if claimed else "adopted", rec["id"]
         stamp = iso(now_utc())
         rec.update(added_at=stamp, added_via=via)
         keys.append(rec)

@@ -9,8 +9,8 @@ The final product logo set is maintained in
 Agent-to-agent messages, file handoff and receiver-controlled wake-ups between machines on your own
 Tailscale network, using the tailmsg protocol v1. One package for Codex, Cursor, Claude Code and Grok Bot.
 
-Version 0.7.36. Source: <https://github.com/chekusu/yobiru>; what changed:
-[changelog](https://github.com/chekusu/yobiru/blob/v0.7.36/CHANGELOG.md). Public submission and review
+Version 0.7.37. Source: <https://github.com/chekusu/yobiru>; what changed:
+[changelog](https://github.com/chekusu/yobiru/blob/v0.7.37/CHANGELOG.md). Public submission and review
 status: [marketplace record](https://github.com/chekusu/yobiru/blob/main/docs/MARKETPLACE_SUBMISSION.md).
 Repository installation does not establish a public listing.
 
@@ -57,8 +57,8 @@ gateway can serve `/mcp` to bearer-authenticated clients (no OAuth).
 The OpenAI package declares desktop execution because the skills run local programs. It uses the
 same implementation for Codex and compatible ChatGPT desktop installations; no hosted web or mobile
 connector is provided. Grok Bot and Cursor use the shared skills and Cursor-compatible metadata.
-See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.36/docs/GROK_BOT.md) and
-[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.36/docs/PRIVACY.md) of this release.
+See the [Grok Bot guide](https://github.com/chekusu/yobiru/blob/v0.7.37/docs/GROK_BOT.md) and
+[privacy notice](https://github.com/chekusu/yobiru/blob/v0.7.37/docs/PRIVACY.md) of this release.
 
 ## Requirements
 
@@ -131,7 +131,7 @@ Friends bot's agent can ask the same for one message its bot received (`approval
 get MSG_ID`); it acts only on `verified: true`. Since 0.7.32 `guard install` adds Claude Code hooks: when
 auto mode stops a tool call, the retry is refused with a link for exactly that call, and once the owner signs it the
 guard verifies the signature on this computer and allows that call once. See
-[Owner approvals](https://github.com/chekusu/yobiru/blob/v0.7.36/docs/APPROVALS.md).
+[Owner approvals](https://github.com/chekusu/yobiru/blob/v0.7.37/docs/APPROVALS.md).
 
 Notifications (`--kind notice`, including upgrade notices) need no reply. Send a separate tracked
 request if you need a result. Old peers need upgrading; `send --kind request --legacy-request` is an

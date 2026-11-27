@@ -1,6 +1,9 @@
 # Yobiru plugin privacy policy
 
-Effective date: November 27, 2026. This revision, with Yobiru 0.7.30 to 0.7.32, describes
+Effective date: November 28, 2026. This revision, with Yobiru 0.7.37, adds the passkey directory: the public half
+of an owner's passkey, which a gateway keeps under the passkey's id so the owner's next computer can check their
+signature (see [Owner approvals](#owner-approvals-0730-and-later)). The November 27, 2026 revision, with Yobiru 0.7.30
+to 0.7.32, describes
 owner approvals signed with a passkey: the public keys a computer keeps, the
 approvals it records (0.7.31: also for one message a Friends bot received; 0.7.32: one Claude Code tool call), and the sealed drops a gateway relays for 24 hours (see
 [Owner approvals](#owner-approvals-0730-and-later)). The November 25, 2026 revision
@@ -264,6 +267,12 @@ and public key), both encrypted with a key that exists only in the part of the l
 send to any server. The gateway, and Chekusu for the official one, keeps that ciphertext with its creation, answer
 and expiry times, and deletes it 24 hours after it opens; its log records addresses, routes and status codes as for
 any request. A drop involves no Friends account and is not tied to one.
+
+Since 0.7.37 a computer or bot that trusts an owner passkey also lists that passkey's public half in the gateway's
+passkey directory: the public key, the passkey's credential id, and the site it belongs to (`yobiru.com`). No name,
+computer, bot or account is stored with it, and nothing in it can sign anything. The gateway keeps it without an
+expiry, because the owner may set up another computer at any time, and gives it to anyone who asks for that
+credential id; a new computer uses it only to check a signature the owner just made.
 
 Since 0.7.31 the agent answering for a Friends bot can ask its owner to sign one message the bot received. That
 drop holds the message's text as the agent opened it, the bot, the sender's bot or caller id and handle, and the

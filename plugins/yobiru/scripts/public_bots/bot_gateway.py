@@ -191,11 +191,20 @@ LIMIT_DEFAULTS = {
     "approval_drop_ttl_seconds": 86400,
     "approval_drops_per_hour_per_ip": 30,       # writes per slot kind (ask, answer) from one address
     "max_approval_drops": 5000,
+    # passkey directory: the public half of owners' passkeys, by credential id, so a new agent can check the
+    # signature of a passkey the owner already has (a WebAuthn signature does not carry its public key)
+    "passkeys_per_credential": 4,               # different public keys kept under one credential id (first ones)
+    "passkey_writes_per_hour_per_ip": 30,
+    "max_passkeys": 100000,
 }
 # Limits that may also be 0: no settle delay (a test gateway), private hosts explicitly off, processes never replaced.
 ZERO_LIMITS = frozenset(("hosted_wake_settle_seconds", "hosted_wake_private_hosts", "process_memory_mb"))
 
 DROP_VALUE_RE = re.compile(r"[A-Za-z0-9_-]+")
+PASSKEY_FIELDS = ("alg", "public_key", "credential_id", "rp_id", "origin")
+PASSKEY_ID_RE = re.compile(r"[A-Za-z0-9_-]{22,1366}")      # 16 to 1,023 bytes, base64url without padding
+SPKI_P256_PREFIX = bytes.fromhex("3059301306072a8648ce3d020106082a8648ce3d030107034200")
+RP_ID_RE = re.compile(r"(?=.{1,253}\Z)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
 DROP_PATH_RE = re.compile(r"/v1/approval-drops/[A-Za-z0-9_-]{32}(?:/(?:ask|answer))?")
 DROP_ROUTES = ("drop_write", "drop_read", "drop_preflight")
 
@@ -452,6 +461,11 @@ INBOX_TABLES = (
     # which never reaches the gateway; the id is a hash of that secret. Gone a day after the ask.
     "CREATE TABLE IF NOT EXISTS approval_drops (id TEXT PRIMARY KEY, ask TEXT NOT NULL, answer TEXT, "
     "created_ts INTEGER NOT NULL, answered_ts INTEGER, expires_ts INTEGER NOT NULL)",
+    # Passkey directory (0.7.37): the public half of an owner's passkey under its credential id (canonical JSON of
+    # PASSKEY_FIELDS, no label). Anyone may add one; whoever reads it checks a signature with it, so a wrong key
+    # only fails to verify. An older gateway never reads it.
+    "CREATE TABLE IF NOT EXISTS owner_passkeys (credential_id TEXT NOT NULL, key TEXT NOT NULL, "
+    "created_ts INTEGER NOT NULL, PRIMARY KEY (credential_id, key))",
 )
 # note: the owner's words for their agent, sent with each wake. failures/failing_since_ts/next_ts: consecutive
 # failed calls and when the next may go. disabled_ts: turned off after failing too long (a new PUT or an accepted
@@ -2596,6 +2610,35 @@ def job_view(db, cfg, msg, bot, contact, body=None):
 
 
 # ---------------------------------------------------------------- request validation helpers
+def b64u_bytes(value, lo, hi):
+    """base64url without padding, decoding to lo..hi bytes -> bytes, or None."""
+    if not isinstance(value, str) or not DROP_VALUE_RE.fullmatch(value):
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+    except (ValueError, binascii.Error):
+        return None
+    if not lo <= len(raw) <= hi or base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=") != value:
+        return None
+    return raw
+
+
+def passkey_field(key):
+    """A passkey's public half as the directory keeps it: ES256 on P-256, its credential id, site and origin."""
+    if not isinstance(key, dict) or not set(PASSKEY_FIELDS) <= set(key) or set(key) - set(PASSKEY_FIELDS) - {"label"}:
+        raise Fail(400, "invalid_key", "key is {alg, public_key, credential_id, rp_id, origin}")
+    spki = b64u_bytes(key["public_key"], 91, 91)
+    if key["alg"] != "ES256" or spki is None or not spki.startswith(SPKI_P256_PREFIX):
+        raise Fail(400, "invalid_key", "only ES256 (P-256) public keys, as base64url SubjectPublicKeyInfo")
+    if not PASSKEY_ID_RE.fullmatch(key["credential_id"] if isinstance(key["credential_id"], str) else "") or \
+            b64u_bytes(key["credential_id"], 16, 1023) is None:
+        raise Fail(400, "invalid_key", "credential_id is 16 to 1,023 bytes in base64url")
+    if not isinstance(key["rp_id"], str) or not RP_ID_RE.fullmatch(key["rp_id"]) or \
+            key["origin"] != "https://" + key["rp_id"]:
+        raise Fail(400, "invalid_key", "origin is https://<rp_id>")
+    return {k: key[k] for k in PASSKEY_FIELDS}
+
+
 def fields(body, allowed, required=()):
     extra = set(body) - set(allowed)
     if extra:
@@ -2975,6 +3018,11 @@ class Api(object):
                                         "max_bytes": self.limits["approval_drop_bytes"],
                                         "ttl_seconds": self.limits["approval_drop_ttl_seconds"],
                                         "sealed": "ChaCha20-Poly1305; the gateway never has the key"},
+                     # The public half of owners' passkeys by credential id, for checking a signature by a passkey
+                     # the owner already has (see APPROVALS.md).
+                     "passkeys": {"write": "POST /v1/passkeys (body: {key: {alg, public_key, credential_id, rp_id, "
+                                           "origin}})",
+                                  "read": "GET /v1/passkeys/{credential_id}"},
                      "identity": {"verified_person": False}}
 
     def drop_write(self, db, r):
@@ -3010,6 +3058,30 @@ class Api(object):
             db.execute("UPDATE approval_drops SET answer=?, answered_ts=? WHERE id=? AND answer IS NULL",
                        (sealed, int(now), did))
         return 201, {"ok": True, "id": did, "slot": slot, "duplicate": False, "expires_at": ts_iso(expires)}
+
+    def passkey_write(self, db, r):
+        """Add the public half of a passkey to the directory. Nothing secret: a key here is only ever used to check a
+        signature made with that credential, and a wrong one fails that check."""
+        L, now = self.limits, r.now
+        fields(r.body, ("key",), ("key",))
+        key = passkey_field(r.body["key"])
+        cid, text = key["credential_id"], canonical(key)
+        if db.execute("SELECT 1 FROM owner_passkeys WHERE credential_id=? AND key=?", (cid, text)).fetchone():
+            return 200, {"ok": True, "duplicate": True}
+        if not take(db, "passkey:%s" % r.client_ip, L["passkey_writes_per_hour_per_ip"], 3600, now):
+            return 429, {"ok": False, "error": "rate_limited", "detail": "too many passkeys from this address"}
+        if db.execute("SELECT COUNT(*) FROM owner_passkeys WHERE credential_id=?", (cid,)).fetchone()[0] >= \
+                L["passkeys_per_credential"]:
+            raise Fail(409, "credential_full", "this credential id already has its keys")
+        if db.execute("SELECT COUNT(*) FROM owner_passkeys").fetchone()[0] >= L["max_passkeys"]:
+            raise Fail(503, "capacity")
+        db.execute("INSERT INTO owner_passkeys(credential_id, key, created_ts) VALUES(?,?,?)", (cid, text, int(now)))
+        return 201, {"ok": True, "duplicate": False}
+
+    def passkey_read(self, db, r):
+        rows = db.execute("SELECT key FROM owner_passkeys WHERE credential_id=? ORDER BY created_ts, rowid LIMIT ?",
+                          (r.params["cid"], self.limits["passkeys_per_credential"])).fetchall()
+        return 200, {"ok": True, "credential_id": r.params["cid"], "keys": [json.loads(row["key"]) for row in rows]}
 
     def drop_read(self, db, r):
         """Both slots of an open drop (null until written). Read-only: an agent polls it for the answer."""
@@ -5928,6 +6000,8 @@ ROUTES = [(m, re.compile(p + r"\Z"), h, k) for m, p, h, k in [
     ("GET", r"/\.well-known/yobiru", "well_known", None),
     ("POST", r"/v1/approval-drops/(?P<did>[A-Za-z0-9_-]{32})/(?P<slot>ask|answer)", "drop_write", None),
     ("GET", r"/v1/approval-drops/(?P<did>[A-Za-z0-9_-]{32})", "drop_read", None),
+    ("POST", r"/v1/passkeys", "passkey_write", None),
+    ("GET", r"/v1/passkeys/(?P<cid>[A-Za-z0-9_-]{22,1366})", "passkey_read", None),
     ("GET", r"/@(?P<ref>[^/]{1,64})", "share_card", None),
     ("POST", r"/v1/actors", "enroll", None),
     ("POST", r"/v1/enroll", "enroll_bot", None),
