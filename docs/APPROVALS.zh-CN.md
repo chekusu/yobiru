@@ -52,6 +52,19 @@ yobiru approval request mac-studio.example.ts.net/claude "Deploy the site from m
 如果一个请求没有带你的批准，而那边的 agent 需要它，agent 不会让你打字确认。它会把请求回复为 **blocked**，并附上
 一个链接（`yobiru approval for ID`）。打开链接，检查请求并批准，发件方就会带着你的签名重新发送。
 
+## 4. Friends 上你自己的 bot 之间
+
+从 Yobiru 0.7.31 起，在 `bots.yobiru.com` 这样的 Friends 网关上，你自己的 bot 之间也能这样做，完全不需要 tailnet。
+比如你用另一个 bot **@grok** 给你的 bot **@claude**（Mac 上通过原生绑定回复的 Claude Code）发消息：“从 main 部署网站。”
+Claude Code 不会只凭一条聊天消息就动手。它回复一个链接，这个链接经 @grok 回到你手上。打开它，页面会写明可以执行的是
+@claude、发出请求的是 @grok，以及你那条消息的原文和附件。用 passkey 批准，再告诉 @grok 你签好了。Claude Code 在它自己的
+电脑上验证签名，然后只把这件事做一次。
+
+只需设置一次：对替那个 bot 回复的 agent 说 **“帮 @claude 设置我的 Yobiru 主人 passkey”**（在保存这个 bot 绑定的数据
+目录里运行 `yobiru approval setup --bot @claude`）。每个签名只对应一条消息，并且必须和它到达时一模一样（文字、附件和
+发件人），默认一小时后过期，除非你选更长。如果是别人的消息要求做实际的事，agent 仍然可以来问你，但链接只给你一个人，
+绝不给发件人。
+
 ## 你的 passkey
 
 - **查看一台电脑信任哪些：** “这台电脑信任哪些主人 passkey？”（`yobiru approval keys`）。
@@ -90,10 +103,12 @@ yobiru approval request mac-studio.example.ts.net/claude "Deploy the site from m
 
 | 命令 | MCP 工具 | 作用 |
 |---|---|---|
-| `yobiru approval setup [--label NAME] [--key TEXT]` | `yobiru_approval_setup` | 在本机设置或添加主人 passkey，返回链接。 |
+| `yobiru approval setup [--label NAME] [--key TEXT] [--bot @BOT]` | `yobiru_approval_setup` | 在本机设置或添加主人 passkey，返回链接。`--bot` 指定这个数据目录替哪个 Friends bot 回复。 |
 | `yobiru approval request PEER/AGENT TEXT [--file F] [--expires 1h] [--uses 1] [--any-requester]` | `yobiru_approval_request` | 请主人批准一条指令，返回链接。 |
 | `yobiru approval for ID` | `yobiru_approval_for` | 在接收端：为一个没带签名的请求生成让主人批准的链接。 |
-| `yobiru approval wait REF [--timeout S]`、`get REF` | `yobiru_approval_wait` | 取回答复：`signed`（带 `approval_id`）、`key_added`、`declined`，或仍在等待。 |
+| `yobiru approval for MSG_ID [--bot @BOT]` | | Friends bot 的 agent（在它的原生绑定数据目录里）：为这个 bot 收到的一条消息生成让主人批准的链接；`give_link_to` 和 `reply_text` 说明链接该给谁。 |
+| `yobiru approval wait REF [--timeout S]`、`get REF` | `yobiru_approval_wait` | 取回答复：`signed`（带 `approval_id`）、`key_added`、`declined`，或仍在等待。`get MSG_ID` 给出一条 Friends 消息的结论，每次都重新检查。 |
+| `yobiru approval list` | | 还在等主人的链接，以及已有结论的 Friends 消息。 |
 | `yobiru approval keys` | `yobiru_approval_keys` | 本机信任的主人公钥，含可分享的公钥文本。 |
 | `yobiru approval remove FINGERPRINT` | | 请主人签名删除一把公钥。 |
 | `yobiru approval verify ID` | | 像接收端一样在本机检查一个批准。 |
@@ -106,4 +121,6 @@ yobiru approval request mac-studio.example.ts.net/claude "Deploy the site from m
 协议细节（意图格式、WebAuthn 检查、接收端账本）见 [SPEC §10](https://github.com/chekusu/yobiru/blob/main/SPEC.md)；网关的投递点接口见
 [PUBLIC_BOTS.md](PUBLIC_BOTS.md#approval-drops)（英文）。
 
-Friends 的 bot 暂时还不能携带主人签名批准。
+在 Friends 上，批准是接收方 agent 自己的记录：`approval get MSG_ID` 只有 `verified: true` 才算，意思是这台电脑用这里
+保存的主人公钥验证过签名，而且签的正是这个 bot、这条消息、它的原文和附件、这个发件人。网关给的 `from.same_owner` 只决定
+链接给谁，从不批准任何事。给别人的 bot 签批准、或者让消息自己带着批准发过去，目前都不支持。

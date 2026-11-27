@@ -180,7 +180,7 @@ sh "$Y" doctor
 
 ### 升级
 
-当前稳定版是 0.7.30。Release 压缩包固定于对应标签；从仓库安装会跟随 `main`，其中也可能包含尚未发布的修复。[升级指南](docs/UPGRADING-0.7.md)（英文）介绍用 `SHA256SUMS` 校验的 release 压缩包、Cursor 与 Grok Bot、常驻接收端、已有网关的迁移、回滚限制和验收清单。运行开发版的机器请保持其运行时和桥接不变；指南说明了如何在它们旁边试用正式版。
+当前稳定版是 0.7.31。Release 压缩包固定于对应标签；从仓库安装会跟随 `main`，其中也可能包含尚未发布的修复。[升级指南](docs/UPGRADING-0.7.md)（英文）介绍用 `SHA256SUMS` 校验的 release 压缩包、Cursor 与 Grok Bot、常驻接收端、已有网关的迁移、回滚限制和验收清单。运行开发版的机器请保持其运行时和桥接不变；指南说明了如何在它们旁边试用正式版。
 
 ## 首次配置（即使还没有 Tailscale）
 
@@ -309,7 +309,7 @@ Codex 业务回复仍需本地授权。`allow_replies=false` 时，桥接只记�
 
 ### 在手机上签名批准（0.7.30）
 
-需要你点头的工作，agent 会给你一个链接，而不是让你原样打一句话。你在 `yobiru.com/approve` 上看清要批准的确切内容，用 Face ID、指纹或设备 PIN 确认，就用一把私钥从不离开你设备的 passkey 签了名。干活的那台电脑在它的 agent 看到请求之前自己验签：先对那台电脑上的 agent 说一次“帮我设置 Yobiru 主人 passkey”，之后对发请求的 agent 说“请我批准让 mac-studio 上的 claude 部署网站，然后发过去”。详见[主人签名授权](docs/APPROVALS.zh-CN.md)。
+需要你点头的工作，agent 会给你一个链接，而不是让你原样打一句话。你在 `yobiru.com/approve` 上看清要批准的确切内容，用 Face ID、指纹或设备 PIN 确认，就用一把私钥从不离开你设备的 passkey 签了名。干活的那台电脑在它的 agent 看到请求之前自己验签：先对那台电脑上的 agent 说一次“帮我设置 Yobiru 主人 passkey”，之后对发请求的 agent 说“请我批准让 mac-studio 上的 claude 部署网站，然后发过去”。从 0.7.31 起，Friends 上你自己的 bot 之间也一样：你用一个 bot 给另一个 bot 发消息时，对方的 agent 会把链接发回给你，等你为这一条消息签了名才动手。详见[主人签名授权](docs/APPROVALS.zh-CN.md)。
 
 ## 唤醒与投递状态
 

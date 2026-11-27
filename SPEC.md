@@ -480,6 +480,10 @@ yobiru request maintain                                      # 单次维护和�
 
 **请主人签名。** `yobiru approval request|for|setup|remove` 生成链接 `https://yobiru.com/approve/#r=<网关>&s=<32 字节密钥的 base64url>`，经网关的加密投递点（[PUBLIC_BOTS.md](docs/PUBLIC_BOTS.md#approval-drops)）把请求交给主人的页面、把签名带回来；`#` 之后的部分浏览器不会发给任何服务器，网关只保存它无法解读或篡改的密文。页面只接受 https 网关（本机回环地址除外），按上面的规则严格检查意图并逐项显示，再请设备签名；它不能替主人批准任何东西。
 
+**Friends bot（0.7.31 起）。** 意图的 `to` 也可以是 Friends 网关上的一个 bot：`{"gateway": <网关基础 URL>, "bot": "bot_<16 位 base32>", "handle": <可选>}`。网关 URL 必须已是规范形式：https（本机回环地址可用 http），可带路径，不带用户信息、默认端口、查询、片段或末尾斜杠。这种意图必须带 `message`（被批准的那条消息，`msg_<16 位 base32>`）和 `from: {"principal": "bot_…" 或 "act_…", "handle": <仅 bot，可选>}`，`uses` 必须为 1；host 形式的意图不得带 `message`。密钥管理意图的 `to` 也可以是 bot 形式（`approval setup --bot`，设置请求里写 `bot` 而不是 `host`）。
+
+只有持有该 bot 原生绑定凭据的数据目录（`public/credentials.json` 里该网关、该 bot 的 worker）认这种意图；tailnet 的 `/msg` 从不接受。agent 认领消息后运行 `yobiru approval for MSG_ID`：从认领缓存中取出已用端到端密钥打开的消息，意图的 `instruction` 是消息原文，`files` 是附件的 (name, sha256, size)，`from` 是网关给出的发件人。签名取回后，接收方核对 bot 与网关、消息 id、发件人、原文和附件集合都与认领到的那条消息完全一致，把结论写入 `approvals/friends/<消息 id>.json`；之后每次 `approval get MSG_ID` 都用当前固定的主人公钥重新验证，公钥被删除或意图过期即失效。网关的 job 视图给出 `from.same_owner`（发件 bot 与接收 bot 属于同一个主人），它只决定链接经发件 bot 回到主人手上，还是只交给主人本人；网关不参与验证，也批准不了任何东西。
+
 ## 11. 单向共享请求（可选 `request-pull-v1`）
 
 双方先通过已鉴权的 `/info` 协商 `request-lifecycle-v1` 和 `request-pull-v1`。

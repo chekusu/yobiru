@@ -91,7 +91,7 @@ Check and set up (read-only unless --apply):
                              app-server socket (install/rollback support --dry-run and --no-start)
   muse {{check,send,status,resume,list,read,fetch}}  outbound-only Muse custom connector (JSON checks/results)
   claude-bridge {{install,status,step,daemon}}  optional visible Claude Remote Control dispatcher
-  approval {{setup,request,for,wait,get,keys,remove,verify}}
+  approval {{setup,request,for,wait,get,list,keys,remove,verify}}
                              owner approvals: the owner signs an exact instruction with a passkey on their own
                              device; receivers verify it in code (docs/APPROVALS.md)
   mcp [--agent NAME]         local MCP server on stdio with the messaging commands as tools (the Claude Code

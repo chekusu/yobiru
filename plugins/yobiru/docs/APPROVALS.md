@@ -59,6 +59,21 @@ If a request arrives without your approval and the agent there needs it, the age
 It answers the request as **blocked** with a link (`yobiru approval for ID`). Open it, check the request and approve
 it, and the sender sends it again with your signature.
 
+## 4. Your own bots on Friends
+
+Since Yobiru 0.7.31 this also works between your own bots on a Friends gateway such as `bots.yobiru.com`, with no
+tailnet at all. Say you write to your bot **@claude** (Claude Code on your Mac, answering through its native binding)
+from your other bot **@grok**: "Deploy the site from main." Claude Code does not act on a chat message alone. It
+answers with a link, which comes back to you through @grok. Open it: the page shows that @claude may act, that
+@grok asked, and your message word for word with its files. Approve with your passkey and tell @grok that you
+signed. Claude Code checks the signature on its own computer and does exactly that, once.
+
+Set it up once: tell the agent answering for that bot **"Set up my Yobiru owner passkey for @claude"** (`yobiru
+approval setup --bot @claude` in the data home that holds the bot's binding). Each signature covers one message,
+exactly as it arrived (its text, its files and who sent it), and it expires after an hour unless you choose longer.
+If someone else's message asks for real work, the agent may still ask you, but it gives the link to you alone, never
+to the sender.
+
 ## Your passkeys
 
 - **See which ones a computer trusts:** "Which owner passkeys does this computer trust?" (`yobiru approval keys`).
@@ -102,10 +117,12 @@ You need no Friends account.
 
 | Command | MCP tool | What it does |
 |---|---|---|
-| `yobiru approval setup [--label NAME] [--key TEXT]` | `yobiru_approval_setup` | Set up or add the owner's passkey here; returns a link. |
+| `yobiru approval setup [--label NAME] [--key TEXT] [--bot @BOT]` | `yobiru_approval_setup` | Set up or add the owner's passkey here; returns a link. `--bot` names the Friends bot this data home answers for. |
 | `yobiru approval request PEER/AGENT TEXT [--file F] [--expires 1h] [--uses 1] [--any-requester]` | `yobiru_approval_request` | Ask the owner to approve one instruction; returns a link. |
 | `yobiru approval for ID` | `yobiru_approval_for` | On a receiver: a link for the owner to approve a request that arrived unsigned. |
-| `yobiru approval wait REF [--timeout S]`, `get REF` | `yobiru_approval_wait` | Collect the answer: `signed` (with `approval_id`), `key_added`, `declined` or still waiting. |
+| `yobiru approval for MSG_ID [--bot @BOT]` | | A Friends bot's agent (its native binding home): a link for the owner to approve one message the bot received; `give_link_to` and `reply_text` say where the link goes. |
+| `yobiru approval wait REF [--timeout S]`, `get REF` | `yobiru_approval_wait` | Collect the answer: `signed` (with `approval_id`), `key_added`, `declined` or still waiting. `get MSG_ID` shows a Friends message's verdict, checked again each time. |
+| `yobiru approval list` | | Links still waiting for the owner, and the Friends messages with a verdict. |
 | `yobiru approval keys` | `yobiru_approval_keys` | Owner keys this computer trusts, with the shareable key text. |
 | `yobiru approval remove FINGERPRINT` | | Ask the owner to sign the removal of a key. |
 | `yobiru approval verify ID` | | Check an approval here as a receiver would. |
@@ -119,4 +136,7 @@ Code bridge lists verified approvals in the session's startup prompt. A sender's
 The protocol (intent format, WebAuthn checks, the receiver's ledger) is in [SPEC §10](https://github.com/chekusu/yobiru/blob/main/SPEC.md); the gateway's drop
 endpoints are in [PUBLIC_BOTS.md](PUBLIC_BOTS.md#approval-drops).
 
-Friends bots do not carry owner approvals yet.
+On Friends, the approval is the receiving agent's own record: `approval get MSG_ID` counts only with `verified: true`,
+which means this computer checked the signature against the owner key pinned here, for this bot, this message, its
+exact text and files, and this sender. The gateway's `from.same_owner` only decides where the link goes; it never
+approves anything. Approvals for other people's bots, and an approval sent along with a message, are not supported.

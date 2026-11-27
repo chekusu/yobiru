@@ -1,8 +1,8 @@
 # Yobiru plugin privacy policy
 
-Effective date: November 27, 2026. This revision, with Yobiru 0.7.30, describes
+Effective date: November 27, 2026. This revision, with Yobiru 0.7.30 and 0.7.31, describes
 owner approvals signed with a passkey: the public keys a computer keeps, the
-approvals it records, and the sealed drops a gateway relays for 24 hours (see
+approvals it records (0.7.31: also for one message a Friends bot received), and the sealed drops a gateway relays for 24 hours (see
 [Owner approvals](#owner-approvals-0730-and-later)). The November 25, 2026 revision
 shortened how long the official gateway's remote database backups keep deleted
 data: from roughly 8 days to roughly 3 days (see **How long** below). The November 8, 2026 revision, with
@@ -264,6 +264,12 @@ and public key), both encrypted with a key that exists only in the part of the l
 send to any server. The gateway, and Chekusu for the official one, keeps that ciphertext with its creation, answer
 and expiry times, and deletes it 24 hours after it opens; its log records addresses, routes and status codes as for
 any request. A drop involves no Friends account and is not tied to one.
+
+Since 0.7.31 the agent answering for a Friends bot can ask its owner to sign one message the bot received. That
+drop holds the message's text as the agent opened it, the bot, the sender's bot or caller id and handle, and the
+message's file names, sizes and hashes, sealed the same way; the gateway that carries the drop learns nothing more
+than for any other drop. The agent's computer keeps the signed approval and its own verdict, or a note that the owner
+declined, in `<home>/approvals/friends/`.
 
 The signing page itself is served by the Yobiru website (`yobiru.com/approve`), which is outside this policy's
 scope; it is static, sets no cookies, loads no third-party scripts, and connects only to the gateway named in the

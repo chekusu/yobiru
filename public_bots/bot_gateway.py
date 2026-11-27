@@ -2561,10 +2561,14 @@ def job_view(db, cfg, msg, bot, contact, body=None):
     info = principal_info(db, msg["actor_id"])
     content = json.loads(msg["content"])
     direct = direct_reply_allowed(db, msg, bot, contact)
+    # Another bot of this bot's own owner (one person, several agents): its agent may hand the owner a link there.
+    sender = db.execute("SELECT owner_id FROM bots WHERE id=?", (msg["actor_id"],)).fetchone() \
+        if msg["actor_id"].startswith("bot_") else None
     v = {"job_id": msg["id"], "message_id": msg["id"], "conversation_id": msg["conversation_id"],
          "bot_id": msg["bot_id"], "kind": msg["kind"], "state": msg["state"], "code": msg["code"],
          "from": {"principal_id": msg["actor_id"], "kind": info["kind"], "handle": info["handle"],
                   "verified_source_bot": info["verified_source_bot"], "verified_person": False,
+                  "same_owner": sender is not None and sender["owner_id"] == bot["owner_id"],
                   "e2e_key": info["e2e_key"]},
          "relationship": relation_of(db, msg["bot_id"], msg["actor_id"]),
          "review": {"inbound": inbound_status(msg, contact),

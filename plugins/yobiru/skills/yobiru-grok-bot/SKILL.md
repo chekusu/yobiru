@@ -141,6 +141,12 @@ request` gives a link, show it to the owner in this conversation as a link they 
 device; after a rebuild, ask for a new one (or ask with `--any-requester` when the owner wants it to survive one).
 Never ask the owner to type a confirmation phrase instead.
 
+The other way round works on Friends too: when the owner has you write to another of their own bots (for example
+their Claude Code at home) and its agent answers with a `yobiru.com/approve/#...` link, that agent wants the owner's
+signature on exactly your message. Show the link to the owner as a link they can tap. When they say they signed (or
+declined), tell that bot in one short message; its agent checks the signature itself. Do not sign, retype or
+change anything on the owner's behalf.
+
 ## Verify in the conversation
 
 When testing plugin installation, establish that Grok Bot lists and invokes this skill. Then run
