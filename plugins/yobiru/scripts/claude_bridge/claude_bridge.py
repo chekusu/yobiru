@@ -26,6 +26,9 @@ import unicodedata
 sys.dont_write_bytecode = True
 ID_RE = re.compile(r"[A-Za-z0-9_-]{8,64}\Z")
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,255}\Z")
+# A Claude Code tool name or rule, e.g. Edit, mcp__iphone_use, mcp__server__*, Bash(git push:*).
+TOOL_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.*-]{0,127}(?:\([^\x00-\x1f\x7f()]{1,256}\))?\Z")
+MAX_DISALLOWED_TOOLS = 64
 MAX_BYTES = 4 * 1024 * 1024
 PERMISSIONS = ("manual", "plan", "auto", "acceptEdits")
 PHASES = ("intent", "uncertain", "dispatched")
@@ -96,6 +99,11 @@ def validate_config(cfg):
         raise BridgeError("unsupported permission mode")
     if "model" in cfg and (not isinstance(cfg["model"], str) or not MODEL_RE.fullmatch(cfg["model"])):
         raise BridgeError("invalid model identifier")
+    if "disallowed_tools" in cfg:
+        tools = cfg["disallowed_tools"]
+        if (not isinstance(tools, list) or len(tools) > MAX_DISALLOWED_TOOLS or len(set(map(repr, tools))) != len(tools)
+                or any(not isinstance(tool, str) or not TOOL_RE.fullmatch(tool) for tool in tools)):
+            raise BridgeError("invalid disallowed_tools: a list of distinct Claude Code tool names or rules")
     for field, default, lower, upper in (("poll_seconds", 3, 1, 300), ("batch_delay_seconds", 30, 0, 3600),
                                          ("command_timeout", 120, 1, 300), ("max_batch", 20, 1, 100),
                                          ("max_launches_per_hour", 20, 1, 600)):
@@ -351,6 +359,9 @@ class Bridge:
                 "--plugin-dir", self.cfg["plugin_root"], "--append-system-prompt", instructions]
         if "model" in self.cfg:
             args.extend(["--model", self.cfg["model"]])
+        if self.cfg.get("disallowed_tools"):
+            # Removed from the session's tool set by Claude Code itself, whatever the permission mode or prompt says.
+            args.extend(["--disallowedTools"] + list(self.cfg["disallowed_tools"]))
         args.extend(["--", self.prompt(ids)])
         code, out = self.call(args, timeout=self.cfg["command_timeout"])
         state["runs"][sid].update(phase="uncertain", launch_exit=code)

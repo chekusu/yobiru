@@ -102,6 +102,10 @@ def install(args):
     cfg["permission_mode"] = args.permission_mode or cfg.get("permission_mode", "manual")
     if args.model is not None:
         cfg["model"] = args.model
+    if getattr(args, "no_disallowed_tools", False):
+        cfg.pop("disallowed_tools", None)
+    elif getattr(args, "disallow_tool", None):
+        cfg["disallowed_tools"] = list(dict.fromkeys(args.disallow_tool))
     validate_config(cfg)
     changed = copy.deepcopy(original)
     agents = changed.setdefault("agents", {})
@@ -131,6 +135,7 @@ def install(args):
     plan = {"applied": False, "starts_service": False, "launches_claude": False,
             "bridge_home": str(target), "agent": agent, "permission_mode": cfg["permission_mode"],
             "model": cfg.get("model"),
+            "disallowed_tools": cfg.get("disallowed_tools", []),
             "package_sha256": digest, "package_files": len(files), "keeps_state": bool(existing),
             "instructions": "preserve existing local instructions; create template only when absent",
             "services": [str(target / "services" / name) for name in templates]}
@@ -202,6 +207,11 @@ def main(argv=None):
     ap.add_argument("--workdir")
     ap.add_argument("--permission-mode", choices=PERMISSIONS)
     ap.add_argument("--model", metavar="ID", help="session model alias or full ID; omitted upgrades preserve the saved selection")
+    tools = ap.add_mutually_exclusive_group()
+    tools.add_argument("--disallow-tool", action="append", metavar="TOOL",
+                       help="tool name or rule removed from every session (repeatable, e.g. mcp__iphone_use); "
+                            "given values replace the saved list, omitted upgrades preserve it")
+    tools.add_argument("--no-disallowed-tools", action="store_true", help="clear the saved disallowed tools")
     ap.add_argument("--apply", action="store_true")
     args = ap.parse_args(argv)
     try:
