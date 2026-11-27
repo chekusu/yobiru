@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.34 (2026-11-28)
+
+The optional Claude bridge only. Nothing changes on receivers, other clients or the gateway.
+
+- **The Claude bridge can keep tools out of every session it starts.** `disallowed_tools` in the bridge's
+  `config.json` (or `claude-bridge install --disallow-tool TOOL`, repeatable) lists Claude Code tools or rules, such
+  as `mcp__iphone_use` or `Bash(git push:*)`, that each session loses through `--disallowedTools`, whatever its
+  permission mode, its instructions or a message says. Until now the only way was a project setting in the working
+  directory, which also applied to the owner's own sessions there. An upgrade without the flag keeps the saved list;
+  `--no-disallowed-tools` clears it.
+
 ## 0.7.33 (2026-11-28)
 
 The optional Claude bridge only. Nothing changes on receivers, other clients or the gateway.

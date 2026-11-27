@@ -143,6 +143,36 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(any(c and c[0] in ("stop", "kill", "rm") for c in self.calls()))
         self.assertNotIn("acked_at", json.loads((self.data / "inbox" / (self.mid + ".json")).read_text()))
 
+    def test_disallowed_tools_are_forwarded_before_the_prompt(self):
+        tools = ["mcp__iphone_use", "Bash(git push:*)", "mcp__server__*", "WebFetch(domain:example.com)"]
+        result = bridge.Bridge(dict(self.cfg, disallowed_tools=tools)).step()
+        self.assertEqual("dispatched", result["state"])
+        args = self.launches()[-1]
+        option = args.index("--disallowedTools")
+        self.assertEqual(1, args.count("--disallowedTools"))
+        self.assertEqual(tools, args[option + 1:args.index("--")])
+        for value in (None, []):
+            with self.subTest(value=value):
+                (self.data / "inbox" / (self.mid + ".json")).unlink()
+                self.mid = "%016x" % (len(self.launches()) + 1)
+                self.record(self.mid)
+                cfg = dict(self.cfg) if value is None else dict(self.cfg, disallowed_tools=value)
+                self.assertEqual("dispatched", bridge.Bridge(cfg).step()["state"])
+                self.assertNotIn("--disallowedTools", self.launches()[-1])
+
+    def test_invalid_disallowed_tools_fail_before_calls_or_writes(self):
+        invalid = ("mcp__iphone_use", None, {}, [""], ["-x"], ["--model"], ["a b"], ["Bash("], ["Bash(x)(y)"],
+                   ["Bash(\n)"], [1], ["Edit", "Edit"],
+                   ["t%d" % i for i in range(65)], ["Edit,Write"], ["Bash(a\u0007)"])
+        before = snapshot(self.root)
+        for tools in invalid:
+            with self.subTest(tools=tools), self.assertRaisesRegex(bridge.BridgeError, "disallowed_tools"):
+                bridge.Bridge(dict(self.cfg, disallowed_tools=tools))
+        self.assertEqual(before, snapshot(self.root))
+        self.assertEqual([], self.calls())
+        ok = ["t%d" % i for i in range(64)]
+        self.assertEqual(ok, bridge.validate_config(dict(self.cfg, disallowed_tools=ok))["disallowed_tools"])
+
     def test_hourly_launch_cap_holds_messages_then_sends_them_in_one_batch(self):
         cfg = dict(self.cfg, max_launches_per_hour=2)
         self.assertEqual("dispatched", bridge.Bridge(cfg).step()["state"])
@@ -512,6 +542,29 @@ class InstallTests(unittest.TestCase):
         for path in (self.target / "services").glob("*.plist"):
             self.assertIn("daemon", plistlib.loads(path.read_bytes())["ProgramArguments"])
         self.assertFalse((self.root / "calls.jsonl").exists())
+
+    def test_disallowed_tools_are_saved_preserved_on_upgrade_and_cleared(self):
+        self.args.disallow_tool = ["mcp__iphone_use", "Bash(git push:*)", "mcp__iphone_use"]
+        self.assertEqual(["mcp__iphone_use", "Bash(git push:*)"], installer.install(self.args)["disallowed_tools"])
+        self.args.apply = True
+        installer.install(self.args)
+        self.assertEqual(["mcp__iphone_use", "Bash(git push:*)"],
+                         bridge.read_json(self.target / "config.json")["disallowed_tools"])
+        self.args.disallow_tool = None
+        installer.install(self.args)
+        self.assertEqual(["mcp__iphone_use", "Bash(git push:*)"],
+                         bridge.read_json(self.target / "config.json")["disallowed_tools"])
+        self.args.no_disallowed_tools = True
+        self.assertEqual([], installer.install(self.args)["disallowed_tools"])
+        self.assertNotIn("disallowed_tools", bridge.read_json(self.target / "config.json"))
+        self.args.no_disallowed_tools, self.args.disallow_tool = False, ["bad tool"]
+        with self.assertRaisesRegex(bridge.BridgeError, "disallowed_tools"):
+            installer.install(self.args)
+        self.assertNotIn("disallowed_tools", bridge.read_json(self.target / "config.json"))
+
+    def test_cli_disallow_tool_flags_are_exclusive(self):
+        with self.assertRaises(SystemExit), patch("sys.stderr"):
+            installer.main(["--tailmsg-home", str(self.data), "--disallow-tool", "Edit", "--no-disallowed-tools"])
 
     def test_service_paths_preserve_literal_environment_and_unit_specifiers(self):
         unusual = self.root / "cash${HOME}%i"
