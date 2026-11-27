@@ -97,7 +97,8 @@ def validate_config(cfg):
     if "model" in cfg and (not isinstance(cfg["model"], str) or not MODEL_RE.fullmatch(cfg["model"])):
         raise BridgeError("invalid model identifier")
     for field, default, lower, upper in (("poll_seconds", 3, 1, 300), ("batch_delay_seconds", 30, 0, 3600),
-                                         ("command_timeout", 120, 1, 300), ("max_batch", 20, 1, 100)):
+                                         ("command_timeout", 120, 1, 300), ("max_batch", 20, 1, 100),
+                                         ("max_launches_per_hour", 20, 1, 600)):
         value = cfg.setdefault(field, default)
         if type(value) not in (int, float) or not lower <= value <= upper:
             raise BridgeError("invalid " + field)
@@ -167,6 +168,22 @@ class Bridge:
             self.core = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(self.core)
         return self.core
+
+    def launches_last_hour(self, state, now=None):
+        """Launch intents recorded in the last hour, whatever their outcome. A launch is counted from its durable
+        intent, so a crash or an uncertain launch still uses its place."""
+        since = (time.time() if now is None else now) - 3600
+        return sum(1 for run in state["runs"].values()
+                   if type(run.get("created_at")) in (int, float) and run["created_at"] > since)
+
+    def launch_limited(self, state):
+        """None while a new session may start; otherwise when the oldest counted launch leaves the hour."""
+        now = time.time()
+        if self.launches_last_hour(state, now) < int(self.cfg["max_launches_per_hour"]):
+            return None
+        recent = sorted(run["created_at"] for run in state["runs"].values()
+                        if type(run.get("created_at")) in (int, float) and run["created_at"] > now - 3600)
+        return recent[-int(self.cfg["max_launches_per_hour"])] + 3600
 
     def request_state(self, mid):
         return self.core_module().request_snapshot(Path(self.cfg["tailmsg_home"]), mid)
@@ -296,6 +313,14 @@ class Bridge:
         ids, refused = self.pending(state)
         if not ids:
             return {"state": "idle", "refused": refused}
+        # A runaway sender (a buggy agent on the tailnet, a loop between automations) must not start paid sessions
+        # without end. Messages stay pending in the inbox and go out together in one batch once a place frees up.
+        free_at = self.launch_limited(state)
+        if free_at is not None:
+            return {"state": "launch_limit", "launched": False, "pending": len(ids),
+                    "max_launches_per_hour": self.cfg["max_launches_per_hour"],
+                    "next_launch_after": datetime.datetime.fromtimestamp(free_at, datetime.timezone.utc)
+                        .strftime("%Y-%m-%dT%H:%M:%SZ"), "refused": refused}
         code, out = self.call(["auth", "status"])
         try:
             logged_in = code == 0 and json.loads(out).get("loggedIn") is True
@@ -345,6 +370,8 @@ class Bridge:
         state = self.load_state()
         pending, refused = self.pending(state)
         return {"changed": False, "runs": state["runs"], "pending": pending, "refused": refused,
+                "launches_last_hour": self.launches_last_hour(state),
+                "max_launches_per_hour": self.cfg["max_launches_per_hour"],
                 "session_observation": "not queried; status reads local evidence only"}
 
     def wake(self):

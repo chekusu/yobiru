@@ -143,6 +143,56 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(any(c and c[0] in ("stop", "kill", "rm") for c in self.calls()))
         self.assertNotIn("acked_at", json.loads((self.data / "inbox" / (self.mid + ".json")).read_text()))
 
+    def test_hourly_launch_cap_holds_messages_then_sends_them_in_one_batch(self):
+        cfg = dict(self.cfg, max_launches_per_hour=2)
+        self.assertEqual("dispatched", bridge.Bridge(cfg).step()["state"])
+        self.record("1111111111111111")
+        self.assertEqual("dispatched", bridge.Bridge(cfg).step()["state"])
+        held = ("2222222222222222", "3333333333333333")
+        for mid in held:
+            self.record(mid)
+        before = self.calls()
+        result = bridge.Bridge(cfg).step()
+        self.assertEqual("launch_limit", result["state"])
+        self.assertFalse(result["launched"])
+        self.assertEqual(2, result["pending"])
+        self.assertEqual(2, result["max_launches_per_hour"])
+        oldest = min(run["created_at"] for run in self.b.load_state()["runs"].values())
+        self.assertEqual(dt.datetime.fromtimestamp(oldest + 3600, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                         result["next_launch_after"])
+        # Held back before any call: no auth check, no launch, no intent, messages untouched.
+        self.assertEqual(before, self.calls())
+        self.assertEqual(2, len(self.b.load_state()["runs"]))
+        for mid in held:
+            self.assertNotIn("acked_at", json.loads((self.data / "inbox" / (mid + ".json")).read_text()))
+        status = bridge.Bridge(cfg).status()
+        self.assertEqual((2, 2), (status["launches_last_hour"], status["max_launches_per_hour"]))
+        self.assertEqual(sorted(held), sorted(status["pending"]))
+        # An hour after the oldest launch one place frees up, and every held message goes out together.
+        with patch.object(bridge.time, "time", return_value=oldest + 3600.5):
+            result = bridge.Bridge(cfg).step()
+        self.assertEqual("dispatched", result["state"])
+        self.assertEqual(sorted(held), sorted(result["ids"]))
+        self.assertEqual(3, len(self.launches()))
+
+    def test_hourly_launch_cap_counts_uncertain_launches_and_validates(self):
+        cfg = dict(self.cfg, max_launches_per_hour=1)
+        self.mode("nonzero")
+        self.assertEqual("uncertain", bridge.Bridge(cfg).step()["state"])
+        state = self.b.load_state()
+        run = next(iter(state["runs"].values()))
+        run.update(phase="dispatched")
+        self.b.save(state)
+        self.mode("success")
+        self.record("1111111111111111")
+        self.assertEqual("launch_limit", bridge.Bridge(cfg).step()["state"])
+        self.assertEqual(1, len(self.launches()))
+        self.assertEqual(20, bridge.validate_config(dict(self.cfg))["max_launches_per_hour"])
+        self.assertEqual(600, bridge.validate_config(dict(self.cfg, max_launches_per_hour=600))["max_launches_per_hour"])
+        for value in (0, 601, -1, "20", None, True):
+            with self.subTest(value=value), self.assertRaisesRegex(bridge.BridgeError, "max_launches_per_hour"):
+                bridge.validate_config(dict(self.cfg, max_launches_per_hour=value))
+
     def test_background_assigned_session_is_observed_and_next_wake_dispatches(self):
         self.mode("assigned_session")
         real = self.b.agents
