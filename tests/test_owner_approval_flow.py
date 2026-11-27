@@ -27,6 +27,7 @@ spec = importlib.util.spec_from_file_location("yobiru_approval_under_test", SCRI
 approval = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(approval)
 LAUNCHER = types.SimpleNamespace(core=lambda: core)
+RECEIVER_KEYS = approval.receiver_keys       # the real one; the tests stub the owner's other machines
 
 HOST, SENDER = "studio.example.ts.net", "grok-bot-1.example.ts.net"
 HOST_NODE = core.stable_peer_id("nStudio1CNTRL")
@@ -89,9 +90,14 @@ class ApprovalFlowTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name) / "home"
         self.home.mkdir()
+        self.receivers = {}            # fqdn -> ([owner key records], problem): the owner's other machines
         patches = [mock.patch.dict(os.environ, {approval.RELAY_ENV: self.gw.url}),
                    mock.patch.object(approval, "self_identity", lambda home: (HOST, HOST_NODE)),
-                   mock.patch.object(approval, "POLL_SECONDS", 0.2)]
+                   mock.patch.object(approval, "POLL_SECONDS", 0.2),
+                   mock.patch.object(approval, "tailnet_receivers",
+                                     lambda ctx: [(fq, "100.64.0.%d" % (i + 2)) for i, fq in enumerate(self.receivers)]),
+                   mock.patch.object(approval, "receiver_keys",
+                                     lambda ctx, fqdn, ip, port: self.receivers.get(fqdn, ([], "unreachable")))]
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
@@ -235,8 +241,10 @@ class ApprovalFlowTests(unittest.TestCase):
 
     def test_add_import_and_remove_keys(self):
         self.setup_phone()
+        code, again = self.run_cli("setup", "--label", "laptop")
+        self.assertEqual((code, again["state"], len(again["keys"])), (0, "already_set_up", 1), again)
         laptop = SoftPasskey(label="laptop")
-        code, started = self.run_cli("setup", "--label", "laptop")
+        code, started = self.run_cli("setup", "--label", "laptop", "--new")
         self.assertEqual(started["mode"], "add-key")
         page = Page(started["link"])
         self.assertEqual(page.ask["credentials"], [core.load_owner_keys(self.home)[0]["credential_id"]])
@@ -245,7 +253,7 @@ class ApprovalFlowTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("does not trust", refused["error"])
 
-        _, started = self.run_cli("setup", "--label", "laptop")
+        _, started = self.run_cli("setup", "--label", "laptop", "--new")
         Page(started["link"]).register(laptop, old=self.phone)
         code, added = self.run_cli("wait", started["ref"], "--timeout", "2")
         self.assertEqual((code, added["state"], added["keys"]), (0, "key_added", 2), added)
@@ -269,6 +277,137 @@ class ApprovalFlowTests(unittest.TestCase):
         code, removed = self.run_cli("wait", started["ref"], "--timeout", "2")
         self.assertEqual((code, removed["state"]), (0, "key_removed"), removed)
         self.assertEqual([k["label"] for k in core.load_owner_keys(self.home)], ["laptop", "tablet"])
+
+    def test_adopt_the_passkey_the_other_machines_trust(self):
+        """One passkey for every machine: setup finds the key the owner's other receivers trust, the owner signs
+        once with that same key, and no passkey is created."""
+        phone = core.owner_key_record(self.phone.key())
+        stranger = core.owner_key_record(SoftPasskey(label="shared-in").key())
+        self.receivers = {"mac.example.ts.net": ([phone], None), "laptop.example.ts.net": ([phone], None),
+                          "odd.example.ts.net": ([stranger], None),
+                          "old.example.ts.net": ([], "runs Yobiru 0.7.33, which does not share its owner keys yet "
+                                                     "(0.7.34 or later does)"),
+                          "printer.example.ts.net": ([], "unreachable (ConnectionRefusedError)")}
+        code, started = self.run_cli("setup")
+        self.assertEqual((code, started["state"], started["mode"]), (0, "waiting_for_owner", "adopt"), started)
+        self.assertEqual(started["key"], {"fingerprint": phone["fingerprint"], "label": "phone",
+                                          "trusted_by": ["mac.example.ts.net", "laptop.example.ts.net"]})
+        self.assertEqual([k["fingerprint"] for k in started["other_keys"]], [stranger["fingerprint"]])
+        self.assertEqual(started["machines_asked"], 5)
+        self.assertEqual(len(started["notes"]), 1)                  # the receiver to upgrade, not the printer
+        self.assertIn("old.example.ts.net", started["notes"][0])
+        page = Page(started["link"])
+        intent = page.intent()
+        self.assertEqual(page.ask["mode"], "sign")
+        self.assertEqual(page.ask["credentials"], [phone["credential_id"]], "the page offers only that passkey")
+        self.assertEqual((intent["type"], intent["to"]), (core.KEY_ADD_TYPE, {"host": HOST, "node": HOST_NODE}))
+        self.assertEqual(intent["key"], {f: phone[f] for f in core.OWNER_KEY_FIELDS})
+        self.assertEqual(page.approve(self.phone), 201)
+        code, done = self.run_cli("wait", started["ref"], "--timeout", "5")
+        self.assertEqual((code, done["state"], done["keys"]), (0, "key_added", 1), done)
+        self.assertEqual((done["key"]["added_via"], done["key"]["fingerprint"]), ("adopted", phone["fingerprint"]))
+        code, again = self.run_cli("setup")
+        self.assertEqual((code, again["state"]), (0, "already_set_up"))
+        # and the adopted key works like any other
+        with self.peer(core.load_owner_keys(self.home)):
+            code, asked = self.run_cli("request", "studio/claude", "Deploy the site")
+        Page(asked["link"]).approve(self.phone)
+        code, signed = self.run_cli("wait", asked["ref"], "--timeout", "5")
+        code, checked = self.run_cli("verify", signed["approval_id"])
+        self.assertEqual((code, checked["verified"]), (0, True), checked)
+
+    def test_a_key_the_owner_does_not_hold_is_never_adopted(self):
+        stranger = SoftPasskey(label="sandbank-tyo")
+        self.receivers = {"odd.example.ts.net": ([core.owner_key_record(stranger.key())], None)}
+        code, started = self.run_cli("setup")
+        self.assertEqual(started["mode"], "adopt")
+        page = Page(started["link"])
+        # The owner's device has no such passkey; whatever another passkey signs, nothing is pinned.
+        self.assertEqual(page.approve(self.phone), 201)
+        code, refused = self.run_cli("wait", started["ref"], "--timeout", "5")
+        self.assertEqual(code, 2)
+        self.assertIn("does not trust", refused["error"])
+        self.assertEqual(core.load_owner_keys(self.home), [])
+        # A key addressed elsewhere, signed by the key itself, is refused too.
+        code, started = self.run_cli("setup")
+        page = Page(started["link"])
+        now = core.now_utc()
+        moved = dict(page.intent(), to={"host": "other.example.ts.net"}, nonce=b64u(os.urandom(16)),
+                     issued_at=core.iso(now))
+        signed = stranger.approve(moved)
+        self.assertEqual(page.answer({"v": 1, "approval": signed}), 201)
+        code, refused = self.run_cli("wait", started["ref"], "--timeout", "5")
+        self.assertEqual(code, 2)
+        self.assertIn("different content", refused["error"])
+        self.assertEqual(core.load_owner_keys(self.home), [])
+
+    def test_no_shared_passkey_then_a_new_one_and_the_flags(self):
+        self.receivers = {"old.example.ts.net": ([], "runs Yobiru 0.7.33, which does not share its owner keys yet "
+                                                     "(0.7.34 or later does)")}
+        code, started = self.run_cli("setup", "--label", "studio")
+        self.assertEqual((code, started["mode"]), (0, "register"), started)
+        self.assertEqual(started["searched"]["machines_asked"], 1)
+        self.assertIn("old.example.ts.net", started["searched"]["notes"][0])
+        # --new never asks the tailnet
+        self.receivers = {"mac.example.ts.net": ([core.owner_key_record(self.phone.key())], None)}
+        with mock.patch.object(approval, "tailnet_receivers", side_effect=AssertionError("asked the tailnet")):
+            code, fresh = self.run_cli("setup", "--new")
+        self.assertEqual((code, fresh["mode"]), (0, "register"), fresh)
+        self.assertNotIn("searched", fresh)
+        # --from asks only the machines it names, without listing the tailnet
+        resolved = []
+
+        def resolve(ctx, host):
+            resolved.append(host)
+            return host + ".example.ts.net", "100.64.0.9"
+        with mock.patch.object(approval, "tailnet_receivers", side_effect=AssertionError("listed the tailnet")), \
+                mock.patch.object(core.Ctx, "resolve", resolve):
+            code, started = self.run_cli("setup", "--from", "mac")
+        self.assertEqual((code, started["mode"], started["key"]["trusted_by"]), (0, "adopt", ["mac.example.ts.net"]))
+        self.assertEqual(resolved, ["mac"])
+        with mock.patch.object(core.Ctx, "resolve", resolve):
+            code, none = self.run_cli("setup", "--from", "printer")
+        self.assertEqual((code, none["mode"]), (0, "register"))
+        self.assertEqual(none["searched"]["notes"], ["printer.example.ts.net: unreachable"])
+
+    def test_receiver_keys_reads_a_real_info_answer(self):
+        """receiver_keys against an HTTP server answering /info as a 0.7.34 receiver, and as an older one."""
+        import http.server
+        import threading
+        phone = core.owner_key_record(self.phone.key())
+        answers = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps(answers["info"]).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+        approval._tm = core
+        ctx = core.Ctx(self.home)
+        shared = dict({f: phone[f] for f in core.OWNER_KEY_FIELDS}, fingerprint=phone["fingerprint"])
+        answers["info"] = {"node": "mac.example.ts.net", "version": "0.7.34",
+                           "owner_keys": [shared, {"credential_id": "x", "public_key": "not a key"}]}
+        recs, problem = RECEIVER_KEYS(ctx, "mac.example.ts.net", "127.0.0.1", port)
+        self.assertEqual(([r["id"] for r in recs], problem), ([phone["id"]], None))
+        answers["info"]["node"] = "someone-else.example.ts.net"     # not answering as itself
+        self.assertEqual(RECEIVER_KEYS(ctx, "mac.example.ts.net", "127.0.0.1", port)[0], [])
+        answers["info"] = {"node": "mac.example.ts.net", "version": "0.7.33",
+                           "owner_keys": [{"credential_id": phone["credential_id"], "fingerprint": phone["fingerprint"],
+                                           "label": "phone", "rp_id": "yobiru.com"}]}
+        recs, problem = RECEIVER_KEYS(ctx, "mac.example.ts.net", "127.0.0.1", port)
+        self.assertEqual(recs, [])
+        self.assertIn("0.7.33", problem)
 
     def test_import_on_a_new_machine_and_errors(self):
         share = core.owner_key_text(core.owner_key_record(self.phone.key()))

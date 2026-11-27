@@ -132,6 +132,8 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(cmd("yobiru_approval_wait", {"ref": "AbCdEf12"}),
                          (["approval", "wait", "--timeout", "60", "--", "AbCdEf12"], "json"))
         self.assertEqual(cmd("yobiru_approval_keys", {})[0][:2], ["approval", "keys"])
+        self.assertEqual(cmd("yobiru_approval_setup", {"from": ["mac-studio", "laptop.example.ts.net:7766"]}),
+                         (["approval", "setup", "--from", "mac-studio", "--from", "laptop.example.ts.net:7766"], "json"))
         argv, _ = cmd("yobiru_send", {"to": "h", "text": "t", "track": True, "approval": "0123456789abcdef"})
         self.assertEqual(argv[argv.index("--approval") + 1], "0123456789abcdef")
         with self.assertRaises(ValueError) as raised:

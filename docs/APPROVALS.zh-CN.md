@@ -13,15 +13,22 @@
 - 一台支持 passkey 的手机、平板或电脑：iPhone 或 iPad（iOS 16+）、Android 9+、带 Touch ID 的 Mac、Windows Hello，
   或者一把安全密钥。任何能打开 `yobiru.com` 的新版浏览器。
 
-## 1. 在每台干活的电脑上设置你的 passkey（一次）
+## 1. 设置你的 passkey（所有电脑共用一把）
 
-对那台电脑上的 agent 说：**“帮我设置 Yobiru 主人 passkey。”** 它会运行 `yobiru approval setup`，给你一个链接。
-在手机上打开，点 **创建 passkey**。从此这台电脑就接受你用它签的批准。
+对一台干活的电脑上的 agent 说：**“帮我设置 Yobiru 主人 passkey。”** 它会运行 `yobiru approval setup`，给你一个链接：
 
-在你的其他电脑上也这样做一次。每台电脑各自保存它信任的 passkey 列表，谁也不能替别的电脑担保。你的手机会在
-`yobiru.com` 下为每台电脑各存一把 passkey，签名时页面会自动挑对那一把。
+- **第一台电脑**：链接会创建 passkey。在手机上打开，点 **创建 passkey**。
+- **其他电脑**（0.7.35 起）：设置会先通过你的 tailnet 问你的其他电脑信任哪一把 passkey。链接上写着
+  **在这里也用你的 passkey？**，用 Face ID、指纹或设备密码确认一次即可。不会新建 passkey，这台电脑从此信任同一把。
 
-想沿用一把已有的 passkey：请一台已经信任它的电脑上的 agent 给出你的**主人公钥文本**（`yobiru approval keys`），
+agent 需要你批准、却发现本机还没设置 passkey 时，会自己运行同样的设置并把链接发给你。所以新的 agent（Grok Bot、
+Muse、另一个 Claude Code）只会请你用已有的那把 passkey 确认一次。
+
+每台电脑仍各自保存它信任的 passkey 列表。一台电脑只有在那把 passkey 亲自为它签名后才会信任它，所以任何电脑都不能让
+另一台信任一把你手里没有的 passkey。你的其他电脑只分享 passkey 的公钥，私钥从不离开你的设备。通过连接器进入
+tailnet、看不到电脑列表的 agent（Grok Bot 的官方 Tailscale 插件）用 `approval setup --from mac-studio` 指定一台。
+
+也可以用公钥文本：请一台已经信任它的电脑上的 agent 给出你的**主人公钥文本**（`yobiru approval keys`），
 再交给新电脑上的 agent：**“信任这把主人公钥：yobiru-owner-key:…”**。只用你从自己电脑上拿到的文本：
 一台还没有任何主人公钥的电脑，会直接信任交给它的第一把。
 
@@ -95,8 +102,10 @@ Claude Code 会话都会用它。
 ## 你的 passkey
 
 - **查看一台电脑信任哪些：** “这台电脑信任哪些主人 passkey？”（`yobiru approval keys`）。
-- **添加一把**（新手机、安全密钥）：在那台电脑上再运行一次设置。页面先创建新的 passkey，再请这台电脑已经信任的
-  一把 passkey 批准添加。
+- **添加一把**（安全密钥，或你确实想要第二把）：在那台电脑上运行 `yobiru approval setup --new`。页面先创建新的
+  passkey，再请这台电脑已经信任的一把 passkey 批准添加。其他电脑只信任原来那些：把新公钥文本交给它们
+  （`approval setup --key 文本`），再用它们已经信任的 passkey 确认。同步到新手机上的 passkey（iCloud 钥匙串、
+  Google 密码管理器）还是同一把，什么都不用做。
 - **删除一把：** “这台电脑不要再信任 ab12-cd34-ef56-7890 这把 passkey”（`yobiru approval remove ab12-cd34-ef56-7890`，
   即 `approval keys` 显示的指纹）。删除要用你的某把 passkey 签名批准，可以就是被删除的那一把。
 - **一台电脑信任的 passkey 全丢了：** 在那台电脑上删掉 Yobiru 数据文件夹里的 `owner_keys.json`，再重新设置。
@@ -130,7 +139,7 @@ Claude Code 会话都会用它。
 
 | 命令 | MCP 工具 | 作用 |
 |---|---|---|
-| `yobiru approval setup [--label NAME] [--key TEXT] [--bot @BOT]` | `yobiru_approval_setup` | 在本机设置或添加主人 passkey，返回链接。`--bot` 指定这个数据目录替哪个 Friends bot 回复。 |
+| `yobiru approval setup [--from HOST] [--new] [--label NAME] [--key TEXT] [--bot @BOT]` | `yobiru_approval_setup` | 在本机设置主人 passkey，返回链接。还没有公钥时，沿用主人其他接收端信任的那把（`mode: adopt`，主人用它签一次；`--from` 指定去问哪几台），找不到才新建（`mode: register`）。已经设置过：`already_set_up`；`--new` 添加第二把。`--bot` 指定这个数据目录替哪个 Friends bot 回复。 |
 | `yobiru approval request PEER/AGENT TEXT [--file F] [--expires 1h] [--uses 1] [--any-requester]` | `yobiru_approval_request` | 请主人批准一条指令，返回链接。 |
 | `yobiru approval for ID` | `yobiru_approval_for` | 在接收端：为一个没带签名的请求生成让主人批准的链接。 |
 | `yobiru approval for MSG_ID [--bot @BOT]` | | Friends bot 的 agent（在它的原生绑定数据目录里）：为这个 bot 收到的一条消息生成让主人批准的链接；`give_link_to` 和 `reply_text` 说明链接该给谁。 |

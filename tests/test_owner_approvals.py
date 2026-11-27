@@ -296,6 +296,40 @@ class KeyStoreTests(unittest.TestCase):
         events = json.loads(core.owner_keys_path(self.home).read_text("utf-8"))["events"]
         self.assertEqual([e["event"] for e in events], ["added", "added", "removed"])
 
+    def test_first_key_adopted_with_its_own_signature(self):
+        """A passkey the owner's other machines trust becomes this machine's first key once that very key signs a
+        KEY_ADD naming this machine: holding it is the proof. Nothing else adopts it."""
+        key = self.first.key()
+        other = self.second.approve(self.key_intent(core.KEY_ADD_TYPE, {"key": key}))
+        with self.assertRaisesRegex(core.ApprovalError, "does not trust"):        # signed by another passkey
+            core.owner_key_add(self.home, key, other, HOST, HOST_NODE)
+        elsewhere = self.first.approve(self.key_intent(core.KEY_ADD_TYPE, {"key": key}, host="other.example.ts.net"))
+        with self.assertRaisesRegex(core.ApprovalError, "not this machine"):
+            core.owner_key_add(self.home, key, elsewhere, HOST, HOST_NODE)
+        third = SoftPasskey()
+        wrong = third.approve(self.key_intent(core.KEY_ADD_TYPE, {"key": third.key()}))
+        with self.assertRaisesRegex(core.ApprovalError, "does not trust"):        # a valid self-signature, of another key
+            core.owner_key_add(self.home, key, wrong, HOST, HOST_NODE)
+        removal = self.first.approve(self.key_intent(core.KEY_REMOVE_TYPE, {"key_id": "ab" * 32}))
+        with self.assertRaisesRegex(core.ApprovalError, "something else"):
+            core.owner_key_add(self.home, key, removal, HOST, HOST_NODE)
+        self.assertEqual(core.load_owner_keys(self.home), [])
+        good = self.first.approve(self.key_intent(core.KEY_ADD_TYPE, {"key": key}))
+        added = core.owner_key_add(self.home, key, good, HOST, HOST_NODE)
+        self.assertEqual((added["added"], added["key"]["added_via"], added["keys"]), (True, "adopted", 1))
+        events = json.loads(core.owner_keys_path(self.home).read_text("utf-8"))["events"]
+        self.assertEqual(events[-1]["by"], core.owner_key_record(key)["id"])
+        # Once a key is trusted, a self-signed KEY_ADD adopts nothing more.
+        selfsigned = self.second.approve(self.key_intent(core.KEY_ADD_TYPE, {"key": self.second.key()}))
+        with self.assertRaisesRegex(core.ApprovalError, "does not trust"):
+            core.owner_key_add(self.home, self.second.key(), selfsigned, HOST, HOST_NODE)
+        # /info shares the whole public half, so the owner's other machines can offer it to `approval setup`.
+        info = core.info_payload(self.home, {"default_agent": None}, {}, HOST, lambda b: None)
+        rec = core.load_owner_keys(self.home)[0]
+        self.assertEqual(info["owner_keys"], [{f: rec[f] for f in sorted(core.OWNER_KEY_FIELDS | {"fingerprint"})}])
+        self.assertEqual(core.owner_key_record({f: info["owner_keys"][0][f] for f in core.OWNER_KEY_FIELDS})["id"],
+                         rec["id"])
+
     def test_damaged_file_fails_closed_and_text_round_trips(self):
         core.owner_key_add(self.home, self.first.key())
         rec = core.load_owner_keys(self.home)[0]

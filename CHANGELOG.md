@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.35 (2026-11-28)
+
+Owner approvals: one passkey for all of the owner's computers. Receivers and clients; the gateway is unchanged.
+
+- **A new computer adopts the passkey your other computers trust.** `approval setup` on a data home with no owner
+  key first asks the owner's other receivers (every online computer of the tailnet; `--from HOST` names them, as the
+  connector route needs) which passkey they trust. The link then asks the owner to confirm that same passkey once
+  ("Use your passkey here?"): a key-add for this computer signed by the very key it adds, with only that passkey
+  offered, so a computer can never be made to trust a passkey the owner does not hold. No passkey is created; the key
+  is recorded as `added_via: adopted`. Only when no computer shares one does setup create a passkey, as before.
+- **`/info` shares the whole public half of each owner key** (`alg`, `public_key`, `origin` added), so the owner's
+  other computers can offer it. Upgrade a computer that already trusts the passkey first: receivers before 0.7.35
+  list only its fingerprint and are reported as needing an upgrade.
+- **`approval setup` on a computer that already trusts a passkey answers `already_set_up`** instead of creating a
+  second one; `--new` creates one on purpose. It never offers keys other computers list.
+- Agents may run setup by themselves when they need the owner's approval and none is set up (skill, MCP
+  `yobiru_approval_setup` with `from`); links go to the owner alone, and a link that would create a new passkey is
+  followed only when the owner asked directly.
+
 ## 0.7.34 (2026-11-28)
 
 The optional Claude bridge only. Nothing changes on receivers, other clients or the gateway.

@@ -4,11 +4,11 @@
   "files": {
     "docs/APPROVALS.md": {
       "source": "docs/APPROVALS.md",
-      "sha256": "6e5e919823b827ed628b71c761f5363b2b3b8fa89a6ad55f2d23c28abf44d7d8"
+      "sha256": "4b8127403a0a5b7e0788adc9b97a342f0d9b085dc59980482b2305463ccffa6f"
     },
     "scripts/tailmsg.py": {
       "source": "tailmsg.py",
-      "sha256": "6f493415632e76fd042a63d39c984e1e082dcae3ca1eb1700f952b89c21f0280"
+      "sha256": "d5b20caf68c615cd39f32b57737044136614ae4fad0e7f24b83dcdfa68009f37"
     },
     "scripts/codex_bridge/CODEX_DISPATCHER.md": {
       "source": "CODEX_DISPATCHER.md",

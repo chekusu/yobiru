@@ -15,7 +15,7 @@ from pathlib import Path
 
 VERSION = 1                     # wire protocol version (unchanged)
 PRODUCT = "yobiru"
-PRODUCT_VERSION = "0.7.34"  # Yobiru release of this file; tools/build_plugin.py check keeps it in sync
+PRODUCT_VERSION = "0.7.35"  # Yobiru release of this file; tools/build_plugin.py check keeps it in sync
 DEFAULTS = {
     "port": 7766,
     "access_policy": "tailnet",    # authenticated Tailscale peers; use "allowlist" for opt-in restriction
@@ -2463,8 +2463,10 @@ def owner_key_view(rec):
 
 
 def owner_key_add(home, key, approval=None, host=None, node_id=None, bots=()):
-    """Pin an owner key. The first key of a data home is set up by the owner talking to this machine's agent;
-    after that, a key is added only with an approval signed by one already pinned (KEY_ADD_TYPE)."""
+    """Pin an owner key. The first key of a data home is set up by the owner talking to this machine's agent:
+    created on the spot, given as text, or adopted from the owner's other machines with an approval that key signed
+    itself (KEY_ADD_TYPE naming this machine: the owner holds it). After that, a key is added only with an approval
+    signed by one already pinned."""
     rec = owner_key_record(key)
     with _OwnerKeysLock(home):
         keys = load_owner_keys(home)
@@ -2485,6 +2487,14 @@ def owner_key_add(home, key, approval=None, host=None, node_id=None, bots=()):
             if owner_key_record(check["intent"]["key"])["id"] != rec["id"]:
                 raise ApprovalError("the approval adds a different key")
             via, signer = "signed", check["key"]["id"]
+        elif approval is not None:
+            check = verify_approval(approval, [rec], kinds=(KEY_ADD_TYPE,))
+            reason = approval_audience_error(check["intent"], host, node_id, bots=bots)
+            if reason:
+                raise ApprovalError(reason)
+            if owner_key_record(check["intent"]["key"])["id"] != rec["id"]:
+                raise ApprovalError("the approval adds a different key")
+            via, signer = "adopted", rec["id"]
         stamp = iso(now_utc())
         rec.update(added_at=stamp, added_via=via)
         keys.append(rec)
@@ -3970,9 +3980,10 @@ def info_payload(home, cfg, agents, me, native_name, node_id=None, caller=None):
         body["node_id"] = node_id
     if caller:
         body["caller"] = caller
-    try:     # public keys only: a sender uses them to have the owner's device pick the right passkey
-        body["owner_keys"] = [{"credential_id": k["credential_id"], "fingerprint": k["fingerprint"],
-                               "label": k["label"], "rp_id": k["rp_id"]} for k in load_owner_keys(home)]
+    try:     # public keys only: a sender uses them to have the owner's device pick the right passkey, and the
+        # owner's other machines offer them to `approval setup`, which pins one only once the owner signs with it
+        body["owner_keys"] = [dict({f: k[f] for f in OWNER_KEY_FIELDS}, fingerprint=k["fingerprint"])
+                              for k in load_owner_keys(home)]
     except ApprovalError:
         body["owner_keys"] = []
         body["owner_keys_error"] = "damaged"

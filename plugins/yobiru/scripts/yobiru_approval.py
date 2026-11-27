@@ -9,6 +9,10 @@ Nothing here can approve anything. Verification lives in tailmsg.py, which each 
 the owner keys pinned in its data home; this module only builds requests for a signature, collects answers and pins
 keys (the first one when the owner sets it up with this machine's agent, later ones only with a signed approval).
 
+One passkey serves all of the owner's machines: `approval setup` first asks the owner's other receivers (their
+authenticated /info) which passkey they trust, and has the owner sign once with that same passkey to show they hold
+it. Only when none is found does it have the owner create one.
+
 Friends: a bot's own agent (its native binding, in this data home) asks its owner to approve one message the bot
 received (`approval for msg_...`). The intent names that bot on its gateway, the message, its sender, its exact text
 and files; when the owner signs, `approval wait` checks it here against the same pinned keys and records the verdict.
@@ -33,7 +37,10 @@ PAGE_ENV = "YOBIRU_APPROVAL_PAGE"           # a test copy of the page; real keys
 DROP_ID_DOMAIN = b"yobiru-drop-id\n"
 DROP_KEY_DOMAIN = b"yobiru-drop-key\n"
 DEFAULT_EXPIRES = 3600
+SETUP_EXPIRES = 86400                        # a setup link waits a day, as long as its drop lasts
 POLL_SECONDS = 3
+DISCOVERY_TIMEOUT = 3.0                      # seconds per receiver asked for the owner's passkey
+DISCOVERY_MAX = 64                           # machines asked at most
 MODES = ("sign", "register", "add-key")
 DROP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{32}\Z")
 
@@ -353,6 +360,102 @@ def peer_info(home, peer):
     return fqdn, (_tm.norm_agent(agent) if agent else None), info
 
 
+def tailnet_receivers(ctx):
+    """[(fqdn, ip)] of this machine and its online peers, from one `tailscale status`: every place a receiver of
+    the owner's may run (this machine too: another data home's receiver may hold the key)."""
+    st = ctx.status()
+    found = []
+    entries = [(True, st.get("Self"))] + [(False, n) for n in (st.get("Peer") or {}).values()]
+    for is_self, n in entries:
+        if not isinstance(n, dict) or not (is_self or n.get("Online") is True):
+            continue
+        fq = (n.get("DNSName") or "").rstrip(".").lower()
+        ips = [i for i in n.get("TailscaleIPs") or [] if isinstance(i, str)]
+        v4 = [i for i in ips if ":" not in i]
+        if fq and ips:
+            found.append((fq, (v4 or ips)[0]))
+    return found[:DISCOVERY_MAX]
+
+
+def receiver_keys(ctx, fqdn, ip, port):
+    """-> ([owner key records], problem or None) that one receiver says it trusts, from its authenticated /info.
+    A receiver before 0.7.34 lists no public keys; it is reported, not used."""
+    try:
+        status, info = _tm.http_json(ip, port, "GET", "/info", host=fqdn, timeout=DISCOVERY_TIMEOUT,
+                                     deadline=DISCOVERY_TIMEOUT, limit=64 * 1024)
+    except Exception as e:
+        return [], "unreachable (%s)" % (type(e).__name__)
+    if status != 200 or not isinstance(info, dict) or info.get("node") != fqdn:
+        return [], "no Yobiru receiver answered (HTTP %s)" % status
+    listed = [k for k in info.get("owner_keys") or [] if isinstance(k, dict)][:_tm.OWNER_KEYS_MAX]
+    recs = []
+    for k in listed:
+        try:
+            recs.append(_tm.owner_key_record({f: k[f] for f in _tm.OWNER_KEY_FIELDS if f in k}))
+        except _tm.ApprovalError:
+            continue
+    if listed and not recs:
+        return [], "runs Yobiru %s, which does not share its owner keys yet (0.7.34 or later does)" % (
+            info.get("version") or "older than 0.7.34")
+    return recs, None
+
+
+def has_tailnet(home):
+    try:
+        self_identity(home)
+        return True
+    except Fail:
+        return False
+
+
+def discover_keys(home, sources=()):
+    """The owner's passkeys as their other receivers trust them: [{"key", "from": [machines]}], the key most
+    machines trust first. `sources` (--from) names the machines to ask; otherwise every online machine of the
+    tailnet is asked. Nothing found is not an error: setup then has the owner create a passkey."""
+    ctx = ctx_for(home)
+    port = int(ctx.cfg["port"])
+    targets, notes = [], []
+    if sources:
+        for src in sources:
+            host, p = _tm.split_peer(src, port)
+            try:
+                fqdn, ip = ctx.resolve(host)
+            except Exception as e:
+                notes.append("%s: %s" % (host, e))
+                continue
+            targets.append((fqdn, ip, p))
+    elif ctx.connector():
+        notes.append("this computer reaches the tailnet through a connector and cannot list its machines: name "
+                     "one of the owner's receivers with --from")
+    else:
+        try:
+            targets = [(fq, ip, port) for fq, ip in tailnet_receivers(ctx)]
+        except Exception as e:
+            notes.append("could not list the tailnet's machines: %s" % e)
+    import concurrent.futures
+    found, asked = {}, {}
+    if targets:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(targets))) as pool:
+            results = list(pool.map(lambda t: receiver_keys(ctx, *t), targets))
+        for (fqdn, _, _), (recs, problem) in zip(targets, results):
+            asked[fqdn] = problem
+            for rec in recs:
+                entry = found.setdefault(rec["id"], {"key": rec, "from": []})
+                if fqdn not in entry["from"]:
+                    entry["from"].append(fqdn)
+    if sources:
+        notes += ["%s: %s" % (m, why) for m, why in sorted(asked.items()) if why]
+    else:
+        notes += ["%s: %s" % (m, why) for m, why in sorted(asked.items()) if why and "0.7.34" in why]
+    ranked = sorted(found.values(), key=lambda e: (-len(e["from"]), e["key"]["fingerprint"]))
+    return ranked, len(asked), notes
+
+
+def key_line(entry):
+    rec = entry["key"]
+    return {"fingerprint": rec["fingerprint"], "label": rec["label"], "trusted_by": entry["from"]}
+
+
 # ---------------------------------------------------------------- commands
 def cmd_request(home, a):
     """Ask the owner to approve an instruction for one agent on one of their receivers."""
@@ -528,14 +631,62 @@ def setup_with_key(home, a, to, pinned):
     out(result)
 
 
+def setup_label(a, to):
+    friends = _tm.is_friends_recipient(to)
+    return a.label or (to.get("handle") or to["bot"] if friends else to["host"].split(".")[0])
+
+
+def setup_adopt(home, a, to, found, searched, notes):
+    """Have the owner confirm, with the passkey their other machines already trust, that this one trusts it too:
+    a KEY_ADD naming this machine (or bot), signed by that very key. Holding the key is the proof; the page offers
+    no other passkey, so a key the owner does not hold cannot be confirmed."""
+    best = found[0]
+    rec = best["key"]
+    key = {f: rec[f] for f in _tm.OWNER_KEY_FIELDS}
+    intent, raw = new_intent(_tm.KEY_ADD_TYPE, {k: v for k, v in to.items() if k != "agent"}, SETUP_EXPIRES,
+                             {"key": key})
+    drop = open_drop(home, relay_url(a.relay), "sign", sign_ask(raw, [rec]), intent["expires_at"],
+                     {"setup": _tm.recipient_label(to), "adopt_key": rec["id"]})
+    result = {"ok": True, "state": "waiting_for_owner", "ref": drop["id"], "link": drop["link"], "mode": "adopt",
+              "for": _tm.recipient_label(to), "key": key_line(best), "machines_asked": searched,
+              "next": "give the owner this link: they confirm once with the passkey they already use (Face ID, "
+                      "fingerprint or PIN), and no new passkey is created; then `yobiru approval wait %s`. If "
+                      "their device does not have that passkey, `yobiru approval setup --new` creates one instead"
+                      % drop["id"]}
+    if len(found) > 1:
+        result["other_keys"] = [key_line(e) for e in found[1:]]
+    if notes:
+        result["notes"] = notes
+    if a.wait:
+        return cmd_wait(home, argparse.Namespace(ref=drop["id"], timeout=a.wait), prefix=result)
+    out(result)
+
+
 def cmd_setup(home, a):
-    """Set up (or add) an owner key for this data home: the owner creates a passkey on their device."""
+    """Set up the owner's passkey for this data home: adopt the one the owner's other machines trust (the owner
+    signs once with it), or have the owner create one when none is found (or with --new)."""
     to = identity(home, a.bot)
     pinned = keys(home)
     if a.key:
         return setup_with_key(home, a, to, pinned)
     friends = _tm.is_friends_recipient(to)
-    label = a.label or (to.get("handle") or to["bot"] if friends else to["host"].split(".")[0])
+    label = setup_label(a, to)
+    if pinned and not a.new:
+        out({"ok": True, "state": "already_set_up", "for": _tm.recipient_label(to),
+             "keys": [_tm.owner_key_view(k) for k in pinned],
+             "note": "approvals signed with these passkeys are accepted here. One passkey serves all of the owner's "
+                     "machines; to trust one from another machine run `yobiru approval setup --key TEXT` (its "
+                     "`approval keys` share text), and only if the owner wants a second passkey, `--new`"})
+        return 0
+    searched, notes = 0, []
+    if not pinned and not a.new:
+        if friends and not a.source and not has_tailnet(home):
+            notes = ["this computer has no Tailscale identity, so the owner's other machines cannot be asked; name "
+                     "one of their receivers with --from"]
+        else:
+            found, searched, notes = discover_keys(home, a.source)
+            if found:
+                return setup_adopt(home, a, to, found, searched, notes)
     mode = "add-key" if pinned else "register"
     ask = {"v": 1, "mode": mode, "label": label[:80], "rp_id": _tm.OWNER_RP_ID}
     if friends:
@@ -547,13 +698,19 @@ def cmd_setup(home, a):
     if pinned:
         ask["credentials"] = [k["credential_id"] for k in pinned]
         ask["keys"] = [{"fingerprint": k["fingerprint"], "label": k["label"]} for k in pinned]
-    expires = _tm.iso(_tm.now_utc() + dt.timedelta(days=1))
+    expires = _tm.iso(_tm.now_utc() + dt.timedelta(seconds=SETUP_EXPIRES))
     rec = open_drop(home, relay_url(a.relay), mode, ask, expires, {"setup": _tm.recipient_label(to)})
     result = {"ok": True, "state": "waiting_for_owner", "ref": rec["id"], "link": rec["link"], "mode": mode,
               "for": _tm.recipient_label(to), "label": label, ("bot" if friends else "machine"): to if friends else to["host"],
               "next": "give the owner this link (they create a passkey with Face ID, fingerprint or PIN%s); then "
                       "`yobiru approval wait %s`" % (" and confirm with a key already trusted here"
                                                      if pinned else "", rec["id"])}
+    if not pinned and not a.new:
+        result["searched"] = {"machines_asked": searched,
+                              "detail": "none of the owner's other machines shares a passkey yet, so the owner "
+                                        "creates one now; later machines adopt it"}
+        if notes:
+            result["searched"]["notes"] = notes
     if a.wait:
         return cmd_wait(home, argparse.Namespace(ref=rec["id"], timeout=a.wait), prefix=result)
     out(result)
@@ -801,12 +958,18 @@ def cmd_list(home, a):
 def parser():
     ap = argparse.ArgumentParser(prog="yobiru approval", description=__doc__.split("\n\n")[0])
     sp = ap.add_subparsers(dest="cmd", required=True)
-    p = sp.add_parser("setup", help="set up the owner's passkey for this machine (or add another one)")
+    p = sp.add_parser("setup", help="set up the owner's passkey for this machine: the one their other machines "
+                                    "already trust (the owner confirms it once), else a new one")
     p.add_argument("--label", help="name shown with the passkey (default: this machine's name)")
     p.add_argument("--relay", help="gateway that carries the sealed answer (default %s)" % DEFAULT_RELAY)
     p.add_argument("--wait", type=int, default=0, metavar="SECONDS", help="wait for the owner this long")
     p.add_argument("--key", metavar="TEXT", help="trust a passkey the owner already uses on another machine: its "
                                                  "yobiru-owner-key:... text from `yobiru approval keys` there")
+    p.add_argument("--from", dest="source", action="append", default=[], metavar="HOST",
+                   help="ask only this receiver of the owner's for their passkey (repeatable); needed on the "
+                        "connector route, which cannot list the tailnet")
+    p.add_argument("--new", action="store_true",
+                   help="have the owner create a new passkey instead of using the one their other machines trust")
     p.add_argument("--bot", help="for a Friends bot whose native binding this data home holds (id or handle), "
                                  "instead of this machine")
     p = sp.add_parser("request", help="ask the owner to approve an instruction for an agent on another machine")
