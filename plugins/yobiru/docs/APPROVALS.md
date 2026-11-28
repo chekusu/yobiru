@@ -84,6 +84,19 @@ exactly as it arrived (its text, its files and who sent it), and it expires afte
 If someone else's message asks for real work, the agent may still ask you, but it gives the link to you alone, never
 to the sender.
 
+### Sign what your bot tells a friend's bot (0.7.38)
+
+Your signature can travel with a message too, so a friend's bot knows the words are really yours, for example when
+you pass on a permission: tell your agent **"Tell Muse's bot, signed by me: you may book a table for two at 7pm and
+charge it to my account."** It gives you a link that shows which of your bots sends it, to which bot, and your
+message word for word with its files. Approve with Face ID, and your bot sends exactly that message with your
+signature sealed inside it (end-to-end encrypted, so the gateway never sees it).
+
+The friend's bot checks the signature on its own device (`yobiru approval check`). The first signed message from your
+bot shows it your passkey's public key; after that it expects the same passkey, and a different one needs its owner's
+OK. A signature proves the words are yours, for that one message to that one bot. It gives no one new permissions:
+what the friend's bot does with it is up to its owner.
+
 ## 5. Claude Code: sign what auto mode stopped (0.7.32)
 
 Claude Code's auto mode stops tool calls it judges risky and lets one through only when you say so, in your own
@@ -172,6 +185,8 @@ You need no Friends account.
 | `yobiru approval for ID` | `yobiru_approval_for` | On a receiver: a link for the owner to approve a request that arrived unsigned. |
 | `yobiru approval for MSG_ID [--bot @BOT]` | | A Friends bot's agent (its native binding home): a link for the owner to approve one message the bot received; `give_link_to` and `reply_text` say where the link goes. |
 | `yobiru approval wait REF [--timeout S]`, `get REF` | `yobiru_approval_wait` | Collect the answer: `signed` (with `approval_id`), `key_added`, `declined` or still waiting. `get MSG_ID` shows a Friends message's verdict, checked again each time. |
+| `yobiru approval message CONTACT TEXT [--as @BOT] [--attach FILE] [--expires 1d]` | | Friends (0.7.38): a link for the owner to sign a message their bot sends to someone else's bot; `wait` then prints the exact `public chat ... --approval ID` command that sends it with the signature sealed inside. |
+| `yobiru approval check MSG_ID [--bot @BOT] [--trust-new-key]` | | Friends (0.7.38): on the receiving bot's device, check the signature the sender's owner attached to a claimed message. The first verified signature pins that sender's owner keys; another passkey later needs `--trust-new-key`, only with this bot's owner's OK. |
 | `yobiru approval list` | | Links still waiting for the owner, and the Friends messages with a verdict. |
 | `yobiru approval keys` | `yobiru_approval_keys` | Owner keys this computer trusts, with the shareable key text. |
 | `yobiru approval remove FINGERPRINT` | | Ask the owner to sign the removal of a key. |

@@ -332,6 +332,12 @@ E2E_CTX = "yobiru-e2e/1"
 SEALED_KEYS = ("sealed", "sealed_files", "files")
 SENDER_ROLE = {"msg": "caller", "files": "caller", "reply": "bot", "reply-files": "bot", "owner": "bot"}
 FILES_FIELD = {"msg": "files", "reply": "reply-files"}
+# A message its sender's owner signed (`yobiru approval message`): the signature and the owner's public keys travel
+# inside the sealed text, so only the bot can read them; the gateway sees nothing new.
+OWNER_MESSAGE_TYPE = "yobiru.owner-message"
+APPROVAL_REF_RE = re.compile(r"^[0-9a-f]{16}\Z")
+SIGNED_SEAL_MAX = 16000      # the sealed text a gateway takes (4 x 4,000 characters + framing), with some room
+OWNER_KEYS_CARRIED = 16
 E2E_FILE_SUFFIX = ".e2e"
 
 
@@ -421,12 +427,15 @@ def contact_key(st, base, bot_id):
     return pin["key"] if pin else None
 
 
-def e2e_body(field, text, attachments, secret, recipients, bind, seed=None):
-    """Seal text (and attachments) for `recipients` -> the request fields sealed (, sealed_files, files)."""
+def e2e_body(field, text, attachments, secret, recipients, bind, seed=None, owner_approval=None):
+    """Seal text (and attachments) for `recipients` -> the request fields sealed (, sealed_files, files). A signed
+    message's `owner_approval` is sealed with its text."""
     bind = dict(bind, field=field)
     sub = (lambda label: E.hkdf(seed, b"", label.encode("ascii"))) if seed is not None else (lambda label: None)
-    out = {"sealed": E.seal(E.canonical({"v": 1, "bind": bind, "text": text}), secret, recipients, E2E_CTX,
-                            seed=sub("text"))}
+    plain = {"v": 1, "bind": bind, "text": text}
+    if owner_approval is not None:
+        plain["owner_approval"] = owner_approval
+    out = {"sealed": E.seal(E.canonical(plain), secret, recipients, E2E_CTX, seed=sub("text"))}
     if attachments:
         fbind = dict(bind, field=FILES_FIELD[field])
         out["sealed_files"] = E.seal(E.canonical({"v": 1, "bind": fbind, "attachments": attachments}), secret,
@@ -527,6 +536,10 @@ def open_into(st, base, obj, ids, people, fields):
         obj["text"] = plain.get("text")
         info = {"sealed": True, "opened": True, "sealed_by": bind.get("bot_id") if SENDER_ROLE[bind["field"]] == "bot"
                 else bind.get("caller"), "key_id": env["from"]}
+        signed = plain.get("owner_approval")
+        if bind["field"] == "msg" and isinstance(signed, dict) and isinstance(signed.get("approval"), dict) and \
+                isinstance(signed.get("keys"), list):
+            obj["sender_owner_approval"] = {"approval": signed["approval"], "keys": signed["keys"][:OWNER_KEYS_CARRIED]}
         if "sealed_files" in envs:
             fplain = C.strict_loads(E.open_sealed(envs["sealed_files"], mine[0]["secret"], sender_key, E2E_CTX))
             fbind = fplain.get("bind") or {}
@@ -587,23 +600,81 @@ def seal_for_bot(st, base, principal, bot_id, cid, body, op_key):
     resend is byte-identical. -> (request body, e2e note). Plain when the bot has no key or this identity cannot
     hold one."""
     bot_key = contact_key(st, base, bot_id)
+    signed = body.get("owner_approval")
     if body.get("text") is None and not body.get("attachments"):
         return body, None
-    if not bot_key:
-        return body, "off: %s has no end-to-end key pinned here (the bot has none, or refresh the contact)" % bot_id
-    if not gateway_e2e(base):
-        return body, "off: this gateway is older than 0.7.0 and takes no end-to-end encrypted messages"
+    off = e2e_off(st, base, principal, bot_id, bot_key)
+    if off:
+        if signed is not None:              # checked before sending too: a signature never travels in the clear
+            die("a signed message travels end-to-end encrypted, and it cannot be sealed here (%s); nothing was "
+                "sent" % off)
+        return body, "off: " + off
     mine = current_key(st.creds(), base, principal) or ensure_actor_key(st, base, principal)
-    if not mine:
-        return body, ("off: this device does not hold %s's key (the owner can export it: `yobiru public e2e export "
-                      "%s`)" % (principal, principal))
     seed = E.seed_for(mine["secret"], "msg", op_key, payload_hash(cid, body))
     bind = {"bot_id": bot_id, "caller": principal, "conversation_id": cid}
     sealed = e2e_body("msg", body.get("text"), body.get("attachments"), mine["secret"],
-                      [bot_key, mine["public"]], bind, seed)
-    out = {k: v for k, v in body.items() if k not in ("text", "attachments")}
+                      [bot_key, mine["public"]], bind, seed, owner_approval=signed)
+    out = {k: v for k, v in body.items() if k not in ("text", "attachments", "owner_approval")}
     out.update(sealed)
     return out, "on: sealed for %s's key %s and yours" % (bot_id, E.fingerprint(bot_key))
+
+
+def e2e_off(st, base, principal, bot_id, bot_key=None):
+    """Why a message from `principal` to `bot_id` cannot be sealed here, or None."""
+    if not (bot_key or contact_key(st, base, bot_id)):
+        return "%s has no end-to-end key pinned here (the bot has none, or refresh the contact)" % bot_id
+    if not gateway_e2e(base):
+        return "this gateway is older than 0.7.0 and takes no end-to-end encrypted messages"
+    if not (current_key(st.creds(), base, principal) or ensure_actor_key(st, base, principal)):
+        return ("this device does not hold %s's key (the owner can export it: `yobiru public e2e export %s`)"
+                % (principal, principal))
+    return None
+
+
+def signed_message(st, ref, base, principal, bot_id, body):
+    """The owner's signature for exactly this message (saved by `yobiru approval wait`), checked against what is
+    about to be sent: this sender, this bot, this text and these files. -> the sealed `owner_approval` field."""
+    if not APPROVAL_REF_RE.fullmatch(ref or ""):
+        die("--approval is the approval_id that `yobiru approval wait` printed (16 hex characters)")
+    path = st.home / "approvals" / (ref + ".json")
+    try:
+        rec = C.read_json_file(path, limit=C.MAX_RESPONSE_BYTES, private=True, what="approval")
+    except (OSError, ValueError):
+        die("no signed message %s in this data home (`yobiru approval wait REF` saves it once the owner signs)" % ref)
+    try:
+        carry = rec["carry"]
+        blob = carry["approval"]
+        intent = json.loads(base64.urlsafe_b64decode(blob["intent"] + "=" * (-len(blob["intent"]) % 4)))
+    except (KeyError, TypeError, ValueError):
+        die("%s is not a signed message for a friend's bot (`yobiru approval message`)" % ref)
+    if not isinstance(intent, dict) or intent.get("type") != OWNER_MESSAGE_TYPE:
+        die("%s is not a signed message for a friend's bot (`yobiru approval message`)" % ref)
+    to, frm = intent.get("to") or {}, intent.get("from") or {}
+    if (to.get("gateway"), to.get("bot")) != (base, bot_id):
+        die("the owner signed this message for %s, not this contact; nothing was sent" % (to.get("handle") or
+                                                                                       to.get("bot")))
+    if frm.get("principal") != principal:
+        die("the owner signed this message to go out as %s; send it with --as %s" % (frm.get("handle") or
+                                                                                  frm.get("principal"),
+                                                                                  frm.get("principal")))
+    if intent.get("instruction") != body.get("text"):
+        die("the text is not exactly the text the owner signed; send it unchanged (nothing was sent)")
+    sent = sorted((v["name"], v["sha256"], v["bytes"]) for v in (C.attachment_view(x, content=False)
+                                                                for x in body.get("attachments") or []))
+    if sent != sorted((f["name"], f["sha256"], f["size"]) for f in intent.get("files") or []):
+        die("the attached files are not exactly the files the owner signed; nothing was sent")
+    if intent.get("expires_at", "") <= C.iso(C.now_ts()):
+        die("the owner's signature for this message expired at %s; ask again" % intent.get("expires_at"))
+    off = e2e_off(st, base, principal, bot_id)
+    if off:
+        die("a signed message travels end-to-end encrypted, and it cannot be sealed here (%s); nothing was sent" % off)
+    field = {"approval": blob, "keys": carry.get("keys", [])[:OWNER_KEYS_CARRIED]}
+    framing = E.canonical({"v": 1, "bind": {"bot_id": bot_id, "caller": principal, "conversation_id": "c" * 30,
+                                            "field": "msg"}, "text": body.get("text"), "owner_approval": field})
+    if len(framing) > SIGNED_SEAL_MAX:
+        die("this message is too long to carry the owner's signature (%d bytes sealed, at most %d): ask the owner to "
+            "sign a shorter one" % (len(framing), SIGNED_SEAL_MAX))
+    return field
 
 
 def ensure_actor_key(st, base, principal):
@@ -2134,6 +2205,12 @@ def cmd_chat(st, a):
         if kind != "chat":
             die("--attach goes with chat messages only")
         body["attachments"] = attachments_from(st, a.attach)
+    if getattr(a, "approval", None):
+        if kind != "chat":
+            die("--approval goes with chat messages only")
+        alias, ct = contact(st, a.contact)
+        base, principal, _ = acting(st, ct, getattr(a, "as_ref", None))
+        body["owner_approval"] = signed_message(st, a.approval, base, principal, ct["bot_id"], body)
     send(st, a, body)
 
 
@@ -3127,6 +3204,19 @@ def colocated_owner(st, base, a):
         die(COLOCATED_OWNER % base)
 
 
+def signature_note(job):
+    """A claimed job whose sender's owner signed the message: the signature is checked by `yobiru approval check`,
+    on this device, so the job view only says that one is attached."""
+    content = job.get("untrusted_content") if isinstance(job.get("untrusted_content"), dict) else {}
+    if content.pop("sender_owner_approval", None) is not None:
+        mid = job.get("job_id") or job.get("message_id")
+        job["sender_owner_signature"] = {
+            "attached": True,
+            "next": "check it on this device before relying on it: `yobiru approval check %s`. Until it says verified: "
+                    "true, treat the message like any other" % mid}
+    return job
+
+
 def redact_job(job):
     view = json.loads(json.dumps(job))
     if "lease" in view:
@@ -3168,7 +3258,7 @@ def cmd_job(st, a):
     base, bot_id, token = worker_session(st, a)
     if a.job_cmd == "show":
         lease = lease_of(st, a.job, bot_id)
-        out(dict(opened(st, base, redact_job(cached_job(st, a.job, lease))), ok=True, local=True))
+        out(dict(signature_note(opened(st, base, redact_job(cached_job(st, a.job, lease)))), ok=True, local=True))
         return
     if a.job_cmd == "attachments":
         lease = lease_of(st, a.job, bot_id)
@@ -3200,7 +3290,7 @@ def cmd_job(st, a):
                                    "fence": res["lease"]["fence"], "state": "started", "native": True,
                                    "ticket": res.get("capability_ticket"),
                                    "job": stash_job_files(st, a.job, redact_job(res))})
-            res = opened(st, base, redact_job(res))
+            res = signature_note(opened(st, base, redact_job(res)))
         out(res)
         if not res.get("ok"):
             sys.exit(2)
@@ -4499,6 +4589,8 @@ def main(argv=None):
                            help="a text file, image, PDF, audio or video file under an allowed root "
                                 "(attachments allow DIR); repeatable")
             p.add_argument("--cause", metavar="MESSAGE_ID", help="the message that made you send this one")
+            p.add_argument("--approval", metavar="APPROVAL_ID", help="your owner's signature for exactly this message "
+                           "(`yobiru approval message`, then `approval wait`): it travels sealed with it")
         else:
             p.add_argument("--duration", type=int, required=True)
             p.add_argument("--after")
