@@ -22,7 +22,7 @@ jobs:
   tag:
     # Only main's head is released this way. A prerelease tag on a release branch is still pushed by hand.
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    runs-on: hayabuild-linux
     timeout-minutes: 5
     permissions:
       contents: write

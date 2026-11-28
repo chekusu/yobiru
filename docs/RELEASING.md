@@ -132,7 +132,7 @@ The workflow then
 
 1. refuses the tag unless it equals `v` + the version in `packaging/product.json` and `CHANGELOG.md` has a
    `## <version> (...)` entry;
-2. runs `check`, both test suites and `release` on a GitHub-hosted runner;
+2. runs `check`, both test suites and `release` on the org's Hayabuild Linux runner (`hayabuild-linux`);
 3. creates the GitHub release `Yobiru <version>` with the entry as its notes and the three `dist/` files attached:
    a stable version is marked latest, a prerelease is marked prerelease and not latest. If the release already exists
    (published by hand), it keeps its notes and flags and only replaces the assets;
