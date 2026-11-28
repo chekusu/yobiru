@@ -180,7 +180,7 @@ Kurulu bir eklenti için `Y` yerine mutlak `scripts/yobiru` yolunu yazın. Eklen
 
 ### Yükseltme
 
-Mevcut kararlı sürüm 0.7.30'dur. Sürüm arşivleri etiketlerine sabitlenmiştir; depo kurulumu yayımlanmamış düzeltmeleri de içerebilen `main` dalını izler. [Yükseltme kılavuzu](docs/UPGRADING-0.7.md) `SHA256SUMS` ile doğrulanan sürüm arşivini, Cursor ve Grok Bot'u, kalıcı alıcıyı, mevcut bir ağ geçidini taşımayı, geri alma sınırlarını ve kabul kontrol listesini kapsar. Geliştirme derlemesi çalıştıran bir makinede çalışma zamanını ve köprüyü olduğu gibi bırakın; kılavuz bunların yanında bir sürümün nasıl deneneceğini açıklar.
+Mevcut kararlı sürüm 0.7.38'dir. Sürüm arşivleri etiketlerine sabitlenmiştir; depo kurulumu yayımlanmamış düzeltmeleri de içerebilen `main` dalını izler. [Yükseltme kılavuzu](docs/UPGRADING-0.7.md) `SHA256SUMS` ile doğrulanan sürüm arşivini, Cursor ve Grok Bot'u, kalıcı alıcıyı, mevcut bir ağ geçidini taşımayı, geri alma sınırlarını ve kabul kontrol listesini kapsar. Geliştirme derlemesi çalıştıran bir makinede çalışma zamanını ve köprüyü olduğu gibi bırakın; kılavuz bunların yanında bir sürümün nasıl deneneceğini açıklar.
 
 ## İlk kez kurulum (Tailscale olmadan bile)
 
@@ -309,7 +309,7 @@ Codex iş yanıtları hâlâ yerel yetkilendirme gerektirir. `allow_replies=fals
 
 ### Telefonunuzda imzalanan onayınız (0.7.30)
 
-Bir iş onayınızı gerektirdiğinde ajan bir ifade yazmanızı istemek yerine size bir bağlantı verir. `yobiru.com/approve` üzerinde tam olarak neyi onayladığınızı okur ve Face ID, parmak izi veya cihaz PIN'inizle doğrularsınız; bu işlem cihazınızdan asla çıkmayan bir geçiş anahtarıyla (passkey) imzalanır. İşi yapan bilgisayar, ajanı isteği görmeden önce imzayı kendisi kontrol eder: ajanına bir kez "Set up my Yobiru owner passkey" deyin, ardından gönderen ajana "Ask my approval for claude on mac-studio to deploy the site, then send it." deyin. Bkz. [Sahip onayları](docs/APPROVALS.md).
+Bir iş onayınızı gerektirdiğinde ajan bir ifade yazmanızı istemek yerine size bir bağlantı verir. `yobiru.com/approve` üzerinde tam olarak neyi onayladığınızı okur ve Face ID, parmak izi veya cihaz PIN'inizle doğrularsınız; bu işlem cihazınızdan asla çıkmayan bir geçiş anahtarıyla (passkey) imzalanır. İşi yapan bilgisayar, ajanı isteği görmeden önce imzayı kendisi kontrol eder: ajanına bir kez "Set up my Yobiru owner passkey" deyin, ardından gönderen ajana "Ask my approval for claude on mac-studio to deploy the site, then send it." deyin. 0.7.31'den itibaren aynısı Friends üzerindeki kendi botlarınız arasında da çalışır: diğer botunuzdan botunuza yazdığınızda, onun ajanı bağlantıyı oraya geri gönderir ve yalnızca o tek mesajı imzaladıktan sonra harekete geçer. 0.7.32'den itibaren Claude Code da otomatik modu bir şeyi durdurduğunda aynı şekilde çalışır: Yobiru koruması kuruluyken (Claude Code'a "Install the Yobiru guard" deyin), onayınızı doğru oturuma yazmanızı istemek yerine size tam o çağrı için bir bağlantı gönderir. Bkz. [Sahip onayları](docs/APPROVALS.md).
 
 ## Uyandırmalar ve teslimat durumu
 
